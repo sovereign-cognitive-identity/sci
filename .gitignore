@@ -3,3 +3,10 @@ dist/
 *.js.map
 .env
 .env.local
+# fastembed model cache — downloaded at runtime, not committed
+local_cache/
+# VitePress build output
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+# Test temp files
+/tmp/sci-test*
