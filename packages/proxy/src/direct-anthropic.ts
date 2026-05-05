@@ -12,7 +12,22 @@
  * You lose multi-model routing — everything stays on the Claude model requested.
  */
 
-const ANTHROPIC_API = 'https://api.anthropic.com'
+import { resolveReal } from './dns-resolver.js'
+
+const ANTHROPIC_HOSTNAME = 'api.anthropic.com'
+const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true'
+
+/**
+ * In VPN mode /etc/hosts redirects api.anthropic.com → 127.0.0.1.
+ * We must connect to the real IP to avoid looping back to ourselves.
+ */
+async function getUpstreamUrl(path: string): Promise<string> {
+  if (VPN_MODE) {
+    const ip = await resolveReal(ANTHROPIC_HOSTNAME).catch(() => ANTHROPIC_HOSTNAME)
+    return `https://${ip}${path}`
+  }
+  return `https://${ANTHROPIC_HOSTNAME}${path}`
+}
 
 /** Async generator of text deltas from a direct Anthropic SSE stream. */
 export async function* streamFromAnthropic(
@@ -20,12 +35,15 @@ export async function* streamFromAnthropic(
   body: unknown,
   originalHeaders: Record<string, string>
 ): AsyncGenerator<string> {
+  const upstreamUrl = await getUpstreamUrl(path)
+
   // Forward with the original auth — subscription usage preserved
-  const response = await fetch(`${ANTHROPIC_API}${path}`, {
+  const response = await fetch(upstreamUrl, {
     method: 'POST',
     headers: {
       ...originalHeaders,
       'content-type': 'application/json',
+      'host': ANTHROPIC_HOSTNAME,  // always send original hostname, not IP
     },
     body: JSON.stringify(body),
   })

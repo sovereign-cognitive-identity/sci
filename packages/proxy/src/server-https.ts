@@ -48,34 +48,32 @@ export function startHTTPSServer(
       const hostname = req.headers.host?.split(':')[0] ?? ''
       const format = ENDPOINT_FORMAT[hostname] ?? 'openai'
 
-      // Read full body
+      const isAnthropicMessages = format === 'anthropic' && req.url === '/v1/messages'
+      const isOpenAIChat = format === 'openai' && (req.url?.startsWith('/v1/chat') ?? false)
+      const shouldIntercept = isAnthropicMessages || isOpenAIChat
+
+      if (!shouldIntercept) {
+        // Pass through immediately — pipe without buffering so auth flows,
+        // streaming responses, and WebSocket upgrades don't hang.
+        const realIP = await resolveReal(hostname).catch(() => hostname)
+        forwardPipe(req, hostname, realIP, res)
+        return
+      }
+
+      // Intercepted path — collect body (bounded JSON payload), then process
       const chunks: Buffer[] = []
       for await (const chunk of req) chunks.push(chunk as Buffer)
       const body = Buffer.concat(chunks)
 
       try {
-        if (format === 'anthropic' && req.url === '/v1/messages') {
-          // Route through real upstream using actual IP
-          const realIP = await resolveReal(hostname).catch(() => null)
-          if (realIP) {
-            await forwardToUpstream(req, body, hostname, realIP, res)
-          } else {
-            // Fall back to handler which will use api.anthropic.com (may loop — handle gracefully)
-            const ctx = makeContext(req, body, hostname)
-            const result = await handleAnthropicMessages(ctx as never, adapter, openrouterKey)
-            await pipeResponse(result, res)
-          }
-        } else if (format === 'openai' && req.url?.startsWith('/v1/chat')) {
-          const ctx = makeContext(req, body, hostname)
-          const result = await handleOpenAIChat(ctx as never, adapter, openrouterKey)
-          await pipeResponse(result, res)
-        } else {
-          // Pass through unknown paths
-          const realIP = await resolveReal(hostname).catch(() => hostname)
-          await forwardToUpstream(req, body, hostname, realIP, res)
-        }
+        const ctx = makeContext(req, body, hostname)
+        const result = isAnthropicMessages
+          ? await handleAnthropicMessages(ctx as never, adapter, openrouterKey)
+          : await handleOpenAIChat(ctx as never, adapter, openrouterKey)
+        await pipeResponse(result, res)
       } catch (err) {
-        res.writeHead(502)
+        process.stderr.write(`[vpn] handler error: ${err}\n`)
+        if (!res.headersSent) res.writeHead(502)
         res.end(JSON.stringify({ error: String(err) }))
       }
     }
@@ -88,30 +86,105 @@ export function startHTTPSServer(
   return server
 }
 
-/** Forward a request to the real upstream server by IP (bypasses /etc/hosts). */
-async function forwardToUpstream(
+/**
+ * Pipe a request directly to the real upstream without buffering.
+ * Used for all non-intercepted paths (auth flows, streaming, WebSocket, etc.)
+ * so they never hang waiting for body collection.
+ */
+function forwardPipe(
+  req: IncomingMessage,
+  hostname: string,
+  realIP: string,
+  res: ServerResponse
+): void {
+  const forwardHeaders: Record<string, string | string[]> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (!HOP_BY_HOP.has(k.toLowerCase()) && v !== undefined) forwardHeaders[k] = v
+  }
+  forwardHeaders['host'] = hostname
+
+  const proxyReq = https.request({
+    host: realIP,
+    servername: hostname,
+    port: 443,
+    path: req.url ?? '/',
+    method: req.method ?? 'GET',
+    headers: forwardHeaders,
+    rejectUnauthorized: true,
+  }, (proxyRes) => {
+    res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers as Record<string, string>)
+    proxyRes.pipe(res)
+  })
+
+  proxyReq.on('error', (err) => {
+    process.stderr.write(`[vpn] pipe error ${hostname}: ${err.message}\n`)
+    if (!res.headersSent) res.writeHead(502)
+    res.end()
+  })
+
+  req.pipe(proxyReq)  // stream body directly, no buffering
+}
+
+// Headers that must not be forwarded to the upstream
+const HOP_BY_HOP = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+  'te', 'trailers', 'transfer-encoding', 'upgrade', 'proxy-connection',
+])
+
+/**
+ * Forward a request to the real upstream server by IP, bypassing /etc/hosts.
+ *
+ * Uses https.request with explicit `host` (IP) and `servername` (hostname)
+ * so TLS SNI uses the original hostname while the TCP connection goes to the
+ * real IP — avoiding the /etc/hosts loop and passing TLS cert validation.
+ */
+function forwardToUpstream(
   req: IncomingMessage,
   body: Buffer,
   hostname: string,
   realIP: string,
   res: ServerResponse
 ): Promise<void> {
-  const url = `https://${realIP}${req.url ?? '/'}`
+  return new Promise((resolve, reject) => {
+    // Strip hop-by-hop headers; keep all others
+    const forwardHeaders: Record<string, string | string[]> = {}
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (!HOP_BY_HOP.has(k.toLowerCase()) && v !== undefined) {
+        forwardHeaders[k] = v
+      }
+    }
+    forwardHeaders['host'] = hostname
 
-  const upstream = await fetch(url, {
-    method: req.method ?? 'GET',
-    headers: {
-      ...req.headers as Record<string, string>,
-      host: hostname,  // send original hostname, not IP
-    },
-    body: body.length > 0 ? body : undefined,
-    // @ts-ignore — Node fetch supports this
-    dispatcher: undefined,
+    const proxyReq = https.request({
+      host: realIP,         // TCP: connect to real IP (bypasses /etc/hosts)
+      servername: hostname, // TLS SNI: validate cert against original hostname
+      port: 443,
+      path: req.url ?? '/',
+      method: req.method ?? 'GET',
+      headers: forwardHeaders,
+      rejectUnauthorized: true,
+    }, (proxyRes) => {
+      // Stream response back without buffering
+      const responseHeaders: Record<string, string | string[]> = {}
+      for (const [k, v] of Object.entries(proxyRes.headers)) {
+        if (v !== undefined) responseHeaders[k] = v
+      }
+      res.writeHead(proxyRes.statusCode ?? 502, responseHeaders)
+      proxyRes.pipe(res)
+      proxyRes.on('end', resolve)
+      proxyRes.on('error', reject)
+    })
+
+    proxyReq.on('error', (err) => {
+      process.stderr.write(`[vpn] upstream error ${hostname}: ${err.message}\n`)
+      if (!res.headersSent) res.writeHead(502)
+      res.end(JSON.stringify({ error: err.message }))
+      resolve()
+    })
+
+    if (body.length > 0) proxyReq.write(body)
+    proxyReq.end()
   })
-
-  res.writeHead(upstream.status, Object.fromEntries(upstream.headers))
-  const text = await upstream.text()
-  res.end(text)
 }
 
 async function pipeResponse(result: Response, res: ServerResponse): Promise<void> {

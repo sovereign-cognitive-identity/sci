@@ -24,6 +24,10 @@ import { startHTTPSServer, VPN_PORT } from './server-https.js'
 import { warmDNSCache } from './dns-resolver.js'
 import { attachConnectHandler } from './server-connect.js'
 import { startWatchdog } from './watchdog.js'
+import { startSOCKS5Server } from './socks5.js'
+import { startDNSServer } from './dns-server.js'
+import { startSingBox, waitForInterface, addFakeIPRoute } from './tun.js'
+import { warmFakeIPs } from './fake-ip.js'
 
 const PORT = parseInt(process.env['SCI_PROXY_PORT'] ?? '3001')
 const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true'
@@ -91,7 +95,38 @@ app.get('/v1/models', (c) => c.json({
 const stats = await adapter.getStats()
 const routingMode = process.env['SCI_ROUTING_MODE'] ?? 'direct'
 
-if (VPN_MODE) {
+const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true'
+
+if (TUN_MODE) {
+  console.log(`\n🛡️  Sci TUN Proxy starting`)
+  console.log(`   Storage: ${stats.backend}`)
+  console.log(`   Mode: TUN (sing-box + SOCKS5 interception)`)
+  console.log(`   Routing: ${routingMode}`)
+  console.log()
+
+  warmFakeIPs()
+
+  // Start DNS server (fake IPs for AI domains)
+  startDNSServer()
+
+  // Start SOCKS5 server (sing-box forwards intercepted connections here)
+  startSOCKS5Server(adapter, OPENROUTER_KEY)
+
+  // Start sing-box (creates utun9, intercepts traffic via TLS SNI)
+  startSingBox()
+
+  // Wait for utun9 to appear, then add the fake IP route
+  try {
+    await waitForInterface(5000)
+    addFakeIPRoute()
+    console.log(`\n✓ TUN interceptor active. All AI traffic is now anonymized.\n`)
+  } catch (err) {
+    console.error(`[tun] Failed to set up route: ${err}`)
+    console.error('  Run manually: sudo route add -net 198.18.0.0/15 172.19.0.1')
+  }
+
+} else if (VPN_MODE) {
+  // Legacy HTTPS interception mode (kept for reference)
   console.log(`\n🔒 Sci VPN Proxy starting`)
   console.log(`   Storage: ${stats.backend}`)
   console.log(`   Mode: VPN (HTTPS interception on port ${VPN_PORT})`)

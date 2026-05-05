@@ -54,6 +54,12 @@ export function selectModel(clientModel: string, queryText: string): string {
     return ANTHROPIC_TO_OPENROUTER[clientModel]!
   }
 
+  // Versioned Anthropic model names (e.g. claude-haiku-4-5-20251001, claude-sonnet-4-6)
+  // Pass through directly — Anthropic accepts these in direct mode
+  if (clientModel.startsWith('claude-')) {
+    return clientModel
+  }
+
   // Already an OpenRouter-style ID (e.g. "gpt-4o", "google/gemini-2.5-flash")
   if (clientModel.includes('/') || clientModel.startsWith('gpt-') || clientModel.startsWith('gemini-')) {
     return clientModel
