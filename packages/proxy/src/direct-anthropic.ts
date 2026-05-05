@@ -12,16 +12,25 @@
  * You lose multi-model routing — everything stays on the Claude model requested.
  */
 
-import { resolveReal } from './dns-resolver.js'
+import { resolveReal, resolveRealDirect } from './dns-resolver.js'
 
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com'
 const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true'
+const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true'
 
 /**
- * In VPN mode /etc/hosts redirects api.anthropic.com → 127.0.0.1.
- * We must connect to the real IP to avoid looping back to ourselves.
+ * In VPN mode: /etc/hosts redirects api.anthropic.com → 127.0.0.1,
+ * so we use resolveReal (dns.resolve4, bypasses /etc/hosts) to get real IP.
+ *
+ * In TUN mode: /etc/resolver/anthropic.com routes DNS to our fake server,
+ * so we use resolveRealDirect (queries 8.8.8.8, bypasses /etc/resolver/)
+ * to get real IP — avoiding the routing loop through utun.
  */
 async function getUpstreamUrl(path: string): Promise<string> {
+  if (TUN_MODE) {
+    const ip = await resolveRealDirect(ANTHROPIC_HOSTNAME).catch(() => ANTHROPIC_HOSTNAME)
+    return `https://${ip}${path}`
+  }
   if (VPN_MODE) {
     const ip = await resolveReal(ANTHROPIC_HOSTNAME).catch(() => ANTHROPIC_HOSTNAME)
     return `https://${ip}${path}`

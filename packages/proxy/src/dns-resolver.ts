@@ -10,13 +10,41 @@
  * If the cache is cold (first run after install), do a system DNS lookup
  * that skips /etc/hosts by querying a public resolver directly.
  */
-import { resolve4 } from 'dns'
+import { resolve4, Resolver } from 'dns'
 import { promisify } from 'util'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 
 const resolve4Async = promisify(resolve4)
+
+// A resolver that queries 8.8.8.8 directly, bypassing /etc/resolver/ entries.
+// Used in TUN mode so our proxy's outbound connections don't hit the fake DNS.
+const _directResolver = new Resolver()
+_directResolver.setServers(['8.8.8.8:53', '1.1.1.1:53'])
+const resolve4Direct = promisify(_directResolver.resolve4.bind(_directResolver))
+
+/**
+ * Resolve a hostname using a real public DNS (8.8.8.8), bypassing any
+ * /etc/resolver/ or /etc/hosts overrides. Safe to call from inside the
+ * TUN-mode proxy where api.anthropic.com would otherwise resolve to a fake IP.
+ */
+export async function resolveRealDirect(hostname: string): Promise<string> {
+  try {
+    const addrs = await resolve4Direct(hostname)
+    if (addrs[0]) return addrs[0]
+  } catch (err) {
+    process.stderr.write(`[dns] direct resolve failed for ${hostname}: ${err}\n`)
+  }
+  // Fallback to hardcoded IPs
+  const fallback: Record<string, string> = {
+    'api.anthropic.com': '160.79.104.10',
+    'api.openai.com': '104.18.6.192',
+    'openrouter.ai': '104.21.63.72',
+  }
+  if (fallback[hostname]) return fallback[hostname]
+  throw new Error(`Cannot resolve real IP for ${hostname}`)
+}
 const CACHE_PATH = join(homedir(), '.sci', 'dns-cache.json')
 
 // Known AI API endpoints we intercept

@@ -21,12 +21,32 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
 import { SOCKS5_PORT } from './socks5.js'
-import { DNS_PORT } from './dns-server.js'
 import { FAKE_IP_CIDR } from './fake-ip.js'
+import {
+  runRecoveryIfStale,
+  writeRecoveryScript,
+  registerTUNCleanup,
+  installCleanupHelper,
+} from './tun-guard.js'
 
-export const TUN_INTERFACE = 'utun9'
-export const TUN_ADDR = '172.19.0.1'      // utun9's IPv4 address
-export const TUN_CIDR = '172.19.0.1/30'   // /30 = point-to-point
+export const TUN_ADDR = '172.19.0.1'
+export const TUN_CIDR = '172.19.0.1/30'
+
+/** Find the first utun interface name not currently in use (utun5–utun15). */
+function findAvailableUtun(): string {
+  for (let i = 5; i <= 15; i++) {
+    try {
+      execSync(`ifconfig utun${i} 2>/dev/null`, { stdio: 'pipe' })
+      // Interface exists — try next
+    } catch {
+      // Interface doesn't exist — available
+      return `utun${i}`
+    }
+  }
+  return 'utun15'  // fallback
+}
+
+export const TUN_INTERFACE = findAvailableUtun()
 
 const CONFIG_DIR = join(homedir(), '.sci')
 const CONFIG_PATH = join(CONFIG_DIR, 'singbox.json')
@@ -34,31 +54,12 @@ const CONFIG_PATH = join(CONFIG_DIR, 'singbox.json')
 // ── Config generation ─────────────────────────────────────────────────────────
 
 function buildSingBoxConfig(): object {
+  // Minimal config: TUN device → SOCKS5 forwarding only.
+  // DNS is handled externally by our dns-server.ts via /etc/resolver/ entries.
+  // No sing-box DNS config needed — avoids the deprecated format in v1.12+.
   return {
     log: {
       level: 'warn',
-      output: join(homedir(), 'Vault', 'sci', 'singbox.log'),
-    },
-
-    dns: {
-      servers: [
-        {
-          // Our local DNS server handles AI domains → fake IPs
-          tag: 'sci-dns',
-          address: `udp://127.0.0.1:${DNS_PORT}`,
-          detour: 'direct',
-        },
-        {
-          // Real DNS for everything else
-          tag: 'real-dns',
-          address: 'udp://8.8.8.8',
-          detour: 'direct',
-        },
-      ],
-      rules: [],
-      // No fakeip needed — our dns-server.ts handles that
-      final: 'real-dns',
-      independent_cache: true,
     },
 
     inbounds: [
@@ -66,22 +67,19 @@ function buildSingBoxConfig(): object {
         type: 'tun',
         tag: 'tun-in',
         interface_name: TUN_INTERFACE,
-        inet4_address: TUN_CIDR,
-        // auto_route: false — we add specific routes for fake IP range only
+        // sing-box 1.12+: use 'address' array
+        address: [TUN_CIDR],
+        // auto_route: false — we manage the 198.18.0.0/15 route explicitly
         auto_route: false,
-        // gVisor-based TCP stack (most compatible) + system UDP
+        // mixed: gVisor TCP stack + system UDP
         stack: 'mixed',
-        // Extract hostname from TLS ClientHello SNI
-        sniff: true,
-        sniff_override_destination: true,
-        // Don't sniff timeout — proceed immediately
-        sniff_timeout: '300ms',
+        // No sniff fields here — moved to route rule actions in sing-box 1.11+
+        // Our SOCKS5 server handles fake IP → hostname reverse lookup directly
       },
     ],
 
     outbounds: [
       {
-        // Our SOCKS5 server handles AI endpoints
         type: 'socks',
         tag: 'sci-socks',
         server: '127.0.0.1',
@@ -89,7 +87,6 @@ function buildSingBoxConfig(): object {
         version: '5',
       },
       {
-        // Direct for everything else (not AI)
         type: 'direct',
         tag: 'direct',
       },
@@ -98,8 +95,8 @@ function buildSingBoxConfig(): object {
     route: {
       rules: [
         {
-          // All traffic from the TUN goes to our SOCKS5 proxy
-          // (fake IP range is the only traffic that reaches utun9)
+          // All TUN traffic → our SOCKS5 server
+          // (only 198.18.0.0/15 fake IPs reach this TUN via the route we add)
           inbound: 'tun-in',
           outbound: 'sci-socks',
         },
@@ -129,7 +126,9 @@ export function startSingBox(): ChildProcess {
 
   const logPath = join(homedir(), 'Vault', 'sci', 'singbox.log')
 
-  _proc = spawn(singboxBin, ['run', '-c', CONFIG_PATH], {
+  // Creating a TUN interface requires root on macOS.
+  // We run sing-box via sudo with a NOPASSWD sudoers rule (added by sci vpn install).
+  _proc = spawn('sudo', [singboxBin, 'run', '-c', CONFIG_PATH], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
   })
@@ -219,6 +218,7 @@ export async function waitForInterface(timeoutMs = 5000): Promise<void> {
 // ── /etc/resolver entries ─────────────────────────────────────────────────────
 
 import { AI_HOSTNAMES } from './fake-ip.js'
+import { DNS_PORT } from './dns-server.js'
 
 const RESOLVER_DOMAINS = [...new Set(AI_HOSTNAMES.map(h => h.split('.').slice(-2).join('.')))]
 // e.g. ['anthropic.com', 'openai.com', 'openrouter.ai', 'googleapis.com']
@@ -255,3 +255,47 @@ export function removeResolverEntries(): void {
 }
 
 export { RESOLVER_DOMAINS }
+
+// ── High-level TUN lifecycle (with safety guard) ──────────────────────────────
+
+/**
+ * Full TUN startup sequence with safety guard wired in.
+ *
+ * Order matters:
+ *   1. Run recovery if stale (cleans up previous crash)
+ *   2. Write recovery script (before ANY system changes)
+ *   3. Register cleanup handlers (SIGTERM/SIGINT/exit)
+ *   4. Start sing-box
+ *   5. Wait for interface
+ *   6. Add route
+ *   7. Flush DNS
+ */
+export async function startTUNWithGuard(adapter: unknown): Promise<void> {
+  // Step 1: clean up any stale state from previous crash
+  runRecoveryIfStale()
+
+  // Step 2: write recovery script BEFORE touching system
+  writeRecoveryScript()
+
+  // Step 3: register cleanup — runs on SIGTERM/SIGINT/exit/uncaughtException
+  registerTUNCleanup(async () => {
+    stopSingBox()
+    removeFakeIPRoute()
+    removeResolverEntries()
+  })
+
+  // Step 4: start sing-box
+  startSingBox()
+
+  // Step 5: wait for utun interface
+  await waitForInterface(6000)
+
+  // Step 6: add fake IP route (requires sudoers rule from vpn install)
+  addFakeIPRoute()
+
+  // Step 7: flush DNS so resolver entries take effect immediately
+  try {
+    execSync('sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' })
+    process.stderr.write('[tun] DNS cache flushed\n')
+  } catch { /* non-fatal */ }
+}

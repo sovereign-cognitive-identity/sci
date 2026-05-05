@@ -108,24 +108,27 @@ function parseConnect(
   const atyp = req[3]!
   let hostname: string
   let port: number
+  let headerEnd: number  // byte offset where the CONNECT header ends
 
   if (atyp === ATYP_DOMAIN) {
     const len = req[4]!
     hostname = req.slice(5, 5 + len).toString('ascii')
     port = req.readUInt16BE(5 + len)
+    headerEnd = 5 + len + 2
   } else if (atyp === ATYP_IPV4) {
     hostname = `${req[4]}.${req[5]}.${req[6]}.${req[7]}`
     port = req.readUInt16BE(8)
+    headerEnd = 10
     // Reverse-map fake IP to real hostname if possible
     const mapped = lookupByFakeIP(hostname)
     if (mapped) hostname = mapped
   } else if (atyp === ATYP_IPV6) {
-    // IPv6: pass through without interception
     const ipv6 = Array.from({ length: 8 }, (_, i) =>
       req.readUInt16BE(4 + i * 2).toString(16)
     ).join(':')
     hostname = `[${ipv6}]`
     port = req.readUInt16BE(20)
+    headerEnd = 22
   } else {
     socket.write(Buffer.from([SOCKS5_VERSION, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
     socket.destroy()
@@ -134,6 +137,15 @@ function parseConnect(
 
   // SOCKS5 success response
   socket.write(Buffer.from([SOCKS5_VERSION, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
+
+  // The TLS ClientHello may have arrived in the same TCP segment as the CONNECT
+  // request. Any bytes after the CONNECT header must be pushed back onto the
+  // socket so the TLS layer sees them — otherwise the handshake waits forever.
+  const tail = req.length > headerEnd ? req.slice(headerEnd) : null
+  if (tail?.length) {
+    process.stderr.write(`[socks5] ${tail.length} bytes piggy-backed with CONNECT, unshifting\n`)
+    socket.unshift(tail)
+  }
 
   if (isAIHostname(hostname) && port === 443) {
     process.stderr.write(`[socks5] intercept ${hostname}:${port}\n`)
@@ -153,32 +165,53 @@ function interceptTLS(
   adapter: StorageAdapter,
   openrouterKey: string
 ): void {
-  // Wrap the client socket in a TLS server — present our fake cert for the hostname
+  // Use tls.createServer + socket injection — more robust than tls.TLSSocket wrapping.
+  // The server properly handles socket resume/pause and handshake timing.
   const sniCallback = makeSNICallback(ca)
-  const tlsSocket = new tls.TLSSocket(clientSocket, {
-    isServer: true,
+
+  const tlsServer = tls.createServer({
     SNICallback: sniCallback,
+    ALPNProtocols: ['http/1.1'],
   })
 
-  let buf = Buffer.alloc(0)
-  let headersParsed = false
+  tlsServer.on('secureConnection', (tlsSocket: tls.TLSSocket) => {
+    process.stderr.write(`[socks5] TLS ok ${hostname} proto=${tlsSocket.getProtocol()} alpn=${tlsSocket.alpnProtocol ?? 'none'}\n`)
 
-  tlsSocket.on('data', (chunk: Buffer) => {
-    buf = Buffer.concat([buf, chunk])
-    if (headersParsed) return
+    let buf = Buffer.alloc(0)
+    let headersParsed = false
+    let firstChunk = true
 
-    const headerEnd = buf.indexOf('\r\n\r\n')
-    if (headerEnd === -1) return  // need more data
+    tlsSocket.on('data', (chunk: Buffer) => {
+      if (firstChunk) {
+        firstChunk = false
+        const preview = chunk.slice(0, 20).toString('hex')
+        const text = chunk.slice(0, 8).toString('ascii').replace(/\r\n/g, '\\r\\n')
+        process.stderr.write(`[socks5] HTTP data ${hostname}: ${chunk.length}b first="${text}" hex=${preview}\n`)
+      }
+      buf = Buffer.concat([buf, chunk])
+      if (headersParsed) return
 
-    headersParsed = true
-    const headerStr = buf.slice(0, headerEnd).toString('utf-8')
-    const body = buf.slice(headerEnd + 4)
-    handleDecryptedRequest(hostname, headerStr, body, tlsSocket, adapter, openrouterKey)
+      const headerEnd = buf.indexOf('\r\n\r\n')
+      if (headerEnd === -1) return
+
+      headersParsed = true
+      const headerStr = buf.slice(0, headerEnd).toString('utf-8')
+      const body = buf.slice(headerEnd + 4)
+      handleDecryptedRequest(hostname, headerStr, body, tlsSocket, adapter, openrouterKey)
+    })
+
+    tlsSocket.on('error', (err) => {
+      process.stderr.write(`[socks5] TLS error for ${hostname}: ${err.message}\n`)
+    })
   })
 
-  tlsSocket.on('error', (err) => {
-    process.stderr.write(`[socks5] TLS error for ${hostname}: ${err.message}\n`)
+  tlsServer.on('tlsClientError', (err) => {
+    process.stderr.write(`[socks5] TLS client error ${hostname}: ${err.message}\n`)
   })
+
+  // Inject the raw socket — the TLS server handles it from here
+  tlsServer.emit('connection', clientSocket)
+  clientSocket.resume()
 }
 
 async function handleDecryptedRequest(
@@ -239,7 +272,14 @@ async function handleDecryptedRequest(
   }
 }
 
-/** Forward to real upstream using real hostname (bypasses fake IP routes). */
+import { resolveRealDirect } from './dns-resolver.js'
+
+const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true'
+
+/**
+ * Forward to real upstream.
+ * In TUN mode, resolve via 8.8.8.8 directly to bypass fake DNS and avoid loop.
+ */
 async function forwardToUpstream(
   method: string,
   hostname: string,
@@ -247,10 +287,20 @@ async function forwardToUpstream(
   headers: Record<string, string>,
   body: Buffer
 ): Promise<Response> {
-  // Connect using hostname string — real DNS resolves to real IP, NOT in 198.18.0.0/15
-  return fetch(`https://${hostname}${path}`, {
+  let url: string
+  let hostHeader = hostname
+
+  if (TUN_MODE) {
+    // Use real IP (bypasses /etc/resolver/ fake DNS) with original Host header
+    const ip = await resolveRealDirect(hostname).catch(() => hostname)
+    url = `https://${ip}${path}`
+  } else {
+    url = `https://${hostname}${path}`
+  }
+
+  return fetch(url, {
     method,
-    headers: { ...headers, host: hostname },
+    headers: { ...headers, host: hostHeader },
     body: body.length > 0 ? body : undefined,
     signal: AbortSignal.timeout(30_000),
   })

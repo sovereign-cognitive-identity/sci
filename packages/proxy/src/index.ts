@@ -15,6 +15,7 @@
  *   ANTHROPIC_BASE_URL=http://localhost:3001   (Claude Code)
  *   OPENAI_BASE_URL=http://localhost:3001      (Cursor, Copilot, etc.)
  */
+import { execSync } from 'child_process'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { createStorageAdapter } from '@sci/core'
@@ -26,7 +27,7 @@ import { attachConnectHandler } from './server-connect.js'
 import { startWatchdog } from './watchdog.js'
 import { startSOCKS5Server } from './socks5.js'
 import { startDNSServer } from './dns-server.js'
-import { startSingBox, waitForInterface, addFakeIPRoute } from './tun.js'
+import { startTUNWithGuard } from './tun.js'
 import { warmFakeIPs } from './fake-ip.js'
 
 const PORT = parseInt(process.env['SCI_PROXY_PORT'] ?? '3001')
@@ -112,17 +113,16 @@ if (TUN_MODE) {
   // Start SOCKS5 server (sing-box forwards intercepted connections here)
   startSOCKS5Server(adapter, OPENROUTER_KEY)
 
-  // Start sing-box (creates utun9, intercepts traffic via TLS SNI)
-  startSingBox()
-
-  // Wait for utun9 to appear, then add the fake IP route
+  // Start sing-box + route + guard (includes stale recovery, recovery script, signal handlers)
   try {
-    await waitForInterface(5000)
-    addFakeIPRoute()
-    console.log(`\n✓ TUN interceptor active. All AI traffic is now anonymized.\n`)
+    await startTUNWithGuard(adapter)
+    console.log(`\n✓ TUN interceptor active. All AI traffic is now anonymized.`)
+    console.log(`  Recovery: bash ~/.sci/recover.sh (if anything goes wrong)\n`)
   } catch (err) {
-    console.error(`[tun] Failed to set up route: ${err}`)
-    console.error('  Run manually: sudo route add -net 198.18.0.0/15 172.19.0.1')
+    console.error(`[tun] Failed to start TUN: ${err}`)
+    console.error('  Cleaning up...')
+    try { execSync(`bash ~/.sci/recover.sh 2>/dev/null || true`, { stdio: 'pipe' }) } catch { /* ignore */ }
+    process.exit(1)
   }
 
 } else if (VPN_MODE) {

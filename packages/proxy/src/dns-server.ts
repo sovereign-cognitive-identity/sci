@@ -74,6 +74,22 @@ function buildAResponse(query: Buffer, txid: number, hostname: string, ip: strin
   return response.slice(0, off)
 }
 
+/** Build a DNS NOERROR response with no answers (suppresses AAAA without error). */
+function buildEmptyResponse(txid: number, query: Buffer): Buffer {
+  const { nextOffset: questionEnd } = parseQueryName(query, 12)
+  const questionSection = query.slice(12, questionEnd + 4)
+  const response = Buffer.allocUnsafe(12 + questionSection.length)
+  let off = 0
+  response.writeUInt16BE(txid, off); off += 2
+  response.writeUInt16BE(0x8180, off); off += 2  // QR=1, AA=1, RD=1, RA=1, RCODE=0
+  response.writeUInt16BE(1, off); off += 2       // QDCOUNT=1
+  response.writeUInt16BE(0, off); off += 2       // ANCOUNT=0
+  response.writeUInt16BE(0, off); off += 2       // NSCOUNT=0
+  response.writeUInt16BE(0, off); off += 2       // ARCOUNT=0
+  questionSection.copy(response, off)
+  return response
+}
+
 /** Build a DNS NXDOMAIN response (for failed forwards). */
 function buildNXDomain(txid: number): Buffer {
   const buf = Buffer.allocUnsafe(12)
@@ -109,11 +125,24 @@ export function startDNSServer(): dgram.Socket {
       return
     }
 
+    const QTYPE_A    = 1
+    const QTYPE_AAAA = 28
+
     if (isAIHostname(name)) {
-      const fakeIP = assignFakeIP(name)
-      process.stderr.write(`[dns] ${name} → ${fakeIP} (fake)\n`)
-      const response = buildAResponse(msg, txid, name, fakeIP)
-      server.send(response, rinfo.port, rinfo.address)
+      if (qtype === QTYPE_A) {
+        // Return fake IPv4 address
+        const fakeIP = assignFakeIP(name)
+        process.stderr.write(`[dns] ${name} → ${fakeIP} (fake A)\n`)
+        const response = buildAResponse(msg, txid, name, fakeIP)
+        server.send(response, rinfo.port, rinfo.address)
+      } else if (qtype === QTYPE_AAAA) {
+        // Suppress IPv6 — force client to use our fake IPv4 address.
+        // Return NOERROR with no answers (not NXDOMAIN, so client falls back to A).
+        process.stderr.write(`[dns] ${name} AAAA suppressed\n`)
+        server.send(buildEmptyResponse(txid, msg), rinfo.port, rinfo.address)
+      } else {
+        forwardToRealDNS(msg, txid, rinfo, server)
+      }
     } else {
       forwardToRealDNS(msg, txid, rinfo, server)
     }

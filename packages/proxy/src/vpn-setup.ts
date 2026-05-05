@@ -34,6 +34,7 @@ import {
 } from './tun.js'
 import { FAKE_IP_CIDR, AI_HOSTNAMES } from './fake-ip.js'
 import { SOCKS5_PORT } from './socks5.js'
+import { installCleanupHelper, CLEANUP_HELPER, RECOVER_SCRIPT } from './tun-guard.js'
 
 // ── Install ───────────────────────────────────────────────────────────────────
 
@@ -50,14 +51,24 @@ export async function installVPN(): Promise<void> {
   }
   console.log(`✓  (${singboxPath})`)
 
-  // Step 2: Generate CA cert
-  process.stdout.write('  [2/4] Generating CA certificate... ')
+  // Step 2: Install privileged cleanup helper + sudoers rule
+  process.stdout.write('  [2/4] Installing cleanup helper + sudoers rule... ')
+  try {
+    installCleanupHelper(FAKE_IP_CIDR, RESOLVER_DOMAINS)
+    console.log('✓')
+  } catch (err) {
+    console.log(`⚠  ${err}`)
+    console.log(`  (continuing — recovery will still work via bash ${RECOVER_SCRIPT})`)
+  }
+
+  // Step 3: Generate CA cert
+  process.stdout.write('  [3/4] Generating CA certificate... ')
   ensureCACert()
   const certPath = getCACertPath()
   console.log('✓')
 
-  // Step 3: Write /etc/resolver entries (requires sudo)
-  process.stdout.write('  [3/4] Writing DNS resolver entries... ')
+  // Step 4: Write /etc/resolver entries (requires sudo)
+  process.stdout.write('  [4/4] Writing DNS resolver entries... ')
   try {
     writeResolverEntries()
     console.log('✓')
@@ -68,8 +79,8 @@ export async function installVPN(): Promise<void> {
     process.exit(1)
   }
 
-  // Step 4: Trust CA cert in system keychain (requires sudo)
-  process.stdout.write('  [4/4] Trusting CA cert in system keychain... ')
+  // (CA cert trust now happens separately)
+  process.stdout.write('  [+]  Trusting CA cert in system keychain... ')
   try {
     execSync(
       `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ${certPath}`,
