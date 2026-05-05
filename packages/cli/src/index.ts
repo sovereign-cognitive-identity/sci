@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import pg from 'pg'
 import { runImport } from './import.js'
 import { drainPools, registerAgent, reader, writer } from '@sci/core'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { runBackup, runRestore } from './backup.js'
 import type { AgentTier } from '@sci/core'
 import { fileURLToPath } from 'url'
@@ -159,6 +160,96 @@ program
 
     await drainPools()
     process.exit(0)
+  })
+
+// ── sci vpn ───────────────────────────────────────────────────────────────────
+
+const vpn = program.command('vpn').description('Manage the Sci VPN (transparent AI traffic proxy)')
+
+vpn
+  .command('install')
+  .description('Install Sci VPN — intercepts ALL AI API traffic system-wide (requires admin)')
+  .action(async () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const vpnSetup: any = await import(resolve(__dirname, '../../proxy/dist/vpn-setup.js'))
+      const { installVPN } = vpnSetup as { installVPN: () => Promise<void> }
+      await installVPN()
+    } catch (err) {
+      console.error('Install failed:', err instanceof Error ? err.message : String(err))
+      await drainPools(); process.exit(1)
+    }
+    await drainPools(); process.exit(0)
+  })
+
+vpn
+  .command('uninstall')
+  .description('Uninstall Sci VPN — restore normal AI API routing')
+  .action(async () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { uninstallVPN } = (await import(resolve(__dirname, '../../proxy/dist/vpn-setup.js'))) as any
+      await uninstallVPN()
+    } catch (err) {
+      console.error('Uninstall failed:', err instanceof Error ? err.message : String(err))
+      await drainPools(); process.exit(1)
+    }
+    await drainPools(); process.exit(0)
+  })
+
+vpn
+  .command('status')
+  .description('Show VPN status')
+  .action(async () => {
+    try {
+      const { readFileSync } = await import('fs')
+      const hosts = readFileSync('/etc/hosts', 'utf-8')
+      const active = hosts.includes('# BEGIN sci-vpn')
+      const proxyUp = await fetch('http://localhost:3001/health').then(() => true).catch(() => false)
+      console.log(`\nSci VPN Status`)
+      console.log(`  /etc/hosts redirect: ${active ? '✓ active' : '✗ not installed'}`)
+      console.log(`  Proxy running:       ${proxyUp ? '✓ yes (port 3001)' : '✗ no'}`)
+      console.log(`  Proxy log:           ~/Vault/sci/proxy.log\n`)
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+    }
+    await drainPools(); process.exit(0)
+  })
+
+// ── sci proxy ─────────────────────────────────────────────────────────────────
+
+program
+  .command('proxy')
+  .description('Start the Sci proxy server (anonymizes all AI API calls)')
+  .option('--port <n>', 'Port to listen on', '3001')
+  .option('--routing <mode>', 'Routing mode: passthrough | smart', 'passthrough')
+  .action(async (opts: { port: string; routing: string }) => {
+    const { spawn } = await import('child_process')
+    const serverPath = resolve(__dirname, '../../proxy/dist/index.js')
+
+    if (!existsSync(serverPath)) {
+      console.error('Proxy server not built. Run: npm run build -w packages/proxy')
+      await drainPools(); process.exit(1)
+    }
+
+    const openrouterKey = process.env['SCI_OPENROUTER_KEY']
+    if (!openrouterKey) {
+      console.error('SCI_OPENROUTER_KEY is required for the proxy')
+      await drainPools(); process.exit(1)
+    }
+
+    console.log(`Starting Sci proxy on port ${opts.port}...`)
+    const child = spawn('node', [serverPath], {
+      env: {
+        ...process.env,
+        SCI_PROXY_PORT: opts.port,
+        SCI_ROUTING_MODE: opts.routing,
+      },
+      stdio: 'inherit',
+    })
+    child.on('exit', (code) => process.exit(code ?? 0))
+
+    await drainPools()
   })
 
 // ── sci backup ────────────────────────────────────────────────────────────────

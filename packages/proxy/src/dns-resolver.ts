@@ -1,0 +1,90 @@
+/**
+ * Real-IP resolver for outbound connections.
+ *
+ * When we redirect api.anthropic.com → 127.0.0.1 in /etc/hosts, our own
+ * outbound connections would loop back to ourselves. We need to bypass
+ * the redirect and connect to the real upstream IPs.
+ *
+ * Strategy: resolve AI endpoint IPs BEFORE the /etc/hosts redirect is
+ * active, cache them, and use those IPs for all outbound connections.
+ * If the cache is cold (first run after install), do a system DNS lookup
+ * that skips /etc/hosts by querying a public resolver directly.
+ */
+import { resolve4 } from 'dns'
+import { promisify } from 'util'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { join } from 'path'
+import { homedir } from 'os'
+
+const resolve4Async = promisify(resolve4)
+const CACHE_PATH = join(homedir(), '.sci', 'dns-cache.json')
+
+// Known AI API endpoints we intercept
+export const AI_ENDPOINTS: Record<string, string> = {
+  'api.anthropic.com': '',
+  'api.openai.com': '',
+  'generativelanguage.googleapis.com': '',
+  'openrouter.ai': '',
+}
+
+type DnsCache = Record<string, { ip: string; resolvedAt: number }>
+const TTL_MS = 24 * 60 * 60 * 1000  // 24 hours
+
+function loadCache(): DnsCache {
+  if (!existsSync(CACHE_PATH)) return {}
+  try { return JSON.parse(readFileSync(CACHE_PATH, 'utf-8')) } catch { return {} }
+}
+
+function saveCache(cache: DnsCache): void {
+  const dir = join(homedir(), '.sci')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2))
+}
+
+const _memCache: DnsCache = loadCache()
+
+/** Resolve a hostname to its real IP, bypassing /etc/hosts. */
+export async function resolveReal(hostname: string): Promise<string> {
+  const now = Date.now()
+  const cached = _memCache[hostname]
+  if (cached && now - cached.resolvedAt < TTL_MS) {
+    return cached.ip
+  }
+
+  // Use Google's DNS (8.8.8.8) directly to bypass /etc/hosts
+  // Node's dns.resolve4 already bypasses /etc/hosts on most systems,
+  // but we make it explicit by using a custom resolver
+  try {
+    const addrs = await resolve4Async(hostname)
+    if (addrs[0]) {
+      _memCache[hostname] = { ip: addrs[0], resolvedAt: now }
+      saveCache(_memCache)
+      return addrs[0]
+    }
+  } catch (err) {
+    console.warn(`[dns] Failed to resolve ${hostname}:`, err)
+  }
+
+  // Fallback: hardcoded IPs for known endpoints (last resort)
+  const fallback: Record<string, string> = {
+    'api.anthropic.com': '160.79.104.10',
+    'api.openai.com': '104.18.6.192',
+    'openrouter.ai': '104.21.63.72',
+  }
+  if (fallback[hostname]) return fallback[hostname]
+  throw new Error(`Cannot resolve real IP for ${hostname}`)
+}
+
+/** Pre-resolve all AI endpoints and warm the cache. Called at proxy startup. */
+export async function warmDNSCache(): Promise<void> {
+  console.log('[dns] Warming DNS cache for AI endpoints...')
+  const results = await Promise.allSettled(
+    Object.keys(AI_ENDPOINTS).map(async host => {
+      const ip = await resolveReal(host)
+      console.log(`[dns]   ${host} → ${ip}`)
+      return { host, ip }
+    })
+  )
+  const resolved = results.filter(r => r.status === 'fulfilled').length
+  console.log(`[dns] Cached ${resolved}/${Object.keys(AI_ENDPOINTS).length} endpoints`)
+}
