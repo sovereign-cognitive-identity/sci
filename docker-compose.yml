@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: sci
+      POSTGRES_USER: sci_admin
+      POSTGRES_PASSWORD: sci_local
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - sci_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sci_admin -d sci"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sci_data:

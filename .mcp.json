@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "sci": {
+      "command": "node",
+      "args": ["packages/mcp/dist/index.js"],
+      "env": {
+        "SCI_DB_READER_URL": "postgresql://sci_reader:sci_reader_local@localhost:5432/sci",
+        "SCI_DB_WRITER_URL": "postgresql://sci_writer:sci_writer_local@localhost:5432/sci",
+        "SCI_EMBED_MODEL": "nomic-embed-text-v1.5"
+      }
+    }
+  }
+}
