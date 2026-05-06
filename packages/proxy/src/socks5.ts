@@ -23,7 +23,8 @@ import { isAIHostname, lookupByFakeIP } from './fake-ip.js'
 import { handleAnthropicMessages } from './handlers/anthropic.js'
 import { handleOpenAIChat } from './handlers/openai.js'
 import { makeHonoContext } from './connect-context.js'
-import { resolveRealDirect } from './dns-resolver.js'
+import { resolveRealDirect, lookupHostnameByRealIP } from './dns-resolver.js'
+import { getPhysicalInterfaceIP } from './physical-iface.js'
 
 export const SOCKS5_PORT = parseInt(process.env['SCI_SOCKS5_PORT'] ?? '1080')
 
@@ -120,9 +121,14 @@ function parseConnect(
     hostname = `${req[4]}.${req[5]}.${req[6]}.${req[7]}`
     port = req.readUInt16BE(8)
     headerEnd = 10
-    // Reverse-map fake IP to real hostname if possible
-    const mapped = lookupByFakeIP(hostname)
-    if (mapped) hostname = mapped
+    // Reverse-map: try fake IP first, then real IP (caught by TUN route for
+    // clients that bypass /etc/hosts — Chromium with internal DNS cache, etc.)
+    const fakeMapped = lookupByFakeIP(hostname)
+    if (fakeMapped) hostname = fakeMapped
+    else {
+      const realMapped = lookupHostnameByRealIP(hostname)
+      if (realMapped) hostname = realMapped
+    }
   } else if (atyp === ATYP_IPV6) {
     const ipv6 = Array.from({ length: 8 }, (_, i) =>
       req.readUInt16BE(4 + i * 2).toString(16)
@@ -311,11 +317,13 @@ async function forwardViaRealIP(
   body: Buffer
 ): Promise<Response> {
   const realIP = await resolveRealDirect(hostname).catch(() => hostname)
+  const localAddress = getPhysicalInterfaceIP() ?? undefined
 
   return new Promise((resolve, reject) => {
     const req = https.request({
       host: realIP,           // TCP: connect to real IP (bypasses /etc/hosts)
       servername: hostname,   // TLS SNI: validate cert against original hostname
+      localAddress,           // Source IP: bypasses TUN route for outbound
       port: 443,
       path,
       method,
@@ -330,7 +338,10 @@ async function forwardViaRealIP(
         for (const [k, v] of Object.entries(res.headers)) {
           if (v !== undefined) respHeaders[k] = Array.isArray(v) ? v.join(', ') : v
         }
-        resolve(new Response(buf, { status: res.statusCode ?? 502, headers: respHeaders }))
+        const status = res.statusCode ?? 502
+        // Response constructor rejects body for null-body status codes (204/205/304)
+        const body = (status === 204 || status === 205 || status === 304 || buf.length === 0) ? null : buf
+        resolve(new Response(body, { status, headers: respHeaders }))
       })
       res.on('error', reject)
     })
@@ -364,7 +375,10 @@ async function writeResponseToSocket(
 // ── Direct passthrough (non-AI endpoints) ─────────────────────────────────────
 
 function directTunnel(clientSocket: net.Socket, hostname: string, port: number): void {
-  const upstream = net.connect(port, hostname, () => {
+  // localAddress = en0 IP — bypasses TUN routes for our outbound connection,
+  // so passthrough to AI-routed IPs (e.g. claude.ai's CDN) doesn't loop.
+  const localAddress = TUN_MODE ? (getPhysicalInterfaceIP() ?? undefined) : undefined
+  const upstream = net.connect({ port, host: hostname, localAddress }, () => {
     clientSocket.pipe(upstream)
     upstream.pipe(clientSocket)
   })

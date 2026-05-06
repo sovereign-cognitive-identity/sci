@@ -15,6 +15,7 @@
 import https from 'https'
 import type { IncomingMessage } from 'http'
 import { resolveReal, resolveRealDirect } from './dns-resolver.js'
+import { getPhysicalInterfaceIP } from './physical-iface.js'
 
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com'
 const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true'
@@ -25,6 +26,11 @@ const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true'
  * but we need TLS to validate against the HOSTNAME (not the IP).
  * fetch() can't do this — use https.request() with separate host/servername.
  *
+ * Plus: bind to the physical interface's IP (localAddress) so the kernel
+ * routes via en0 even when the destination IP has a more-specific route
+ * pointing at utun5 (this is what lets us route real AI IPs through the TUN
+ * without our own outbound looping back through it).
+ *
  * Returns an IncomingMessage (streaming) so the caller can parse SSE.
  */
 async function requestViaRealIP(
@@ -33,12 +39,14 @@ async function requestViaRealIP(
   originalHeaders: Record<string, string>
 ): Promise<IncomingMessage> {
   const realIP = await resolveRealDirect(ANTHROPIC_HOSTNAME)
+  const localAddress = TUN_MODE ? (getPhysicalInterfaceIP() ?? undefined) : undefined
 
   return new Promise((resolve, reject) => {
     const bodyStr = JSON.stringify(body)
     const req = https.request({
-      host: realIP,              // TCP: connect to real IP (bypasses /etc/hosts)
+      host: realIP,                    // TCP: connect to real IP (bypasses /etc/hosts)
       servername: ANTHROPIC_HOSTNAME,  // TLS SNI: validate cert against hostname
+      localAddress,                    // Source IP: bypasses TUN route for outbound
       port: 443,
       path,
       method: 'POST',

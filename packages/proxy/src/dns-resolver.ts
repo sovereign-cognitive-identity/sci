@@ -29,10 +29,27 @@ const resolve4Direct = promisify(_directResolver.resolve4.bind(_directResolver))
  * /etc/resolver/ or /etc/hosts overrides. Safe to call from inside the
  * TUN-mode proxy where api.anthropic.com would otherwise resolve to a fake IP.
  */
+// Reverse lookup: real IP → hostname. Populated as resolveRealDirect succeeds.
+// Lets us recognize real AI IPs when they arrive at the SOCKS5 server (e.g.
+// because Chromium has them cached internally and bypasses /etc/hosts).
+const _realIPToHost = new Map<string, string>()
+
+export function lookupHostnameByRealIP(ip: string): string | undefined {
+  return _realIPToHost.get(ip)
+}
+
+/** Returns all known real IPs (for routing them through the TUN). */
+export function listKnownRealIPs(): Array<{ ip: string; hostname: string }> {
+  return [..._realIPToHost.entries()].map(([ip, hostname]) => ({ ip, hostname }))
+}
+
 export async function resolveRealDirect(hostname: string): Promise<string> {
   try {
     const addrs = await resolve4Direct(hostname)
-    if (addrs[0]) return addrs[0]
+    if (addrs[0]) {
+      _realIPToHost.set(addrs[0], hostname)
+      return addrs[0]
+    }
   } catch (err) {
     process.stderr.write(`[dns] direct resolve failed for ${hostname}: ${err}\n`)
   }
@@ -42,8 +59,29 @@ export async function resolveRealDirect(hostname: string): Promise<string> {
     'api.openai.com': '104.18.6.192',
     'openrouter.ai': '104.21.63.72',
   }
-  if (fallback[hostname]) return fallback[hostname]
+  if (fallback[hostname]) {
+    _realIPToHost.set(fallback[hostname], hostname)
+    return fallback[hostname]
+  }
   throw new Error(`Cannot resolve real IP for ${hostname}`)
+}
+
+/**
+ * Pre-resolve all known AI hostnames so the real-IP-to-hostname map is
+ * populated at startup. Returns the resolved real IPs for routing.
+ */
+export async function warmRealIPCache(hostnames: readonly string[]): Promise<Array<{ hostname: string; ip: string }>> {
+  const results: Array<{ hostname: string; ip: string }> = []
+  for (const h of hostnames) {
+    try {
+      const ip = await resolveRealDirect(h)
+      results.push({ hostname: h, ip })
+      process.stderr.write(`[dns] real IP cached: ${h} → ${ip}\n`)
+    } catch (err) {
+      process.stderr.write(`[dns] real IP resolution failed for ${h}: ${err}\n`)
+    }
+  }
+  return results
 }
 const CACHE_PATH = join(homedir(), '.sci', 'dns-cache.json')
 

@@ -201,6 +201,47 @@ export function removeFakeIPRoute(): void {
   } catch { /* ignore */ }
 }
 
+/**
+ * Add a /16 route for a real AI endpoint IP through the TUN.
+ *
+ * /16 (not /32) is required because macOS routes /32 host routes through
+ * the gateway's interface (en0) instead of utun5 — there's a quirk where
+ * larger network routes resolve their gateway via the TUN but smaller ones
+ * resolve via the default route. /16 is the smallest mask that works.
+ *
+ * The /16 catches more than just the AI endpoint, but that's fine — sing-box
+ * routes everything from the TUN to our SOCKS5, and our SOCKS5 only intercepts
+ * known AI hostnames (others go through directTunnel passthrough).
+ */
+export function addRealIPRoute(realIP: string): void {
+  // Compute /16 prefix from real IP
+  const parts = realIP.split('.').map(Number)
+  if (parts.length !== 4 || parts.some(isNaN)) return
+  const cidr16 = `${parts[0]}.${parts[1]}.0.0/16`
+
+  try {
+    execSync(`sudo /sbin/route delete -net ${cidr16} 2>/dev/null || true`, { stdio: 'pipe' })
+    execSync(`sudo /sbin/route add -net ${cidr16} ${TUN_ADDR}`, { stdio: 'pipe' })
+    process.stderr.write(`[tun] Real IP route: ${cidr16} → ${TUN_ADDR} (${TUN_INTERFACE}) [for ${realIP}]\n`)
+  } catch (err) {
+    process.stderr.write(`[tun] Failed to add real IP route ${cidr16}: ${err}\n`)
+  }
+}
+
+export function removeRealIPRoute(realIP: string): void {
+  const parts = realIP.split('.').map(Number)
+  if (parts.length !== 4 || parts.some(isNaN)) return
+  const cidr16 = `${parts[0]}.${parts[1]}.0.0/16`
+  try {
+    execSync(`sudo /sbin/route delete -net ${cidr16} 2>/dev/null || true`, { stdio: 'pipe' })
+    process.stderr.write(`[tun] Real IP route removed: ${cidr16}\n`)
+  } catch { /* ignore */ }
+}
+
+const _addedRealIPRoutes = new Set<string>()
+export function trackRealIPRoute(realIP: string): void { _addedRealIPRoutes.add(realIP) }
+export function listRealIPRoutes(): string[] { return [..._addedRealIPRoutes] }
+
 /** Wait for utun9 to appear (sing-box creates it asynchronously). */
 export async function waitForInterface(timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -334,6 +375,7 @@ export async function startTUNWithGuard(adapter: unknown): Promise<void> {
   registerTUNCleanup(async () => {
     stopSingBox()
     removeFakeIPRoute()
+    for (const ip of listRealIPRoutes()) removeRealIPRoute(ip)
     removeHostsEntries()
     removeResolverEntries()
   })
@@ -352,6 +394,21 @@ export async function startTUNWithGuard(adapter: unknown): Promise<void> {
 
   // Step 7: add fake IP route (requires sudoers rule from vpn install)
   addFakeIPRoute()
+
+  // Step 7b: warm real IP cache (so SOCKS5 can recognize real IPs in CONNECT)
+  // and add real IP routes through TUN for clients (like Chromium) that
+  // bypass our fake DNS and connect directly to real Anthropic IPs
+  try {
+    const { warmRealIPCache } = await import('./dns-resolver.js')
+    const realIPs = await warmRealIPCache(AI_HOSTNAMES)
+    for (const { ip, hostname } of realIPs) {
+      addRealIPRoute(ip)
+      trackRealIPRoute(ip)
+      process.stderr.write(`[tun] Real IP routed: ${ip} (${hostname})\n`)
+    }
+  } catch (err) {
+    process.stderr.write(`[tun] Real IP warm-up failed (non-fatal): ${err}\n`)
+  }
 
   // Step 8: flush DNS so resolver entries take effect immediately
   try {
