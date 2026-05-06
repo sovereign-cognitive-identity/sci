@@ -119,31 +119,25 @@ export function startDNSServer(): dgram.Socket {
     const { name, nextOffset } = parseQueryName(msg, 12)
     const qtype = msg.readUInt16BE(nextOffset)
 
-    // Only handle A record queries (type 1)
-    if (qtype !== 1) {
-      forwardToRealDNS(msg, txid, rinfo, server)
-      return
-    }
-
     const QTYPE_A    = 1
     const QTYPE_AAAA = 28
 
     if (isAIHostname(name)) {
       if (qtype === QTYPE_A) {
-        // Return fake IPv4 address
+        // Return fake IPv4 — routes to our TUN
         const fakeIP = assignFakeIP(name)
         process.stderr.write(`[dns] ${name} → ${fakeIP} (fake A)\n`)
-        const response = buildAResponse(msg, txid, name, fakeIP)
-        server.send(response, rinfo.port, rinfo.address)
+        server.send(buildAResponse(msg, txid, name, fakeIP), rinfo.port, rinfo.address)
       } else if (qtype === QTYPE_AAAA) {
-        // Suppress IPv6 — force client to use our fake IPv4 address.
-        // Return NOERROR with no answers (not NXDOMAIN, so client falls back to A).
+        // Suppress AAAA — return NOERROR with no answers so client falls back to A.
+        // Without this, clients prefer IPv6 and bypass our IPv4 fake IP route entirely.
         process.stderr.write(`[dns] ${name} AAAA suppressed\n`)
         server.send(buildEmptyResponse(txid, msg), rinfo.port, rinfo.address)
       } else {
         forwardToRealDNS(msg, txid, rinfo, server)
       }
     } else {
+      // Non-AI domain — forward everything to real DNS
       forwardToRealDNS(msg, txid, rinfo, server)
     }
   })

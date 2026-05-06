@@ -12,6 +12,8 @@
  * You lose multi-model routing — everything stays on the Claude model requested.
  */
 
+import https from 'https'
+import type { IncomingMessage } from 'http'
 import { resolveReal, resolveRealDirect } from './dns-resolver.js'
 
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com'
@@ -19,23 +21,39 @@ const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true'
 const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true'
 
 /**
- * In VPN mode: /etc/hosts redirects api.anthropic.com → 127.0.0.1,
- * so we use resolveReal (dns.resolve4, bypasses /etc/hosts) to get real IP.
+ * In VPN/TUN mode we must connect to the REAL IP to avoid routing loops,
+ * but we need TLS to validate against the HOSTNAME (not the IP).
+ * fetch() can't do this — use https.request() with separate host/servername.
  *
- * In TUN mode: /etc/resolver/anthropic.com routes DNS to our fake server,
- * so we use resolveRealDirect (queries 8.8.8.8, bypasses /etc/resolver/)
- * to get real IP — avoiding the routing loop through utun.
+ * Returns an IncomingMessage (streaming) so the caller can parse SSE.
  */
-async function getUpstreamUrl(path: string): Promise<string> {
-  if (TUN_MODE) {
-    const ip = await resolveRealDirect(ANTHROPIC_HOSTNAME).catch(() => ANTHROPIC_HOSTNAME)
-    return `https://${ip}${path}`
-  }
-  if (VPN_MODE) {
-    const ip = await resolveReal(ANTHROPIC_HOSTNAME).catch(() => ANTHROPIC_HOSTNAME)
-    return `https://${ip}${path}`
-  }
-  return `https://${ANTHROPIC_HOSTNAME}${path}`
+async function requestViaRealIP(
+  path: string,
+  body: unknown,
+  originalHeaders: Record<string, string>
+): Promise<IncomingMessage> {
+  const realIP = await resolveRealDirect(ANTHROPIC_HOSTNAME)
+
+  return new Promise((resolve, reject) => {
+    const bodyStr = JSON.stringify(body)
+    const req = https.request({
+      host: realIP,              // TCP: connect to real IP (bypasses /etc/hosts)
+      servername: ANTHROPIC_HOSTNAME,  // TLS SNI: validate cert against hostname
+      port: 443,
+      path,
+      method: 'POST',
+      headers: {
+        ...originalHeaders,
+        'content-type': 'application/json',
+        'host': ANTHROPIC_HOSTNAME,
+        'content-length': Buffer.byteLength(bodyStr),
+      },
+      rejectUnauthorized: true,
+    }, resolve)
+    req.on('error', reject)
+    req.write(bodyStr)
+    req.end()
+  })
 }
 
 /** Async generator of text deltas from a direct Anthropic SSE stream. */
@@ -44,35 +62,48 @@ export async function* streamFromAnthropic(
   body: unknown,
   originalHeaders: Record<string, string>
 ): AsyncGenerator<string> {
-  const upstreamUrl = await getUpstreamUrl(path)
+  let stream: AsyncIterable<Buffer>
 
-  // Forward with the original auth — subscription usage preserved
-  const response = await fetch(upstreamUrl, {
-    method: 'POST',
-    headers: {
-      ...originalHeaders,
-      'content-type': 'application/json',
-      'host': ANTHROPIC_HOSTNAME,  // always send original hostname, not IP
-    },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`Anthropic ${response.status}: ${err}`)
+  if (TUN_MODE || VPN_MODE) {
+    // Must use real IP + SNI to avoid routing loop — fetch() can't do this
+    const res = await requestViaRealIP(path, body, originalHeaders)
+    if ((res.statusCode ?? 0) >= 400) {
+      const chunks: Buffer[] = []
+      for await (const c of res) chunks.push(c as Buffer)
+      throw new Error(`Anthropic ${res.statusCode}: ${Buffer.concat(chunks).toString()}`)
+    }
+    stream = res
+  } else {
+    // Normal mode: fetch works fine, no routing concern
+    const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
+      method: 'POST',
+      headers: { ...originalHeaders, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      const err = await response.text()
+      throw new Error(`Anthropic ${response.status}: ${err}`)
+    }
+    if (!response.body) throw new Error('No response body from Anthropic')
+    // Convert ReadableStream to AsyncIterable
+    const reader = response.body.getReader()
+    stream = {
+      [Symbol.asyncIterator]() {
+        return {
+          async next() {
+            const { done, value } = await reader.read()
+            return done ? { done: true, value: undefined } : { done: false, value: Buffer.from(value) }
+          }
+        }
+      }
+    }
   }
 
-  if (!response.body) throw new Error('No response body from Anthropic')
-
-  const reader = response.body.getReader()
+  // Parse SSE stream
   const decoder = new TextDecoder()
   let buf = ''
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    buf += decoder.decode(value, { stream: true })
+  for await (const chunk of stream) {
+    buf += decoder.decode(chunk as Buffer, { stream: true })
     const lines = buf.split('\n')
     buf = lines.pop() ?? ''
 
@@ -83,15 +114,14 @@ export async function* streamFromAnthropic(
         const json = trimmed.slice(6)
         if (json === '[DONE]') return
         try {
-          const chunk = JSON.parse(json) as {
+          const chunkData = JSON.parse(json) as {
             type?: string
             delta?: { type?: string; text?: string }
           }
-          // Anthropic SSE: content_block_delta with text_delta
-          if (chunk.type === 'content_block_delta' &&
-              chunk.delta?.type === 'text_delta' &&
-              chunk.delta.text) {
-            yield chunk.delta.text
+          if (chunkData.type === 'content_block_delta' &&
+              chunkData.delta?.type === 'text_delta' &&
+              chunkData.delta.text) {
+            yield chunkData.delta.text
           }
         } catch { /* skip malformed */ }
       }

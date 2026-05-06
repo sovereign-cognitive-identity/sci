@@ -23,6 +23,7 @@ import { isAIHostname, lookupByFakeIP } from './fake-ip.js'
 import { handleAnthropicMessages } from './handlers/anthropic.js'
 import { handleOpenAIChat } from './handlers/openai.js'
 import { makeHonoContext } from './connect-context.js'
+import { resolveRealDirect } from './dns-resolver.js'
 
 export const SOCKS5_PORT = parseInt(process.env['SCI_SOCKS5_PORT'] ?? '1080')
 
@@ -184,9 +185,9 @@ function interceptTLS(
     tlsSocket.on('data', (chunk: Buffer) => {
       if (firstChunk) {
         firstChunk = false
-        const preview = chunk.slice(0, 20).toString('hex')
-        const text = chunk.slice(0, 8).toString('ascii').replace(/\r\n/g, '\\r\\n')
-        process.stderr.write(`[socks5] HTTP data ${hostname}: ${chunk.length}b first="${text}" hex=${preview}\n`)
+        // Log full request line (up to first \r\n)
+        const requestLine = chunk.toString('utf-8').split('\r\n')[0] ?? ''
+        process.stderr.write(`[socks5] ${hostname} → ${requestLine}\n`)
       }
       buf = Buffer.concat([buf, chunk])
       if (headersParsed) return
@@ -272,37 +273,70 @@ async function handleDecryptedRequest(
   }
 }
 
-import { resolveRealDirect } from './dns-resolver.js'
+
 
 const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true'
 
 /**
  * Forward to real upstream.
- * In TUN mode, resolve via 8.8.8.8 directly to bypass fake DNS and avoid loop.
+ *
+ * In TUN mode: /etc/hosts maps AI hostnames to fake IPs. We must use
+ * resolveRealDirect (8.8.8.8) to get the real IP, then https.request with
+ * host=realIP + servername=hostname so TLS validates against the hostname.
+ * fetch() can't separate TCP host from TLS SNI, so we use https.request.
  */
-async function forwardToUpstream(
+function forwardToUpstream(
   method: string,
   hostname: string,
   path: string,
   headers: Record<string, string>,
   body: Buffer
 ): Promise<Response> {
-  let url: string
-  let hostHeader = hostname
-
   if (TUN_MODE) {
-    // Use real IP (bypasses /etc/resolver/ fake DNS) with original Host header
-    const ip = await resolveRealDirect(hostname).catch(() => hostname)
-    url = `https://${ip}${path}`
-  } else {
-    url = `https://${hostname}${path}`
+    return forwardViaRealIP(method, hostname, path, headers, body)
   }
-
-  return fetch(url, {
+  return fetch(`https://${hostname}${path}`, {
     method,
-    headers: { ...headers, host: hostHeader },
+    headers: { ...headers, host: hostname },
     body: body.length > 0 ? body : undefined,
     signal: AbortSignal.timeout(30_000),
+  })
+}
+
+async function forwardViaRealIP(
+  method: string,
+  hostname: string,
+  path: string,
+  headers: Record<string, string>,
+  body: Buffer
+): Promise<Response> {
+  const realIP = await resolveRealDirect(hostname).catch(() => hostname)
+
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      host: realIP,           // TCP: connect to real IP (bypasses /etc/hosts)
+      servername: hostname,   // TLS SNI: validate cert against original hostname
+      port: 443,
+      path,
+      method,
+      headers: { ...headers, host: hostname },
+      rejectUnauthorized: true,
+    }, async (res) => {
+      const chunks: Buffer[] = []
+      res.on('data', (c: Buffer) => chunks.push(c))
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks)
+        const respHeaders: Record<string, string> = {}
+        for (const [k, v] of Object.entries(res.headers)) {
+          if (v !== undefined) respHeaders[k] = Array.isArray(v) ? v.join(', ') : v
+        }
+        resolve(new Response(buf, { status: res.statusCode ?? 502, headers: respHeaders }))
+      })
+      res.on('error', reject)
+    })
+    req.on('error', reject)
+    if (body.length > 0) req.write(body)
+    req.end()
   })
 }
 

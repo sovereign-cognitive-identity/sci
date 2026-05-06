@@ -284,16 +284,19 @@ export async function startTUNWithGuard(adapter: unknown): Promise<void> {
     removeResolverEntries()
   })
 
-  // Step 4: start sing-box
+  // Step 4: write /etc/resolver entries (ensures they're always present after crash recovery)
+  writeResolverEntries()
+
+  // Step 5: start sing-box
   startSingBox()
 
-  // Step 5: wait for utun interface
+  // Step 6: wait for utun interface
   await waitForInterface(6000)
 
-  // Step 6: add fake IP route (requires sudoers rule from vpn install)
+  // Step 7: add fake IP route (requires sudoers rule from vpn install)
   addFakeIPRoute()
 
-  // Step 7: flush DNS so resolver entries take effect immediately
+  // Step 8: flush DNS so resolver entries take effect immediately
   try {
     execSync('sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder 2>/dev/null || true', { stdio: 'pipe' })
     process.stderr.write('[tun] DNS cache flushed\n')
