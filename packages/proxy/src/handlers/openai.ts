@@ -47,7 +47,10 @@ export async function handleOpenAIChat(
   })
 
   // 2. Inject memory context
-  const messagesWithContext = await injectMemoryContext(anonymizedMessages, adapter)
+  // (OpenRouter handler doesn't currently surface the inspector data — it's
+  // not consumed by Sci-aware UIs through this path. We just take the
+  // updated messages array.)
+  const { messages: messagesWithContext } = await injectMemoryContext(anonymizedMessages, adapter)
 
   // 3. Select model
   const model = selectModel(body.model, originalUserText)

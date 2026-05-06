@@ -173,8 +173,9 @@ app.post('/chat', async (c) => {
   let sseBuffer = ''
   let lastEventName: string | null = null   // tracks `event:` line per SSE record
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  let sciAnonymized: any = null   // payload from `event: sci.anonymized`
-  let sciDeanonymized: any = null // payload from `event: sci.deanonymized`
+  let sciAnonymized: any = null   // payload from `event: sci.anonymized`     → user turn
+  let sciDeanonymized: any = null // payload from `event: sci.deanonymized`   → assistant turn
+  let sciMemory: any = null       // payload from `event: sci.memory`         → assistant turn
   /* eslint-enable @typescript-eslint/no-explicit-any */
   const decoder = new TextDecoder()
 
@@ -199,6 +200,8 @@ app.post('/chat', async (c) => {
                 sciAnonymized = data
               } else if (evName === 'sci.deanonymized') {
                 sciDeanonymized = data
+              } else if (evName === 'sci.memory') {
+                sciMemory = data
               } else if (
                 data.type === 'content_block_delta' &&
                 data.delta?.type === 'text_delta'
@@ -231,13 +234,20 @@ app.post('/chat', async (c) => {
         console.error('[ui] persist user turn failed:', (err as Error).message)
       }
       if (assistantText.trim().length > 0) {
+        const assistantInspector =
+          sciDeanonymized || sciMemory
+            ? {
+                ...(sciDeanonymized ? { deanonymized: sciDeanonymized } : {}),
+                ...(sciMemory       ? { memory: sciMemory }              : {}),
+              }
+            : undefined
         try {
           await appendTurn({
             conversationId,
             role: 'assistant',
             content: assistantText,
             model,
-            inspector: sciDeanonymized ? { deanonymized: sciDeanonymized } : undefined,
+            inspector: assistantInspector,
           })
         } catch (err) {
           console.error('[ui] persist assistant turn failed:', (err as Error).message)

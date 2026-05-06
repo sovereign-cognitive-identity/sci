@@ -126,17 +126,33 @@ function renderTurn(role, content, inspector) {
     bubble.innerHTML = renderMarkdown(content)
   }
   turn.appendChild(bubble)
-  // Inspector panel is rendered inline below the bubble. We always create the
-  // container even if there's no data yet — for streaming user turns the
-  // sci.anonymized event arrives ~simultaneously with the user bubble, so we
-  // attach the data when it lands. Created hidden; opens on click.
+  // We pre-create three inspector slots so events can populate them
+  // independently as they arrive on the SSE stream:
+  //   anonymized   → on user turns only
+  //   memory       → on assistant turns only (recall + injection)
+  //   deanonymized → on assistant turns only (token replacement)
   const inspectorEl = document.createElement('details')
-  inspectorEl.className = 'inspector'
-  inspectorEl.dataset.role = role
+  inspectorEl.className = 'inspector inspector-anonymized'
+  inspectorEl.hidden = true
   turn.appendChild(inspectorEl)
-  if (inspector) populateInspector(inspectorEl, role, inspector)
+
+  const memoryEl = document.createElement('details')
+  memoryEl.className = 'inspector inspector-memory'
+  memoryEl.hidden = true
+  turn.appendChild(memoryEl)
+
+  const deanonEl = document.createElement('details')
+  deanonEl.className = 'inspector inspector-deanonymized'
+  deanonEl.hidden = true
+  turn.appendChild(deanonEl)
+
+  if (inspector) {
+    if (inspector.anonymized)   populateInspector(inspectorEl, 'user',      { anonymized: inspector.anonymized })
+    if (inspector.memory)       populateMemoryInspector(memoryEl, inspector.memory)
+    if (inspector.deanonymized) populateInspector(deanonEl,    'assistant', { deanonymized: inspector.deanonymized })
+  }
   turnsEl.appendChild(turn)
-  return { bubble, inspectorEl }
+  return { bubble, inspectorEl, memoryEl, deanonEl }
 }
 
 /**
@@ -245,6 +261,85 @@ function escapeHtml(s) {
     .replaceAll("'", '&#39;')
 }
 
+/**
+ * Render the memory inspector panel under an assistant turn. Shows the
+ * recall query, the top-N memories returned (with score + type), and
+ * what (if anything) was actually prepended to the system prompt.
+ *
+ * Data shape — `sci.memory` payload from the proxy:
+ *   { reqId, query, results: [{id, type, content, score}],
+ *     injected, contextBlock, approxTokensAdded, config }
+ *
+ * Idempotent — safe to call repeatedly (live stream + reload paths).
+ */
+function populateMemoryInspector(el, mem) {
+  if (!mem) { el.hidden = true; return }
+  el.hidden = false
+  el.innerHTML = ''
+
+  const summary = document.createElement('summary')
+  const n = mem.results?.length ?? 0
+  if (mem.injected && n > 0) {
+    summary.innerHTML = `<span class="inspector-icon">🧠</span> ${n} ${n === 1 ? 'memory' : 'memories'} injected (~${mem.approxTokensAdded} tokens)`
+  } else if (n > 0) {
+    summary.innerHTML = `<span class="inspector-icon">🧠</span> ${n} recalled, none injected`
+  } else {
+    summary.innerHTML = `<span class="inspector-icon">○</span> no relevant memories`
+  }
+  el.appendChild(summary)
+
+  const body = document.createElement('div')
+  body.className = 'inspector-body'
+
+  const queryRow = document.createElement('div')
+  queryRow.className = 'inspector-pair'
+  queryRow.innerHTML = `
+    <div class="inspector-label">Recall query</div>
+    <pre>${escapeHtml(mem.query ?? '')}</pre>
+  `
+  body.appendChild(queryRow)
+
+  if (n > 0) {
+    const table = document.createElement('table')
+    table.className = 'inspector-table'
+    table.innerHTML = `<thead><tr><th>Score</th><th>Type</th><th>Memory</th></tr></thead>`
+    const tbody = document.createElement('tbody')
+    for (const r of mem.results) {
+      const tr = document.createElement('tr')
+      tr.innerHTML = `
+        <td><code>${(r.score ?? 0).toFixed(2)}</code></td>
+        <td><span class="entity-type">${escapeHtml(r.type)}</span></td>
+        <td>${escapeHtml(r.content)}</td>
+      `
+      tbody.appendChild(tr)
+    }
+    table.appendChild(tbody)
+    body.appendChild(table)
+  }
+
+  if (mem.injected && mem.contextBlock) {
+    const ctxRow = document.createElement('div')
+    ctxRow.className = 'inspector-pair'
+    ctxRow.innerHTML = `
+      <div class="inspector-label">Prepended to system prompt</div>
+      <pre>${escapeHtml(mem.contextBlock)}</pre>
+    `
+    body.appendChild(ctxRow)
+  }
+
+  if (mem.config) {
+    const cfgRow = document.createElement('div')
+    cfgRow.className = 'inspector-meta'
+    cfgRow.innerHTML = `
+      <span>limit: ${mem.config.limit}</span>
+      <span>types: ${(mem.config.types ?? []).join(', ')}</span>
+    `
+    body.appendChild(cfgRow)
+  }
+
+  el.appendChild(body)
+}
+
 function scrollToBottom() {
   turnsEl.scrollTop = turnsEl.scrollHeight
 }
@@ -259,16 +354,16 @@ formEl.addEventListener('submit', async (evt) => {
   sendEl.disabled = true
   inputEl.value = ''
 
-  // Render user turn immediately. We hold a ref to the inspector panel so
-  // the sci.anonymized event (which arrives ~together with the first response
-  // chunks) can populate it live.
+  // Render user turn immediately. We hold refs to all inspector slots so the
+  // various sci.* events can populate them live as they arrive.
   const userTurnRef = renderTurn('user', message)
   scrollToBottom()
 
   // Pre-create the assistant bubble; we'll mutate its innerHTML as deltas arrive.
   const assistantTurnRef = renderTurn('assistant', '')
   const assistantBubble = assistantTurnRef.bubble
-  const assistantInspector = assistantTurnRef.inspectorEl
+  const assistantMemoryEl = assistantTurnRef.memoryEl
+  const assistantDeanonEl = assistantTurnRef.deanonEl
   assistantBubble.classList.add('thinking')
   let assistantText = ''
   scrollToBottom()
@@ -291,7 +386,8 @@ formEl.addEventListener('submit', async (evt) => {
       const text = await res.text()
       assistantBubble.classList.remove('thinking')
       assistantBubble.innerHTML = renderMarkdown(`**error (${res.status})**\n\n\`\`\`\n${text}\n\`\`\``)
-      assistantInspector.hidden = true
+      assistantMemoryEl.hidden = true
+      assistantDeanonEl.hidden = true
       sendEl.disabled = false
       return
     }
@@ -328,8 +424,10 @@ formEl.addEventListener('submit', async (evt) => {
               const data = JSON.parse(payload)
               if (evName === 'sci.anonymized') {
                 populateInspector(userTurnRef.inspectorEl, 'user', { anonymized: data })
+              } else if (evName === 'sci.memory') {
+                populateMemoryInspector(assistantMemoryEl, data)
               } else if (evName === 'sci.deanonymized') {
-                populateInspector(assistantInspector, 'assistant', { deanonymized: data })
+                populateInspector(assistantDeanonEl, 'assistant', { deanonymized: data })
               } else if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
                 assistantText += data.delta.text
                 assistantBubble.innerHTML = renderMarkdown(assistantText)
@@ -355,11 +453,13 @@ formEl.addEventListener('submit', async (evt) => {
   }
 })
 
-// Cmd/Ctrl+Enter sends without needing the button.
+// Enter sends, Shift+Enter inserts a newline. Cmd/Ctrl+Enter still works
+// for muscle memory.
 inputEl.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-    formEl.requestSubmit()
-  }
+  if (e.key !== 'Enter') return
+  if (e.shiftKey) return                    // Shift+Enter → newline (default)
+  e.preventDefault()
+  formEl.requestSubmit()
 })
 
 // ── Boot ─────────────────────────────────────────────────────────────────────

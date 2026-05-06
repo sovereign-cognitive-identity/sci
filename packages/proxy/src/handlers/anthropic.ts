@@ -116,14 +116,22 @@ export async function handleAnthropicMessages(
     process.stderr.write(`[${reqId}] ✓  no entities detected\n`)
   }
 
-  // 2. Inject memory context into anonymized messages
+  // 2. Inject memory context into anonymized messages.
+  //
+  // We pass the live `sessionTokenMap` so injectMemoryContext anonymizes
+  // each recalled memory using the SAME masking the user message got —
+  // otherwise memory would leak real names through the system prompt.
+  // The map is mutated in place (any new entities discovered in memories
+  // are added), and the deanonymizer below uses the same reference to
+  // swap tokens back in the response.
   const anonymizedWithContext = toOpenRouterMessages(anonymizedMessages, body.system)
-  const withContext = await injectMemoryContext(anonymizedWithContext, adapter)
+  const { messages: withContext, inspector: memoryInspector } =
+    await injectMemoryContext(anonymizedWithContext, adapter, sessionTokenMap)
 
-  const memCtx = withContext.find(m => m.role === 'system' && m.content.includes('[Sci Memory'))
-  if (memCtx) {
-    const lines = memCtx.content.split('\n').filter(l => l.startsWith('-')).length
-    process.stderr.write(`[${reqId}] 🧠 injected ${lines} memory context items\n`)
+  if (memoryInspector?.injected) {
+    process.stderr.write(`[${reqId}] 🧠 injected ${memoryInspector.results.length} memory context items (~${memoryInspector.approxTokensAdded} tokens)\n`)
+  } else if (memoryInspector && memoryInspector.results.length === 0) {
+    process.stderr.write(`[${reqId}] 🧠 no relevant memories found\n`)
   }
 
   // 3. Select model (used for OpenRouter mode; direct mode uses original)
@@ -162,6 +170,15 @@ export async function handleAnthropicMessages(
     })}\n\n`
   }
   const sciAnonymizedPrelude = buildAnonPrelude(lastUserResult)
+
+  // sci.memory — what was recalled + injected for this turn. Always emitted
+  // when the recall actually ran (even if 0 results), so the user can tell
+  // the difference between "Sci asked memory" and "Sci skipped memory because
+  // the message was too short".
+  const sciMemoryPrelude = memoryInspector
+    ? `event: sci.memory\ndata: ${JSON.stringify({ reqId, ...memoryInspector })}\n\n`
+    : ''
+  const fullPrelude = sciAnonymizedPrelude + sciMemoryPrelude
 
   // ── Direct mode: forward to Anthropic with original auth ─────────────────
   if (ROUTING_MODE === 'direct') {
@@ -203,7 +220,9 @@ export async function handleAnthropicMessages(
         storeInteraction(originalUserText, deanonStream.fullResponse, adapter).catch(() => {})
       },
       {
-        prelude: sciAnonymizedPrelude,
+        // anonymized + memory events combined (sci.anonymized fires first,
+        // sci.memory second — same single chunk before message_start).
+        prelude: fullPrelude,
         // Postlude — fired after deanon drains. Reports how many tokens
         // Anthropic's response contained that we had to swap back.
         postlude: () => `event: sci.deanonymized\ndata: ${JSON.stringify({
