@@ -30,12 +30,21 @@ import type { StorageAdapter } from '@sci/core'
 
 export type Role = 'user' | 'assistant' | 'system'
 
+/**
+ * Privacy inspector telemetry attached to a turn. Free-form on purpose —
+ * Phase 2.1 stores `anonymized` on user turns and `deanonymized` on
+ * assistant turns. Future inspectors (memory recall, system prompt,
+ * usage counters) can grow this without a schema change.
+ */
+export type InspectorData = Record<string, unknown>
+
 export interface Turn {
   id: string
   role: Role
   content: string
   occurredAt: Date
   model?: string
+  inspector?: InspectorData
 }
 
 export interface ConversationSummary {
@@ -51,6 +60,8 @@ interface TurnMetadata {
   conversation_id: string
   role: Role
   model?: string
+  /** Privacy / memory inspector data. Persisted as nested JSON under metadata. */
+  sci_inspector?: InspectorData
 }
 
 // ── Lazy singleton ────────────────────────────────────────────────────────────
@@ -100,6 +111,7 @@ export async function appendTurn(args: {
   role: Role
   content: string
   model?: string
+  inspector?: InspectorData
 }): Promise<{ id: string }> {
   const profileId = await getProfileId()
   const a = await adapter()
@@ -109,6 +121,7 @@ export async function appendTurn(args: {
     conversation_id: args.conversationId,
     role: args.role,
     ...(args.model ? { model: args.model } : {}),
+    ...(args.inspector ? { sci_inspector: args.inspector } : {}),
   }
 
   return a.storeEpisodic({
@@ -146,6 +159,7 @@ export async function loadConversation(conversationId: string): Promise<Turn[]> 
     content: r.content,
     occurredAt: new Date(r.occurred_at),
     ...(r.metadata.model ? { model: r.metadata.model } : {}),
+    ...(r.metadata.sci_inspector ? { inspector: r.metadata.sci_inspector } : {}),
   }))
 }
 

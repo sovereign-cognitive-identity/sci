@@ -21,7 +21,7 @@
 
 import type { Context } from 'hono'
 import { anonymize } from '@sci/core'
-import type { StorageAdapter } from '@sci/core'
+import type { StorageAdapter, AnonymizeResult } from '@sci/core'
 import { DeanonymizingStreamV2 } from '../stream/deanonymizer.js'
 import { streamFromOpenRouter } from '../openrouter.js'
 import type { OpenRouterMessage } from '../openrouter.js'
@@ -86,11 +86,25 @@ export async function handleAnthropicMessages(
 
   // 1. Anonymize all user messages
   let sessionTokenMap = { forward: new Map<string, string>(), reverse: new Map<string, string>() }
-  const anonymizedMessages: AnthropicMessage[] = body.messages.map(m => {
+  // Capture the anonymization result for the LATEST user turn — this is what
+  // the privacy inspector renders. Earlier user turns in conversation history
+  // were already masked in their own prior requests; we only need to surface
+  // what's new this turn.
+  let lastUserResult: AnonymizeResult | null = null
+  let lastUserOriginal = ''
+  let lastUserMaskedText = ''
+  const lastUserIdx = body.messages.map(m => m.role).lastIndexOf('user')
+
+  const anonymizedMessages: AnthropicMessage[] = body.messages.map((m, idx) => {
     if (m.role !== 'user') return m
     const text = extractText(m.content)
     const result = anonymize(text, sessionTokenMap)
     sessionTokenMap = result.tokenMap
+    if (idx === lastUserIdx) {
+      lastUserResult = result
+      lastUserOriginal = text
+      lastUserMaskedText = result.text
+    }
     return { ...m, content: result.text }
   })
 
@@ -115,6 +129,39 @@ export async function handleAnthropicMessages(
   // 3. Select model (used for OpenRouter mode; direct mode uses original)
   const model = selectModel(body.model, originalUserText)
   process.stderr.write(`[${reqId}] → ${ROUTING_MODE === 'direct' ? 'api.anthropic.com' : 'openrouter.ai'} (${body.model})\n`)
+
+  // ── Build Sci transparency events ────────────────────────────────────────
+  //
+  // These ride the SSE stream so the UI can render an inspector panel
+  // showing the user exactly what was masked / unmasked. Anthropic-format
+  // clients ignore unknown event names; only Sci-aware UIs render them.
+  // Build the sci.anonymized prelude. We pass the result in as a parameter
+  // so TS doesn't lose its type via flow analysis through the `.map()` closure
+  // assignment above (an open issue with let + closures).
+  const buildAnonPrelude = (r: AnonymizeResult | null): string => {
+    if (!r || r.entityCount === 0) {
+      return `event: sci.anonymized\ndata: ${JSON.stringify({
+        reqId,
+        original:           lastUserOriginal,
+        masked:             lastUserMaskedText,
+        entities:           [],
+        sessionEntityCount: sessionTokenMap.forward.size,
+      })}\n\n`
+    }
+    const entities = r.detected.map((e) => ({
+      original: e.text,
+      type:     e.type,
+      token:    sessionTokenMap.forward.get(e.text) ?? sessionTokenMap.forward.get(e.text.toLowerCase()) ?? null,
+    }))
+    return `event: sci.anonymized\ndata: ${JSON.stringify({
+      reqId,
+      original:           lastUserOriginal,
+      masked:             lastUserMaskedText,
+      entities,
+      sessionEntityCount: sessionTokenMap.forward.size,
+    })}\n\n`
+  }
+  const sciAnonymizedPrelude = buildAnonPrelude(lastUserResult)
 
   // ── Direct mode: forward to Anthropic with original auth ─────────────────
   if (ROUTING_MODE === 'direct') {
@@ -154,6 +201,16 @@ export async function handleAnthropicMessages(
         const ms = Date.now() - t0
         process.stderr.write(`[${reqId}] ✓  complete in ${ms}ms, storing to memory\n`)
         storeInteraction(originalUserText, deanonStream.fullResponse, adapter).catch(() => {})
+      },
+      {
+        prelude: sciAnonymizedPrelude,
+        // Postlude — fired after deanon drains. Reports how many tokens
+        // Anthropic's response contained that we had to swap back.
+        postlude: () => `event: sci.deanonymized\ndata: ${JSON.stringify({
+          reqId,
+          tokensReplaced: deanonStream.replacementCount,
+          replaced:       deanonStream.replacedTokens,
+        })}\n\n`,
       }
     )
 

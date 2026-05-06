@@ -107,6 +107,10 @@ export class DeanonymizingStreamV2 {
   private _fullResponse = ''
   private readonly tokenMap: TokenMap
 
+  // Inspector telemetry — counted across all _applyMap calls.
+  private _replacementCount = 0
+  private readonly _replacedTokens = new Map<string, number>()
+
   constructor(tokenMap: TokenMap) {
     this.tokenMap = tokenMap
   }
@@ -127,6 +131,23 @@ export class DeanonymizingStreamV2 {
 
   get fullResponse(): string {
     return this._fullResponse
+  }
+
+  /** Total token replacements performed across the stream. */
+  get replacementCount(): number {
+    return this._replacementCount
+  }
+
+  /**
+   * Distinct masked tokens that appeared in the upstream response and
+   * were swapped back to their real values, with occurrence counts.
+   */
+  get replacedTokens(): Array<{ token: string; original: string; count: number }> {
+    return [...this._replacedTokens.entries()].map(([token, count]) => ({
+      token,
+      original: this.tokenMap.reverse.get(token) ?? token,
+      count,
+    }))
   }
 
   private _tryFlush(): string {
@@ -158,7 +179,14 @@ export class DeanonymizingStreamV2 {
     let result = text
     const tokens = [...this.tokenMap.reverse.keys()].sort((a, b) => b.length - a.length)
     for (const token of tokens) {
-      result = result.split(token).join(this.tokenMap.reverse.get(token)!)
+      // count occurrences before replacing
+      const parts = result.split(token)
+      const hits = parts.length - 1
+      if (hits > 0) {
+        this._replacementCount += hits
+        this._replacedTokens.set(token, (this._replacedTokens.get(token) ?? 0) + hits)
+        result = parts.join(this.tokenMap.reverse.get(token)!)
+      }
     }
     return result
   }

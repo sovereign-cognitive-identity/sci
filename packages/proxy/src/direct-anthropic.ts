@@ -137,14 +137,27 @@ export async function* streamFromAnthropic(
   }
 }
 
-/** Re-stream a direct Anthropic response as Anthropic SSE with deanonymization. */
+/**
+ * Re-stream a direct Anthropic response as Anthropic SSE with deanonymization.
+ *
+ * `extra.prelude` is emitted as raw SSE bytes BEFORE message_start. We use
+ * this to surface Sci-specific transparency events (`sci.anonymized`, etc.)
+ * that downstream Anthropic-compatible clients ignore. Standards-compliant
+ * SSE parsers skip events whose `event:` name they don't recognise.
+ *
+ * `extra.postlude` is called once the deanonymizer has fully drained — its
+ * return value is emitted before content_block_stop. This is where we put
+ * `sci.deanonymized` since the replacement counts only exist after the
+ * stream completes.
+ */
 export async function streamDirectAnthropic(
   path: string,
   requestBody: unknown,
   originalHeaders: Record<string, string>,
   deanonPush: (text: string) => string,
   deanonEnd: () => string,
-  onComplete: () => void
+  onComplete: () => void,
+  extra?: { prelude?: string; postlude?: () => string }
 ): Promise<ReadableStream> {
   const encoder = new TextEncoder()
 
@@ -156,6 +169,11 @@ export async function streamDirectAnthropic(
         controller.enqueue(
           encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
         )
+      }
+
+      // Sci transparency events first (clients that don't know them ignore them).
+      if (extra?.prelude) {
+        controller.enqueue(encoder.encode(extra.prelude))
       }
 
       emit('message_start', {
@@ -187,6 +205,13 @@ export async function streamDirectAnthropic(
         }
       } catch (err) {
         emit('error', { type: 'error', error: { type: 'api_error', message: String(err) } })
+      }
+
+      // Postlude fires after deanonymization fully drains, before message_stop.
+      // Stats like `replacementCount` are now known.
+      if (extra?.postlude) {
+        const post = extra.postlude()
+        if (post) controller.enqueue(encoder.encode(post))
       }
 
       emit('content_block_stop', { type: 'content_block_stop', index: 0 })

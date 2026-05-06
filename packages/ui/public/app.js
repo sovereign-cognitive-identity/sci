@@ -97,7 +97,7 @@ async function openConversation(id) {
   try {
     const res = await fetch(`/conversations/${encodeURIComponent(id)}`)
     const json = await res.json()
-    for (const turn of json.turns ?? []) renderTurn(turn.role, turn.content)
+    for (const turn of json.turns ?? []) renderTurn(turn.role, turn.content, turn.inspector)
     scrollToBottom()
   } catch (err) {
     console.error('load conversation failed:', err)
@@ -115,7 +115,7 @@ newChatEl.addEventListener('click', newChat)
 
 // ── Rendering turns ──────────────────────────────────────────────────────────
 
-function renderTurn(role, content) {
+function renderTurn(role, content, inspector) {
   const turn = document.createElement('div')
   turn.className = `turn turn-${role}`
   const bubble = document.createElement('div')
@@ -126,8 +126,123 @@ function renderTurn(role, content) {
     bubble.innerHTML = renderMarkdown(content)
   }
   turn.appendChild(bubble)
+  // Inspector panel is rendered inline below the bubble. We always create the
+  // container even if there's no data yet — for streaming user turns the
+  // sci.anonymized event arrives ~simultaneously with the user bubble, so we
+  // attach the data when it lands. Created hidden; opens on click.
+  const inspectorEl = document.createElement('details')
+  inspectorEl.className = 'inspector'
+  inspectorEl.dataset.role = role
+  turn.appendChild(inspectorEl)
+  if (inspector) populateInspector(inspectorEl, role, inspector)
   turnsEl.appendChild(turn)
-  return bubble
+  return { bubble, inspectorEl }
+}
+
+/**
+ * Render the inspector contents based on role and available data.
+ *   user turn      → privacy panel (sci.anonymized payload)
+ *   assistant turn → de-anonymization summary (sci.deanonymized payload)
+ * Idempotent — can be called repeatedly as more data lands during streaming.
+ */
+function populateInspector(el, role, inspector) {
+  if (!inspector) { el.hidden = true; return }
+  el.hidden = false
+  el.innerHTML = '' // wipe and rebuild
+
+  if (role === 'user' && inspector.anonymized) {
+    const a = inspector.anonymized
+    const summary = document.createElement('summary')
+    const count = (a.entities || []).length
+    summary.innerHTML = count > 0
+      ? `<span class="inspector-icon">🔒</span> ${count} ${count === 1 ? 'entity' : 'entities'} masked before send`
+      : `<span class="inspector-icon">○</span> nothing detected to mask`
+    el.appendChild(summary)
+
+    const body = document.createElement('div')
+    body.className = 'inspector-body'
+
+    if (count > 0) {
+      const table = document.createElement('table')
+      table.className = 'inspector-table'
+      table.innerHTML = `<thead><tr><th>Original</th><th>Type</th><th>Sent as</th></tr></thead>`
+      const tbody = document.createElement('tbody')
+      for (const e of a.entities) {
+        const tr = document.createElement('tr')
+        tr.innerHTML = `
+          <td><code>${escapeHtml(e.original)}</code></td>
+          <td><span class="entity-type">${escapeHtml(e.type)}</span></td>
+          <td><code class="entity-token">${escapeHtml(e.token ?? '?')}</code></td>
+        `
+        tbody.appendChild(tr)
+      }
+      table.appendChild(tbody)
+      body.appendChild(table)
+    }
+
+    if (a.original && a.masked && a.original !== a.masked) {
+      const wrap = document.createElement('div')
+      wrap.className = 'inspector-diff'
+      wrap.innerHTML = `
+        <div class="inspector-pair">
+          <div class="inspector-label">You typed</div>
+          <pre>${escapeHtml(a.original)}</pre>
+        </div>
+        <div class="inspector-pair">
+          <div class="inspector-label">Anthropic saw</div>
+          <pre>${escapeHtml(a.masked)}</pre>
+        </div>
+      `
+      body.appendChild(wrap)
+    }
+
+    el.appendChild(body)
+    return
+  }
+
+  if (role === 'assistant' && inspector.deanonymized) {
+    const d = inspector.deanonymized
+    const summary = document.createElement('summary')
+    const n = d.tokensReplaced ?? 0
+    summary.innerHTML = n > 0
+      ? `<span class="inspector-icon">🔓</span> ${n} ${n === 1 ? 'token' : 'tokens'} unmasked in reply`
+      : `<span class="inspector-icon">○</span> reply contained no Sci tokens`
+    el.appendChild(summary)
+
+    if (Array.isArray(d.replaced) && d.replaced.length > 0) {
+      const body = document.createElement('div')
+      body.className = 'inspector-body'
+      const table = document.createElement('table')
+      table.className = 'inspector-table'
+      table.innerHTML = `<thead><tr><th>Token in reply</th><th>Restored to</th><th>×</th></tr></thead>`
+      const tbody = document.createElement('tbody')
+      for (const r of d.replaced) {
+        const tr = document.createElement('tr')
+        tr.innerHTML = `
+          <td><code class="entity-token">${escapeHtml(r.token)}</code></td>
+          <td><code>${escapeHtml(r.original)}</code></td>
+          <td>${r.count}</td>
+        `
+        tbody.appendChild(tr)
+      }
+      table.appendChild(tbody)
+      body.appendChild(table)
+      el.appendChild(body)
+    }
+    return
+  }
+
+  // No matching data — keep the panel hidden.
+  el.hidden = true
+}
+
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
 }
 
 function scrollToBottom() {
@@ -144,12 +259,16 @@ formEl.addEventListener('submit', async (evt) => {
   sendEl.disabled = true
   inputEl.value = ''
 
-  // Render user turn immediately.
-  renderTurn('user', message)
+  // Render user turn immediately. We hold a ref to the inspector panel so
+  // the sci.anonymized event (which arrives ~together with the first response
+  // chunks) can populate it live.
+  const userTurnRef = renderTurn('user', message)
   scrollToBottom()
 
   // Pre-create the assistant bubble; we'll mutate its innerHTML as deltas arrive.
-  const assistantBubble = renderTurn('assistant', '')
+  const assistantTurnRef = renderTurn('assistant', '')
+  const assistantBubble = assistantTurnRef.bubble
+  const assistantInspector = assistantTurnRef.inspectorEl
   assistantBubble.classList.add('thinking')
   let assistantText = ''
   scrollToBottom()
@@ -172,6 +291,7 @@ formEl.addEventListener('submit', async (evt) => {
       const text = await res.text()
       assistantBubble.classList.remove('thinking')
       assistantBubble.innerHTML = renderMarkdown(`**error (${res.status})**\n\n\`\`\`\n${text}\n\`\`\``)
+      assistantInspector.hidden = true
       sendEl.disabled = false
       return
     }
@@ -181,7 +301,9 @@ formEl.addEventListener('submit', async (evt) => {
     const newConvId = res.headers.get('X-Sci-Conversation')
     if (newConvId) state.conversationId = newConvId
 
-    // Parse the SSE stream as it arrives.
+    // Parse the SSE stream as it arrives. We track the `event:` line so
+    // sci.anonymized / sci.deanonymized payloads route to the inspectors,
+    // and Anthropic content_block_delta payloads route to the bubble.
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -193,21 +315,29 @@ formEl.addEventListener('submit', async (evt) => {
 
       let bound
       while ((bound = buffer.indexOf('\n\n')) !== -1) {
-        const event = buffer.slice(0, bound)
+        const eventBlock = buffer.slice(0, bound)
         buffer = buffer.slice(bound + 2)
-        for (const line of event.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          try {
-            const data = JSON.parse(payload)
-            if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
-              assistantText += data.delta.text
-              assistantBubble.innerHTML = renderMarkdown(assistantText)
-              scrollToBottom()
+        let evName = null
+        for (const line of eventBlock.split('\n')) {
+          if (line.startsWith('event:')) {
+            evName = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            const payload = line.slice(5).trim()
+            if (!payload || payload === '[DONE]') continue
+            try {
+              const data = JSON.parse(payload)
+              if (evName === 'sci.anonymized') {
+                populateInspector(userTurnRef.inspectorEl, 'user', { anonymized: data })
+              } else if (evName === 'sci.deanonymized') {
+                populateInspector(assistantInspector, 'assistant', { deanonymized: data })
+              } else if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+                assistantText += data.delta.text
+                assistantBubble.innerHTML = renderMarkdown(assistantText)
+                scrollToBottom()
+              }
+            } catch {
+              /* heartbeats / non-JSON lines — ignore */
             }
-          } catch {
-            /* heartbeats / non-JSON lines — ignore */
           }
         }
       }

@@ -167,9 +167,15 @@ app.post('/chat', async (c) => {
   }
 
   // We tee the stream: one fork → browser, the other → assistant-text
-  // accumulator. When accumulation finishes we persist both turns.
+  // accumulator + Sci inspector events. When accumulation finishes we
+  // persist both turns, including inspector data on each turn's metadata.
   let assistantText = ''
   let sseBuffer = ''
+  let lastEventName: string | null = null   // tracks `event:` line per SSE record
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  let sciAnonymized: any = null   // payload from `event: sci.anonymized`
+  let sciDeanonymized: any = null // payload from `event: sci.deanonymized`
+  /* eslint-enable @typescript-eslint/no-explicit-any */
   const decoder = new TextDecoder()
 
   const tap = new TransformStream<Uint8Array, Uint8Array>({
@@ -178,31 +184,49 @@ app.post('/chat', async (c) => {
       sseBuffer += decoder.decode(chunk, { stream: true })
       let bound: number
       while ((bound = sseBuffer.indexOf('\n\n')) !== -1) {
-        const event = sseBuffer.slice(0, bound)
+        const eventBlock = sseBuffer.slice(0, bound)
         sseBuffer = sseBuffer.slice(bound + 2)
-        for (const line of event.split('\n')) {
-          if (!line.startsWith('data:')) continue
-          const payload = line.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          try {
-            const data = JSON.parse(payload) as {
-              type?: string
-              delta?: { type?: string; text?: string }
+        let evName: string | null = null
+        for (const line of eventBlock.split('\n')) {
+          if (line.startsWith('event:')) {
+            evName = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            const payload = line.slice(5).trim()
+            if (!payload || payload === '[DONE]') continue
+            try {
+              const data = JSON.parse(payload)
+              if (evName === 'sci.anonymized') {
+                sciAnonymized = data
+              } else if (evName === 'sci.deanonymized') {
+                sciDeanonymized = data
+              } else if (
+                data.type === 'content_block_delta' &&
+                data.delta?.type === 'text_delta'
+              ) {
+                assistantText += data.delta.text ?? ''
+              }
+            } catch {
+              /* keep relaying — partial JSON / non-JSON heartbeats are fine */
             }
-            if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
-              assistantText += data.delta.text ?? ''
-            }
-          } catch {
-            /* keep relaying — partial JSON / non-JSON heartbeats are fine */
           }
         }
+        lastEventName = evName
       }
     },
     async flush() {
       // Persist regardless of stream success — partial assistant replies are
       // still useful in memory. Both writes are best-effort.
+      // Inspector data attaches to the turn that semantically owns it:
+      //   sci.anonymized   → user turn (what we hid before sending)
+      //   sci.deanonymized → assistant turn (what we swapped back on the way home)
       try {
-        await appendTurn({ conversationId, role: 'user', content: body.message, model })
+        await appendTurn({
+          conversationId,
+          role: 'user',
+          content: body.message,
+          model,
+          inspector: sciAnonymized ? { anonymized: sciAnonymized } : undefined,
+        })
       } catch (err) {
         console.error('[ui] persist user turn failed:', (err as Error).message)
       }
@@ -213,6 +237,7 @@ app.post('/chat', async (c) => {
             role: 'assistant',
             content: assistantText,
             model,
+            inspector: sciDeanonymized ? { deanonymized: sciDeanonymized } : undefined,
           })
         } catch (err) {
           console.error('[ui] persist assistant turn failed:', (err as Error).message)
