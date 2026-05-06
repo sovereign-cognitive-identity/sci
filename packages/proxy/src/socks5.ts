@@ -25,6 +25,8 @@ import { handleOpenAIChat } from './handlers/openai.js'
 import { makeHonoContext } from './connect-context.js'
 import { resolveRealDirect, lookupHostnameByRealIP } from './dns-resolver.js'
 import { getPhysicalInterfaceIP } from './physical-iface.js'
+import { peekClientHello } from './sni-sniff.js'
+import { PrefixedSocket } from './prefixed-socket.js'
 
 export const SOCKS5_PORT = parseInt(process.env['SCI_SOCKS5_PORT'] ?? '1080')
 
@@ -146,20 +148,47 @@ function parseConnect(
   socket.write(Buffer.from([SOCKS5_VERSION, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]))
 
   // The TLS ClientHello may have arrived in the same TCP segment as the CONNECT
-  // request. Any bytes after the CONNECT header must be pushed back onto the
-  // socket so the TLS layer sees them — otherwise the handshake waits forever.
+  // request. Push any piggy-backed bytes onto the socket so SNI sniffing sees them.
   const tail = req.length > headerEnd ? req.slice(headerEnd) : null
-  if (tail?.length) {
-    process.stderr.write(`[socks5] ${tail.length} bytes piggy-backed with CONNECT, unshifting\n`)
-    socket.unshift(tail)
+  if (tail?.length) socket.unshift(tail)
+
+  // Decide intercept vs passthrough based on TLS SNI, not just IP.
+  // sing-box can route many hosts to the same IP (api.anthropic.com, claude.ai,
+  // assets-proxy.anthropic.com all share 160.79.104.10), so we have to peek at
+  // the ClientHello to know which one the client actually wants.
+  void routeBasedOnSNI(socket, hostname, port, ca, adapter, openrouterKey)
+}
+
+async function routeBasedOnSNI(
+  socket: net.Socket,
+  socksHostname: string,
+  port: number,
+  ca: CertPair,
+  adapter: StorageAdapter,
+  openrouterKey: string
+): Promise<void> {
+  // Only TLS (443) gets SNI sniffing. Other ports go straight to passthrough.
+  if (port !== 443) {
+    process.stderr.write(`[socks5] passthrough ${socksHostname}:${port}\n`)
+    directTunnel(socket, socksHostname, port, null)
+    return
   }
 
-  if (isAIHostname(hostname) && port === 443) {
-    process.stderr.write(`[socks5] intercept ${hostname}:${port}\n`)
-    interceptTLS(socket, hostname, ca, adapter, openrouterKey)
+  const { buffer, sni } = await peekClientHello(socket, 3000)
+
+  // Decision: TLS-intercept only api.anthropic.com (/v1/messages anonymization).
+  // Everything else (claude.ai, assets-proxy.anthropic.com, OpenAI, etc.) is
+  // raw-tunneled — we route through the TUN so we know the traffic exists, but
+  // don't crack open the TLS.
+  const target = sni ?? socksHostname
+  const shouldIntercept = sni === 'api.anthropic.com'
+
+  if (shouldIntercept) {
+    process.stderr.write(`[socks5] intercept ${target}:${port} (sni=${sni})\n`)
+    interceptTLS(socket, target, ca, adapter, openrouterKey, buffer)
   } else {
-    process.stderr.write(`[socks5] passthrough ${hostname}:${port}\n`)
-    directTunnel(socket, hostname, port)
+    process.stderr.write(`[socks5] tunnel ${target}:${port} (sni=${sni ?? 'n/a'}, ${buffer.length}b buffered)\n`)
+    directTunnel(socket, target, port, buffer.length > 0 ? buffer : null)
   }
 }
 
@@ -170,7 +199,8 @@ function interceptTLS(
   hostname: string,
   ca: CertPair,
   adapter: StorageAdapter,
-  openrouterKey: string
+  openrouterKey: string,
+  initialData: Buffer | null = null
 ): void {
   // Use tls.createServer + socket injection — more robust than tls.TLSSocket wrapping.
   // The server properly handles socket resume/pause and handshake timing.
@@ -216,9 +246,15 @@ function interceptTLS(
     process.stderr.write(`[socks5] TLS client error ${hostname}: ${err.message}\n`)
   })
 
-  // Inject the raw socket — the TLS server handles it from here
-  tlsServer.emit('connection', clientSocket)
-  clientSocket.resume()
+  // If we peeked the ClientHello during SNI sniffing, wrap the socket so the
+  // peeked bytes are replayed to the TLS server as the first read. unshift()
+  // alone doesn't work reliably with tls.Server because TLS internals don't
+  // always read via the standard Readable API.
+  const stream: net.Socket = initialData && initialData.length > 0
+    ? (new PrefixedSocket(clientSocket, initialData) as unknown as net.Socket)
+    : clientSocket
+  tlsServer.emit('connection', stream)
+  if (!initialData) clientSocket.resume()
 }
 
 async function handleDecryptedRequest(
@@ -240,6 +276,12 @@ async function handleDecryptedRequest(
     headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim()
   }
 
+  // Use the actual Host header from the HTTP request, not the hostname guessed
+  // from the IP. claude.ai, assets-proxy.anthropic.com, and api.anthropic.com
+  // all share IP 160.79.104.10 — we only know the real intended host from the
+  // Host header (which we set with the right SNI when the cert was generated).
+  const actualHost = (headers['host'] ?? hostname).split(':')[0] ?? hostname
+
   const contentLength = parseInt(headers['content-length'] ?? '0', 10)
   let bodyBuf = initialBody
 
@@ -257,17 +299,21 @@ async function handleDecryptedRequest(
   try { bodyJson = JSON.parse(bodyBuf.toString('utf-8')) } catch { bodyJson = {} }
 
   const ctx = makeHonoContext(method ?? 'POST', path ?? '/', headers, bodyJson)
-  const format = AI_PATH_HANDLERS[hostname] ?? 'openai'
+  // Only api.anthropic.com /v1/messages goes through anonymization. Everything
+  // else on api.anthropic.com (or any other Anthropic host like claude.ai) is
+  // passed through unchanged — they're internal app APIs we don't anonymize.
+  const isAnthropicMessages = actualHost === 'api.anthropic.com' && path === '/v1/messages'
+  const isOpenAIChat = AI_PATH_HANDLERS[actualHost] === 'openai' && (path?.startsWith('/v1/chat') ?? false)
 
   let response: Response
   try {
-    if (format === 'anthropic' && path === '/v1/messages') {
+    if (isAnthropicMessages) {
       response = await handleAnthropicMessages(ctx as never, adapter, openrouterKey)
-    } else if (format === 'openai' && (path?.startsWith('/v1/chat') ?? false)) {
+    } else if (isOpenAIChat) {
       response = await handleOpenAIChat(ctx as never, adapter, openrouterKey)
     } else {
-      // Unknown path — forward to real upstream
-      response = await forwardToUpstream(method ?? 'GET', hostname, path ?? '/', headers, bodyBuf)
+      // Forward to the actual host (not the IP-mapped hostname)
+      response = await forwardToUpstream(method ?? 'GET', actualHost, path ?? '/', headers, bodyBuf)
     }
     await writeResponseToSocket(response, tlsSocket)
   } catch (err) {
@@ -336,11 +382,21 @@ async function forwardViaRealIP(
         const buf = Buffer.concat(chunks)
         const respHeaders: Record<string, string> = {}
         for (const [k, v] of Object.entries(res.headers)) {
-          if (v !== undefined) respHeaders[k] = Array.isArray(v) ? v.join(', ') : v
+          if (v === undefined) continue
+          // Strip hop-by-hop headers — we've dechunked, we close after each response,
+          // so transfer-encoding/connection from upstream don't apply to our response.
+          const lower = k.toLowerCase()
+          if (lower === 'transfer-encoding' || lower === 'connection' ||
+              lower === 'keep-alive' || lower === 'content-length') continue
+          respHeaders[k] = Array.isArray(v) ? v.join(', ') : v
         }
         const status = res.statusCode ?? 502
         // Response constructor rejects body for null-body status codes (204/205/304)
         const body = (status === 204 || status === 205 || status === 304 || buf.length === 0) ? null : buf
+        // Set accurate content-length and connection: close (we close after each response)
+        if (body) respHeaders['content-length'] = String(buf.length)
+        respHeaders['connection'] = 'close'
+        process.stderr.write(`[socks5] ↩ ${status} ${method} ${hostname}${path} (${buf.length}b)\n`)
         resolve(new Response(body, { status, headers: respHeaders }))
       })
       res.on('error', reject)
@@ -348,6 +404,15 @@ async function forwardViaRealIP(
     req.on('error', reject)
     if (body.length > 0) req.write(body)
     req.end()
+  })
+}
+
+/** Write to a socket and wait for drain if the kernel buffer is full. */
+function writeAndDrain(socket: tls.TLSSocket, data: Uint8Array | string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (socket.write(data)) return resolve()
+    socket.once('drain', () => resolve())
+    socket.once('error', reject)
   })
 }
 
@@ -359,26 +424,53 @@ async function writeResponseToSocket(
   const headerLines: string[] = [statusLine]
   response.headers.forEach((value, name) => headerLines.push(`${name}: ${value}`))
   headerLines.push('', '')
-  socket.write(headerLines.join('\r\n'))
 
-  if (response.body) {
-    const reader = response.body.getReader()
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      socket.write(value)
+  try {
+    await writeAndDrain(socket, headerLines.join('\r\n'))
+
+    if (response.body) {
+      const reader = response.body.getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        await writeAndDrain(socket, value)
+      }
     }
+
+    // socket.end() flushes pending writes then sends FIN. Wait briefly for
+    // the data to drain before returning, but don't hang forever.
+    await new Promise<void>((resolve) => {
+      let resolved = false
+      const done = () => { if (!resolved) { resolved = true; resolve() } }
+      socket.once('finish', done)
+      socket.once('close', done)
+      socket.once('error', done)
+      socket.end()
+      setTimeout(done, 2000)  // safety net — 2s max wait
+    })
+  } catch (err) {
+    process.stderr.write(`[socks5] write error: ${err}\n`)
+    socket.destroy()
   }
-  socket.end()
 }
 
 // ── Direct passthrough (non-AI endpoints) ─────────────────────────────────────
 
-function directTunnel(clientSocket: net.Socket, hostname: string, port: number): void {
+function directTunnel(
+  clientSocket: net.Socket,
+  hostname: string,
+  port: number,
+  initialData: Buffer | null = null
+): void {
   // localAddress = en0 IP — bypasses TUN routes for our outbound connection,
   // so passthrough to AI-routed IPs (e.g. claude.ai's CDN) doesn't loop.
   const localAddress = TUN_MODE ? (getPhysicalInterfaceIP() ?? undefined) : undefined
   const upstream = net.connect({ port, host: hostname, localAddress }, () => {
+    // If we peeked bytes during SNI sniffing, send them upstream first so the
+    // server sees the original ClientHello before any subsequent data.
+    if (initialData && initialData.length > 0) {
+      upstream.write(initialData)
+    }
     clientSocket.pipe(upstream)
     upstream.pipe(clientSocket)
   })

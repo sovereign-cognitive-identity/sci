@@ -95,8 +95,8 @@ function buildSingBoxConfig(): object {
     route: {
       rules: [
         {
-          // All TUN traffic → our SOCKS5 server
-          // (only 198.18.0.0/15 fake IPs reach this TUN via the route we add)
+          // All TUN traffic → our SOCKS5 server. We do SNI sniffing in our
+          // own SOCKS5 server (more control over the buffered ClientHello).
           inbound: 'tun-in',
           outbound: 'sci-socks',
         },
@@ -396,11 +396,15 @@ export async function startTUNWithGuard(adapter: unknown): Promise<void> {
   addFakeIPRoute()
 
   // Step 7b: warm real IP cache (so SOCKS5 can recognize real IPs in CONNECT)
-  // and add real IP routes through TUN for clients (like Chromium) that
-  // bypass our fake DNS and connect directly to real Anthropic IPs
+  // and add real IP routes through TUN for clients (like Chromium) that bypass
+  // our fake DNS. Only Anthropic — other endpoints (OpenAI, Google) share
+  // /16 IP blocks with unrelated services (Cloudflare, Google CDN), and our
+  // /16 routing is too broad. Routing only api.anthropic.com keeps the blast
+  // radius narrow while still catching Claude Desktop's direct connections.
   try {
     const { warmRealIPCache } = await import('./dns-resolver.js')
-    const realIPs = await warmRealIPCache(AI_HOSTNAMES)
+    const ANTHROPIC_ONLY: readonly string[] = ['api.anthropic.com']
+    const realIPs = await warmRealIPCache(ANTHROPIC_ONLY)
     for (const { ip, hostname } of realIPs) {
       addRealIPRoute(ip)
       trackRealIPRoute(ip)
