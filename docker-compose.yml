@@ -29,6 +29,13 @@ services:
   # Anonymizer + memory pipeline. Receives /v1/messages and proxies to
   # Anthropic with masking, recall, and inspector events.
   sci-proxy:
+    # Pin to linux/amd64 because the fastembed tokenizer (`@anush008/tokenizers`)
+    # only ships precompiled binaries for x86_64 on linux. M1/M2/M3 Macs run
+    # this under Rosetta/QEMU emulation — slower but functional. Native x64
+    # hosts get it without translation. Removing this pin requires either
+    # building the tokenizer from Rust source in the image or moving to an
+    # embedding library with linux/arm64 binaries.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -38,7 +45,8 @@ services:
     environment:
       SCI_DB_READER_URL:    postgresql://sci_reader:sci_reader_local@postgres:5432/sci
       SCI_DB_WRITER_URL:    postgresql://sci_writer:sci_writer_local@postgres:5432/sci
-      SCI_EMBED_MODEL:      BAAI/bge-base-en-v1.5
+      SCI_EMBED_MODEL:           BAAI/bge-base-en-v1.5
+      SCI_FASTEMBED_CACHE_DIR:   /home/sci/.cache/fastembed
       SCI_ROUTING_MODE:     direct
       SCI_OPENROUTER_KEY:   unused-direct-mode
     volumes:
@@ -51,6 +59,13 @@ services:
   # Chat UI server. Talks to sci-proxy on the internal docker network and
   # to your host browser on port 3002.
   sci-ui:
+    # Pin to linux/amd64 because the fastembed tokenizer (`@anush008/tokenizers`)
+    # only ships precompiled binaries for x86_64 on linux. M1/M2/M3 Macs run
+    # this under Rosetta/QEMU emulation — slower but functional. Native x64
+    # hosts get it without translation. Removing this pin requires either
+    # building the tokenizer from Rust source in the image or moving to an
+    # embedding library with linux/arm64 binaries.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -62,7 +77,8 @@ services:
     environment:
       SCI_DB_READER_URL:    postgresql://sci_reader:sci_reader_local@postgres:5432/sci
       SCI_DB_WRITER_URL:    postgresql://sci_writer:sci_writer_local@postgres:5432/sci
-      SCI_EMBED_MODEL:      BAAI/bge-base-en-v1.5
+      SCI_EMBED_MODEL:           BAAI/bge-base-en-v1.5
+      SCI_FASTEMBED_CACHE_DIR:   /home/sci/.cache/fastembed
       SCI_PROXY_URL:        http://sci-proxy:3001
       SCI_UI_PORT:          "3002"
     volumes:
@@ -78,6 +94,13 @@ services:
   # through the docker network port mapping.
   sci-auth:
     profiles: [setup]
+    # Pin to linux/amd64 because the fastembed tokenizer (`@anush008/tokenizers`)
+    # only ships precompiled binaries for x86_64 on linux. M1/M2/M3 Macs run
+    # this under Rosetta/QEMU emulation — slower but functional. Native x64
+    # hosts get it without translation. Removing this pin requires either
+    # building the tokenizer from Rust source in the image or moving to an
+    # embedding library with linux/arm64 binaries.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -96,6 +119,13 @@ services:
   #   docker compose --profile consolidate run --rm sci-consolidate
   sci-consolidate:
     profiles: [consolidate]
+    # Pin to linux/amd64 because the fastembed tokenizer (`@anush008/tokenizers`)
+    # only ships precompiled binaries for x86_64 on linux. M1/M2/M3 Macs run
+    # this under Rosetta/QEMU emulation — slower but functional. Native x64
+    # hosts get it without translation. Removing this pin requires either
+    # building the tokenizer from Rust source in the image or moving to an
+    # embedding library with linux/arm64 binaries.
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile

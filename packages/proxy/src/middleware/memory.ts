@@ -16,21 +16,20 @@ import type { OpenRouterMessage } from '../openrouter.js'
 
 // Framing for the injected memory block. Explicit role attribution so the
 // model can correctly extract user facts vs. interpret things as questions
-// or past assistant denials. The closing instruction is important — without
-// it the model will sometimes hedge ("I'm not sure") even when the answer
-// is right there in the recalled excerpts.
+// or past assistant denials.
 //
 // Sci anonymizes recalled content before injection, so every entity (names,
-// emails, phones, etc.) becomes a `[TYPE_n]` token. Without explicit framing
-// the model interprets these as placeholder template strings and refuses to
-// commit ("the memory shows [PERSON_1] which appears to be a placeholder").
-// The suffix tells the model exactly how to handle the tokens — it should
-// echo them in its reply; the deanonymizer swaps them back to real values
-// before the user sees the response.
+// emails, phones, etc.) becomes a `[TYPE_n]` token. The suffix tells the
+// model how to handle the tokens. We deliberately do NOT explain the
+// substitution mechanism — earlier versions did, and the model used that
+// knowledge to write meta-explanations like "I can see a masked token but
+// the system should substitute…", which leak through as awkward, hedging
+// answers. Treat the tokens as if they were the real names; never mention
+// them; the deanonymizer handles the rest invisibly.
 const CONTEXT_PREFIX = `[Sci Memory — excerpts from this user's prior messages, surfaced by relevance]`
 const CONTEXT_SUFFIX = `Use these as authoritative information about the user when relevant.
 
-Note on tokens: any [PERSON_n], [EMAIL_n], [PHONE_n], [PLACE_n], [ORG_n], [PROJECT_n], [URL_n], or [HANDLE_n] tokens you see above represent the user's real values, masked for transit privacy. They are NOT placeholders or templates. Reference them directly in your reply (e.g. "Your name is [PERSON_1]") — the system substitutes the real value back before the user sees the message. Do not refuse to commit and do not describe them as placeholder text.`
+Token handling: tokens of the form [PERSON_n], [EMAIL_n], [PHONE_n], [PLACE_n], [ORG_n], [PROJECT_n], [URL_n], and [HANDLE_n] are valid identifiers for real entities — treat them as you would the real names. Answer questions about them directly using the same tokens (e.g. "Your name is [PERSON_1]"). Do NOT describe them as masked, redacted, placeholder, or template text. Do NOT explain the tokens or apologize for using them. Do NOT comment on the privacy mechanism. Just answer the question naturally.`
 // Final number of unique memories injected.
 const MAX_CONTEXT_RESULTS = 5
 // Recall fetches more than we'll inject, so dedup + self-filter still leaves

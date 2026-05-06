@@ -8,7 +8,16 @@ let _model: FlagEmbedding | null = null
 
 async function getModel(): Promise<FlagEmbedding> {
   if (_model) return _model
-  _model = await FlagEmbedding.init({ model: EmbeddingModel.BGEBaseENV15 })
+  // Where to put the BGE model files. Defaults to fastembed's `./local_cache`
+  // relative to CWD — fine on developer laptops, broken inside Docker
+  // containers where the working dir is owned by root and the process runs
+  // as a non-root user. Set SCI_FASTEMBED_CACHE_DIR to redirect somewhere
+  // writable (e.g. a mounted volume).
+  const cacheDir = process.env['SCI_FASTEMBED_CACHE_DIR']
+  _model = await FlagEmbedding.init({
+    model: EmbeddingModel.BGEBaseENV15,
+    ...(cacheDir ? { cacheDir } : {}),
+  })
   return _model
 }
 

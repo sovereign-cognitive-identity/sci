@@ -208,16 +208,25 @@ export async function login(opts: { onAuthUrl?: (url: string) => void } = {}): P
       const returnedState = url.searchParams.get('state')
       const error         = url.searchParams.get('error')
 
-      const html = `<!doctype html><html><body style="font-family:system-ui;padding:2rem;">
-        <h2>${error ? 'Authorization failed' : 'You can close this tab'}</h2>
-        <p>${error ?? ''}</p></body></html>`
+      // Validate BEFORE responding so the page accurately reflects what
+      // happened. The previous version always said "you can close this
+      // tab" even on state mismatch — so users thought OAuth succeeded
+      // when the container had actually rejected the callback as CSRF.
+      let problem: string | null = null
+      if (error)                        problem = `oauth error: ${error}`
+      else if (!code)                   problem = 'callback missing code'
+      else if (returnedState !== state) problem = 'state mismatch — possible CSRF (did you click an old auth URL?)'
+
+      const html = `<!doctype html><html><body style="font-family:system-ui;padding:2rem;max-width:560px;">
+        <h2>${problem ? 'Authorization failed' : 'You can close this tab'}</h2>
+        <p>${problem ?? 'Sci has captured your access token. The terminal will now exit.'}</p>
+        ${problem ? '<p style="color:#666;font-size:13px;">Re-run the auth command to start a fresh flow with a new state token.</p>' : ''}
+        </body></html>`
       res.writeHead(200, { 'Content-Type': 'text/html', Connection: 'close' })
       res.end(html)
 
-      if (error)                   return reject(new Error(`oauth error: ${error}`))
-      if (!code)                   return reject(new Error('callback missing code'))
-      if (returnedState !== state) return reject(new Error('state mismatch — possible CSRF'))
-      resolve(code)
+      if (problem) return reject(new Error(problem))
+      resolve(code!)
     })
     setTimeout(
       () => reject(new Error(`timeout waiting for browser auth (${BROWSER_AUTH_TIMEOUT_MS / 1000}s)`)),

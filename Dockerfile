@@ -26,7 +26,14 @@ COPY packages/cli/package.json    ./packages/cli/
 COPY packages/proxy/package.json  ./packages/proxy/
 COPY packages/ui/package.json     ./packages/ui/
 
-RUN npm ci --workspaces --include-workspace-root
+# `npm install` instead of `npm ci` so platform-specific optional deps
+# (fastembed's @anush008/tokenizers-<platform>-gnu binaries, hnswlib, etc.)
+# resolve against the BUILD environment's os/arch — not whatever the
+# host's package-lock.json was generated against. `npm ci` strictly
+# follows the lockfile and skips optional binaries that weren't selected
+# when the lockfile was created, which leaves the runtime container
+# crashing on `MODULE_NOT_FOUND` for the right-platform tokenizer.
+RUN npm install --workspaces --include-workspace-root --no-audit --no-fund
 
 # ── build ────────────────────────────────────────────────────────────────────
 FROM deps AS build
@@ -53,6 +60,12 @@ RUN useradd --create-home --shell /bin/bash --uid 1001 sci \
 COPY --from=build --chown=sci:sci /app/package.json    ./
 COPY --from=build --chown=sci:sci /app/node_modules    ./node_modules
 COPY --from=build --chown=sci:sci /app/packages        ./packages
+
+# /app needs to be writable by the sci user — fastembed and a few other libs
+# default to relative-path caches (./local_cache) and we'd rather have them
+# fail-soft than crash. The compose file sets SCI_FASTEMBED_CACHE_DIR to
+# redirect the BGE model into a mounted volume, but this is the safety net.
+RUN chown -R sci:sci /app
 
 # We don't ship sources or source maps — only built artefacts and public/.
 # Strip *.ts and *.map from packages to keep the runtime image small.

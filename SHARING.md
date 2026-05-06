@@ -24,11 +24,15 @@ cd sci
 # 1. Build the images (~3–5 min the first time)
 docker compose build
 
-# 2. Authenticate with Anthropic — opens browser-based OAuth login
-docker compose --profile setup run --rm sci-auth
+# 2. Authenticate with Anthropic — opens browser-based OAuth login.
+#    `--service-ports` is REQUIRED — without it the host-side port 53000
+#    isn't published and the redirect from your browser will fail with
+#    ERR_CONNECTION_REFUSED.
+docker compose --profile setup run --rm --service-ports sci-auth
 #    → terminal prints a URL
-#    → open it in your browser, log in to Anthropic
+#    → copy it into your browser, log in to Anthropic
 #    → browser redirects to localhost:53000/callback
+#    → page says "You can close this tab"
 #    → terminal prints "✓ login complete"
 
 # 3. Start the stack
@@ -127,6 +131,20 @@ masked outbound and what was unmasked on the way back.
 | Empty response / model says "I don't know" | Open the 🧠 chip — if recall returned nothing useful, run the consolidator |
 | `port 3002 already in use` | Something else is on 3002. Either stop it or change the host port in `docker-compose.yml`'s `sci-ui` `ports:` block |
 | Slow first message | First request loads the BGE embedding model (~125 MB). Subsequent requests are fast. |
+
+## Note on Apple Silicon (M1 / M2 / M3 / M4)
+
+The fastembed tokenizer used for embeddings only ships precompiled binaries
+for `linux/amd64` (and `darwin-universal` and `windows-x64`). The compose
+file pins the Sci images to `platform: linux/amd64` so the same artefacts
+run on every Docker host — Apple Silicon machines run them under
+Rosetta/QEMU emulation, which is slower but not noticeable for chat
+workloads. Native x64 hosts get them at full speed.
+
+If you're on native Linux ARM64 (uncommon for laptops, common for some
+cloud VMs) you'll need to either rebuild the tokenizer from Rust source
+in the Dockerfile or swap the embedding library. Open an issue if you
+hit this and want help.
 
 ## What's not in this build
 
