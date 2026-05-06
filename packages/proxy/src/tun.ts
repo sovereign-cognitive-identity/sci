@@ -16,7 +16,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process'
-import { writeFileSync, mkdirSync, existsSync } from 'fs'
+import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
@@ -222,7 +222,6 @@ const HOSTS_MARKER_END   = '# END sci-tun'
 
 export function writeHostsEntries(): void {
   try {
-    const { readFileSync, writeFileSync } = require('fs')
     const hosts: string = readFileSync('/etc/hosts', 'utf-8')
 
     // Remove any stale sci-tun block first
@@ -255,7 +254,6 @@ export function writeHostsEntries(): void {
 
 export function removeHostsEntries(): void {
   try {
-    const { readFileSync, writeFileSync } = require('fs')
     const hosts: string = readFileSync('/etc/hosts', 'utf-8')
     let inBlock = false
     const cleaned = hosts.split('\n').filter((line: string) => {
