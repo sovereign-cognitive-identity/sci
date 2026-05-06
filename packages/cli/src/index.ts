@@ -400,6 +400,41 @@ program
     process.exit(0)
   })
 
+// ── sci ui ────────────────────────────────────────────────────────────────────
+//
+// Spawns the @sci/ui server as a child process so the CLI doesn't take on
+// a hard dep on @sci/ui (which would force a build-order rearrangement).
+// Streams the server's stdio through to ours and forwards SIGINT cleanly.
+
+program
+  .command('ui')
+  .description('Start the Sci chat UI server (subscription-billed via OAuth)')
+  .option('--port <n>', 'Port to listen on', '3002')
+  .option('--proxy-url <url>', 'Sci proxy URL', 'http://localhost:3001')
+  .option('--model <id>', 'Default model', 'claude-haiku-4-5-20251001')
+  .action(async (opts: { port: string; proxyUrl: string; model: string }) => {
+    const { spawn } = await import('child_process')
+    const uiServerPath = resolve(__dirname, '../../ui/dist/server.js')
+    if (!existsSync(uiServerPath)) {
+      console.error(`UI server build not found at: ${uiServerPath}`)
+      console.error(`Run \`npm run build -w packages/ui\` from the repo root first.`)
+      process.exit(1)
+    }
+    const child = spawn(process.execPath, [uiServerPath], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        SCI_UI_PORT:           opts.port,
+        SCI_PROXY_URL:         opts.proxyUrl,
+        SCI_UI_DEFAULT_MODEL:  opts.model,
+      },
+    })
+    const forward = (sig: NodeJS.Signals) => () => child.kill(sig)
+    process.on('SIGINT',  forward('SIGINT'))
+    process.on('SIGTERM', forward('SIGTERM'))
+    child.on('exit', (code) => process.exit(code ?? 0))
+  })
+
 program.parse()
 
 function requireEnv(name: string): string {

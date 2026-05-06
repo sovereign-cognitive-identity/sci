@@ -126,10 +126,18 @@ export async function handleAnthropicMessages(
       stream: true,
     }
 
-    // Extract original auth headers to forward to Anthropic
+    // Extract original auth headers to forward to Anthropic.
+    //
+    // `anthropic-beta` matters for OAuth-authenticated requests: Sci-native UI
+    // sends `anthropic-beta: oauth-2025-04-20` so Anthropic accepts the OAuth
+    // Bearer at the inference layer. Stripping it would cause Anthropic to
+    // treat the request as a missing-API-key error. We forward whatever the
+    // client sent (could also be e.g. `prompt-caching-2024-07-31`).
     const authHeader = c.req.header('authorization') ?? c.req.header('x-api-key')
+    const betaHeader = c.req.header('anthropic-beta')
     const originalHeaders: Record<string, string> = {
       'anthropic-version': c.req.header('anthropic-version') ?? '2023-06-01',
+      ...(betaHeader ? { 'anthropic-beta': betaHeader } : {}),
       ...(authHeader?.startsWith('Bearer ')
         ? { 'authorization': authHeader }
         : { 'x-api-key': authHeader ?? '' }),

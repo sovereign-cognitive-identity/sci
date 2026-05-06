@@ -1,0 +1,20 @@
+{
+  "name": "@sci/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "sci-ui-auth": "dist/oauth-cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "auth": "node dist/oauth-cli.js"
+  },
+  "dependencies": {
+    "@sci/core": "*",
+    "@hono/node-server": "^1.0.0",
+    "hono": "^4.0.0"
+  }
+}

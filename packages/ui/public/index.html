@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sci</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!--
+    Third-party deps self-hosted under public/vendor/ so the UI works
+    fully offline and there's no CDN/SRI moving part to audit. Update
+    by re-running curl in the README.
+  -->
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/vendor/purify.min.js"></script>
+</head>
+<body>
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <h1>Sci</h1>
+      <button id="new-chat" type="button" title="New chat">+ new</button>
+    </div>
+    <div id="auth-banner" hidden></div>
+    <ul id="conv-list"></ul>
+  </aside>
+
+  <main id="chat">
+    <div id="turns"></div>
+    <form id="composer">
+      <textarea id="input" rows="3" placeholder="Message Claude…" autofocus></textarea>
+      <div class="composer-row">
+        <select id="model">
+          <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
+          <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+          <option value="claude-opus-4-5">claude-opus-4-5</option>
+        </select>
+        <button id="send" type="submit">send</button>
+      </div>
+    </form>
+  </main>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
