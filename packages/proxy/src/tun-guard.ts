@@ -61,7 +61,7 @@ RESOLVER_DOMAINS="${resolverDomains.join(' ')}"
 killall sing-box 2>/dev/null && echo "[cleanup] sing-box stopped" || true
 
 # 2. Remove fake IP route
-route delete -net "$FAKE_CIDR" 2>/dev/null && echo "[cleanup] Route removed" || true
+/sbin/route delete -net "$FAKE_CIDR" 2>/dev/null && echo "[cleanup] Route removed" || true
 
 # 3. Remove /etc/resolver entries
 for domain in $RESOLVER_DOMAINS; do

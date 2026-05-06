@@ -36,7 +36,7 @@ export const TUN_CIDR = '172.19.0.1/30'
 function findAvailableUtun(): string {
   for (let i = 5; i <= 15; i++) {
     try {
-      execSync(`ifconfig utun${i} 2>/dev/null`, { stdio: 'pipe' })
+      execSync(`/sbin/ifconfig utun${i}`, { stdio: 'pipe' })
       // Interface exists — try next
     } catch {
       // Interface doesn't exist — available
@@ -127,8 +127,8 @@ export function startSingBox(): ChildProcess {
   const logPath = join(homedir(), 'Vault', 'sci', 'singbox.log')
 
   // Creating a TUN interface requires root on macOS.
-  // We run sing-box via sudo with a NOPASSWD sudoers rule (added by sci vpn install).
-  _proc = spawn('sudo', [singboxBin, 'run', '-c', CONFIG_PATH], {
+  // -n: non-interactive (fail immediately if password required — avoids hanging)
+  _proc = spawn('sudo', ['-n', singboxBin, 'run', '-c', CONFIG_PATH], {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: false,
   })
@@ -186,8 +186,8 @@ function findSingBox(): string | null {
 export function addFakeIPRoute(): void {
   try {
     // Remove existing route if present (idempotent)
-    execSync(`sudo route delete -net ${FAKE_IP_CIDR} 2>/dev/null || true`, { stdio: 'pipe' })
-    execSync(`sudo route add -net ${FAKE_IP_CIDR} ${TUN_ADDR}`, { stdio: 'pipe' })
+    execSync(`sudo /sbin/route delete -net ${FAKE_IP_CIDR} 2>/dev/null || true`, { stdio: 'pipe' })
+    execSync(`sudo /sbin/route add -net ${FAKE_IP_CIDR} ${TUN_ADDR}`, { stdio: 'pipe' })
     process.stderr.write(`[tun] Route added: ${FAKE_IP_CIDR} → ${TUN_ADDR} (${TUN_INTERFACE})\n`)
   } catch (err) {
     throw new Error(`Failed to add route: ${err}`)
@@ -196,7 +196,7 @@ export function addFakeIPRoute(): void {
 
 export function removeFakeIPRoute(): void {
   try {
-    execSync(`sudo route delete -net ${FAKE_IP_CIDR} 2>/dev/null || true`, { stdio: 'pipe' })
+    execSync(`sudo /sbin/route delete -net ${FAKE_IP_CIDR} 2>/dev/null || true`, { stdio: 'pipe' })
     process.stderr.write(`[tun] Route removed: ${FAKE_IP_CIDR}\n`)
   } catch { /* ignore */ }
 }
@@ -206,7 +206,7 @@ export async function waitForInterface(timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      execSync(`ifconfig ${TUN_INTERFACE} 2>/dev/null`, { stdio: 'pipe' })
+      execSync(`/sbin/ifconfig ${TUN_INTERFACE}`, { stdio: 'pipe' })
       process.stderr.write(`[tun] Interface ${TUN_INTERFACE} is up\n`)
       return
     } catch { /* not yet */ }
