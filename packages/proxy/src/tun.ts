@@ -215,9 +215,64 @@ export async function waitForInterface(timeoutMs = 5000): Promise<void> {
   throw new Error(`Timeout waiting for ${TUN_INTERFACE} to appear`)
 }
 
+// ── /etc/hosts entries (for Chromium/Electron which ignores /etc/resolver) ────
+
+const HOSTS_MARKER_START = '# BEGIN sci-tun'
+const HOSTS_MARKER_END   = '# END sci-tun'
+
+export function writeHostsEntries(): void {
+  try {
+    const { readFileSync, writeFileSync } = require('fs')
+    const hosts: string = readFileSync('/etc/hosts', 'utf-8')
+
+    // Remove any stale sci-tun block first
+    const cleaned = hosts
+      .split('\n')
+      .reduce((acc: string[], line: string, _: number, arr: string[]) => {
+        if (line.includes(HOSTS_MARKER_START)) { ; return acc }
+        if (line.includes(HOSTS_MARKER_END))   { return acc }
+        acc.push(line)
+        return acc
+      }, [] as string[])
+      .join('\n')
+
+    const block = [
+      '',
+      HOSTS_MARKER_START,
+      ...AI_HOSTNAMES.map(h => `${assignFakeIP(h)} ${h}`),
+      HOSTS_MARKER_END,
+      '',
+    ].join('\n')
+
+    const tmpPath = `/tmp/sci-hosts-${Date.now()}`
+    writeFileSync(tmpPath, cleaned.trimEnd() + block)
+    execSync(`sudo cp ${tmpPath} /etc/hosts && rm -f ${tmpPath}`, { stdio: 'pipe' })
+    process.stderr.write(`[tun] /etc/hosts: fake IPs added for ${AI_HOSTNAMES.length} hosts\n`)
+  } catch (err) {
+    process.stderr.write(`[tun] /etc/hosts update failed (non-fatal): ${err}\n`)
+  }
+}
+
+export function removeHostsEntries(): void {
+  try {
+    const { readFileSync, writeFileSync } = require('fs')
+    const hosts: string = readFileSync('/etc/hosts', 'utf-8')
+    let inBlock = false
+    const cleaned = hosts.split('\n').filter((line: string) => {
+      if (line.includes(HOSTS_MARKER_START)) { inBlock = true; return false }
+      if (line.includes(HOSTS_MARKER_END))   { inBlock = false; return false }
+      return !inBlock
+    }).join('\n')
+    const tmpPath = `/tmp/sci-hosts-clean-${Date.now()}`
+    writeFileSync(tmpPath, cleaned)
+    execSync(`sudo cp ${tmpPath} /etc/hosts && rm -f ${tmpPath}`, { stdio: 'pipe' })
+    process.stderr.write('[tun] /etc/hosts: sci-tun entries removed\n')
+  } catch { /* ignore — cleanup is best-effort */ }
+}
+
 // ── /etc/resolver entries ─────────────────────────────────────────────────────
 
-import { AI_HOSTNAMES } from './fake-ip.js'
+import { AI_HOSTNAMES, assignFakeIP } from './fake-ip.js'
 import { DNS_PORT } from './dns-server.js'
 
 const RESOLVER_DOMAINS = [...new Set(AI_HOSTNAMES.map(h => h.split('.').slice(-2).join('.')))]
@@ -281,10 +336,14 @@ export async function startTUNWithGuard(adapter: unknown): Promise<void> {
   registerTUNCleanup(async () => {
     stopSingBox()
     removeFakeIPRoute()
+    removeHostsEntries()
     removeResolverEntries()
   })
 
-  // Step 4: write /etc/resolver entries (ensures they're always present after crash recovery)
+  // Step 4a: write /etc/hosts entries (Chromium bypasses /etc/resolver but respects /etc/hosts)
+  writeHostsEntries()
+
+  // Step 4b: write /etc/resolver entries (for other resolvers)
   writeResolverEntries()
 
   // Step 5: start sing-box
