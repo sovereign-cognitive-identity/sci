@@ -1,0 +1,49 @@
+# Build artefacts (recreated inside the image)
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+**/*.tsbuildinfo
+**/*.map
+
+# Source control + editor + OS
+.git/
+.gitignore
+.github/
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Env & secrets — never bake the developer's local creds into the image
+.env
+.env.*
+**/.env
+**/.env.*
+
+# fastembed local cache (downloaded inside the image / mounted as a volume)
+local_cache/
+**/local_cache/
+
+# Logs + temp + test fixtures
+*.log
+/tmp/
+tests/
+**/test/
+**/tests/
+**/__tests__/
+
+# Docs site build output
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# Dev-only artefacts that shouldn't ship with a runtime image
+packages/ui/docs/oauth-poc.mjs
+packages/ui/docs/oauth-research.md
+
+# Anything VM-specific
+start-proxy.sh
+start-ui.sh
+fix-hosts.sh
+cleanup-tun.sh
+sci-test.sh

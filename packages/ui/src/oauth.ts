@@ -164,10 +164,18 @@ export async function login(opts: { onAuthUrl?: (url: string) => void } = {}): P
 
   // Bind on 127.0.0.1 — Chrome routes `localhost` to IPv4 loopback so this is
   // safe, and matches Claude Code CLI's own server bind.
+  //
+  // Port: random by default, but can be pinned via SCI_OAUTH_LOOPBACK_PORT.
+  // Pinning matters for Docker — port mapping needs a known target. Outside
+  // Docker, random is best (avoids "address in use" if multiple flows fire).
+  // We bind on 0.0.0.0 when a port is pinned so the redirect can come back
+  // through Docker's port-mapped network; on random ports we stay on 127.
+  const pinnedPort = Number(process.env['SCI_OAUTH_LOOPBACK_PORT'] ?? 0)
+  const bindAddr   = pinnedPort > 0 ? '0.0.0.0' : '127.0.0.1'
   const server = http.createServer()
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => resolve())
+    server.listen(pinnedPort, bindAddr, () => resolve())
   })
   const port = (server.address() as { port: number }).port
   // Advertise as `localhost` — Anthropic's auth server matches the redirect_uri

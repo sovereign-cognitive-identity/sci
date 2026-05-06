@@ -1,20 +1,117 @@
+# Sci — full local stack for running and sharing.
+#
+# Quickstart for first-time setup:
+#   docker compose --profile setup run --rm sci-auth
+#   docker compose up -d
+#   open http://localhost:3002
+#
+# `sci-auth` is on a `setup` profile so it doesn't start with `docker compose
+# up`. It opens the OAuth flow with a pinned loopback port (53000) mapped
+# through to your host browser. Token persists in the `sci_config` volume,
+# so re-running it is only needed when the refresh token expires.
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: sci
-      POSTGRES_USER: sci_admin
+      POSTGRES_DB:       sci
+      POSTGRES_USER:     sci_admin
       POSTGRES_PASSWORD: sci_local
-    ports:
-      - "5432:5432"
     volumes:
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - sci_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sci_admin -d sci"]
+      test:     ["CMD-SHELL", "pg_isready -U sci_admin -d sci"]
       interval: 5s
-      timeout: 5s
-      retries: 5
+      timeout:  5s
+      retries:  10
+
+  # Anonymizer + memory pipeline. Receives /v1/messages and proxies to
+  # Anthropic with masking, recall, and inspector events.
+  sci-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SCI_DB_READER_URL:    postgresql://sci_reader:sci_reader_local@postgres:5432/sci
+      SCI_DB_WRITER_URL:    postgresql://sci_writer:sci_writer_local@postgres:5432/sci
+      SCI_EMBED_MODEL:      BAAI/bge-base-en-v1.5
+      SCI_ROUTING_MODE:     direct
+      SCI_OPENROUTER_KEY:   unused-direct-mode
+    volumes:
+      - sci_fastembed_cache:/home/sci/.cache/fastembed
+    command: ["node", "packages/proxy/dist/index.js"]
+    expose:
+      - "3001"
+    restart: unless-stopped
+
+  # Chat UI server. Talks to sci-proxy on the internal docker network and
+  # to your host browser on port 3002.
+  sci-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      sci-proxy:
+        condition: service_started
+    environment:
+      SCI_DB_READER_URL:    postgresql://sci_reader:sci_reader_local@postgres:5432/sci
+      SCI_DB_WRITER_URL:    postgresql://sci_writer:sci_writer_local@postgres:5432/sci
+      SCI_EMBED_MODEL:      BAAI/bge-base-en-v1.5
+      SCI_PROXY_URL:        http://sci-proxy:3001
+      SCI_UI_PORT:          "3002"
+    volumes:
+      - sci_config:/home/sci/.sci
+      - sci_fastembed_cache:/home/sci/.cache/fastembed
+    command: ["node", "packages/ui/dist/server.js"]
+    ports:
+      - "3002:3002"
+    restart: unless-stopped
+
+  # One-shot OAuth login — `docker compose --profile setup run --rm sci-auth`
+  # The pinned loopback port lets the redirect from your browser come back
+  # through the docker network port mapping.
+  sci-auth:
+    profiles: [setup]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SCI_OAUTH_LOOPBACK_PORT: "53000"
+    volumes:
+      - sci_config:/home/sci/.sci
+    ports:
+      - "53000:53000"
+    entrypoint: ["node", "packages/ui/dist/oauth-cli.js"]
+    command: ["login"]
+
+  # On-demand consolidator runner — extracts semantic facts from episodic
+  # memories so recall can surface specific information instead of long blobs.
+  # Run after seeding meaningful chat history:
+  #   docker compose --profile consolidate run --rm sci-consolidate
+  sci-consolidate:
+    profiles: [consolidate]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SCI_DB_READER_URL: postgresql://sci_reader:sci_reader_local@postgres:5432/sci
+      SCI_DB_WRITER_URL: postgresql://sci_writer:sci_writer_local@postgres:5432/sci
+      SCI_EMBED_MODEL:   BAAI/bge-base-en-v1.5
+    volumes:
+      - sci_config:/home/sci/.sci
+      - sci_fastembed_cache:/home/sci/.cache/fastembed
+    entrypoint: ["node", "packages/ui/dist/consolidate.js"]
 
 volumes:
-  sci_data:
+  sci_data:             # Postgres data
+  sci_config:           # ~/.sci — OAuth token, anything else user-scoped
+  sci_fastembed_cache:  # BGE model cache (~125 MB after first download)
