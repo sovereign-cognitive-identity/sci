@@ -11,6 +11,7 @@
     "proxy": "SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node packages/proxy/dist/index.js",
     "ui": "SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node packages/ui/dist/server.js",
     "ui:auth": "node packages/ui/dist/oauth-cli.js",
+    "consolidate": "SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node packages/ui/dist/consolidate.js",
     "dev:mcp": "npm run dev --workspace=packages/mcp",
     "dev:cli": "npm run dev --workspace=packages/cli",
     "test": "SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node tests/integration.mjs",

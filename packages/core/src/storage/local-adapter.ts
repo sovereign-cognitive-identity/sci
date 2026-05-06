@@ -180,8 +180,8 @@ export class LocalAdapter implements StorageAdapter {
     limit: number; types: Array<'episodic' | 'semantic' | 'identity'>
   }): Promise<RecallResult[]> {
     const vectorLiteral = `[${input.queryEmbedding.join(',')}]`
-    const fetchN = input.limit * 3
-    const results: RecallResult[] = []
+    const fetchN  = input.limit * 3
+    const sources: RecallResult[][] = []   // each source already score-sorted
 
     if (input.types.includes('episodic')) {
       const [dense, fts] = await Promise.all([
@@ -203,10 +203,8 @@ export class LocalAdapter implements StorageAdapter {
           [input.query, input.profileId, fetchN]
         ),
       ])
-      results.push(
-        ...dense.rows.map((r): RecallResult => ({ ...r, type: 'episodic', score: r.score })),
-        ...fts.rows.map((r): RecallResult => ({ ...r, type: 'episodic', score: r.rank })),
-      )
+      sources.push(dense.rows.map((r): RecallResult => ({ ...r, type: 'episodic', score: r.score })))
+      sources.push(fts.rows.map((r): RecallResult   => ({ ...r, type: 'episodic', score: r.rank  })))
     }
 
     if (input.types.includes('semantic')) {
@@ -227,10 +225,8 @@ export class LocalAdapter implements StorageAdapter {
           [input.query, input.profileId, fetchN]
         ),
       ])
-      results.push(
-        ...dense.rows.map((r): RecallResult => ({ ...r, type: 'semantic' })),
-        ...fts.rows.map((r): RecallResult => ({ ...r, type: 'semantic', score: r.rank })),
-      )
+      sources.push(dense.rows.map((r): RecallResult => ({ ...r, type: 'semantic' })))
+      sources.push(fts.rows.map((r): RecallResult   => ({ ...r, type: 'semantic', score: r.rank })))
     }
 
     if (input.types.includes('identity')) {
@@ -250,13 +246,11 @@ export class LocalAdapter implements StorageAdapter {
           [input.query, fetchN]
         ),
       ])
-      results.push(
-        ...dense.rows.map((r): RecallResult => ({ ...r, type: 'identity' })),
-        ...fts.rows.map((r): RecallResult => ({ ...r, type: 'identity', score: r.rank })),
-      )
+      sources.push(dense.rows.map((r): RecallResult => ({ ...r, type: 'identity' })))
+      sources.push(fts.rows.map((r): RecallResult   => ({ ...r, type: 'identity', score: r.rank })))
     }
 
-    return rrf(results, input.limit)
+    return rrf(sources, input.limit)
   }
 
   async queryIdentityFacts(options?: {
@@ -424,13 +418,29 @@ export class LocalAdapter implements StorageAdapter {
 
 // ── RRF helper ────────────────────────────────────────────────────────────────
 
-function rrf(results: RecallResult[], limit: number, k = 60): RecallResult[] {
+/**
+ * Reciprocal Rank Fusion across multiple ranked source lists.
+ *
+ * Each source list is already score-sorted within itself. RRF gives each
+ * document a score = Σ 1/(k + rank_in_source) across all sources where it
+ * appears. Documents in multiple sources accumulate higher scores.
+ *
+ * Critically: rank is per-source, NOT the global concatenation index. The
+ * old single-array implementation positioned semantic results AFTER all
+ * episodic results in a flat array, so the best semantic result was
+ * mathematically penalised by ~3.4× regardless of relevance — semantic
+ * results could never win recall against a profile with any episodic
+ * content. This signature makes the per-source semantics explicit.
+ */
+function rrf(sources: RecallResult[][], limit: number, k = 60): RecallResult[] {
   const scores = new Map<string, number>()
-  const items = new Map<string, RecallResult>()
-  results.forEach((r, i) => {
-    scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (i + 1 + k))
-    if (!items.has(r.id)) items.set(r.id, r)
-  })
+  const items  = new Map<string, RecallResult>()
+  for (const source of sources) {
+    source.forEach((r, idx) => {
+      scores.set(r.id, (scores.get(r.id) ?? 0) + 1 / (idx + 1 + k))
+      if (!items.has(r.id)) items.set(r.id, r)
+    })
+  }
   return [...items.values()]
     .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0))
     .slice(0, limit)
