@@ -88,8 +88,12 @@ fetch_launchpad_mirrors() {
 }
 
 log "Discovering mirrors (curated + Launchpad)…"
-mapfile -t LP < <(fetch_launchpad_mirrors)
-mapfile -t MIRRORS < <(printf '%s\n' "${KNOWN_MIRRORS[@]}" "${LP[@]}" | awk 'NF' | sort -u)
+LP=()
+while IFS= read -r line; do [ -n "$line" ] && LP+=("$line"); done < <(fetch_launchpad_mirrors)
+MIRRORS=()
+while IFS= read -r line; do [ -n "$line" ] && MIRRORS+=("$line"); done < <(
+  printf '%s\n' "${KNOWN_MIRRORS[@]}" "${LP[@]}" | awk 'NF' | sort -u
+)
 
 log "Testing ${#MIRRORS[@]} mirror(s) for ${ISO_NAME} (timeout=${TIMEOUT}s, speed sample=${SPEED_BYTES}B)…"
 log ""
