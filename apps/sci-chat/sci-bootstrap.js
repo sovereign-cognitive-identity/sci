@@ -80,10 +80,94 @@ const path = require('path');
     console.log(`[sci-bootstrap] trusting CA at ${process.env.NODE_EXTRA_CA_CERTS}`);
   }
 
-  // ── 3. Boot the actual server ────────────────────────────────────────
+  // ── 3. Seed local user once Mongo is up but before the server boots
+  //      so the very first launch lands the user on a working login. ─
+  //      Idempotent: if the user already exists, this is a no-op. The
+  //      in-process Mongo means create-user can't run in a separate
+  //      process — has to share this one. We do it inline here.
+  await seedLocalUser();
+
+  // ── 4. Boot the actual server ────────────────────────────────────────
   console.log('[sci-bootstrap] handing off to api/server/index.js');
   require(path.join(__dirname, 'api/server/index.js'));
 })().catch((err) => {
   console.error('[sci-bootstrap] fatal:', err);
   process.exit(1);
 });
+
+/**
+ * Idempotent first-run user seed. Sci's chat client runs single-user
+ * locally, but LibreChat still expects a row in the `users` collection
+ * to log in. We create one with deterministic credentials on the
+ * very first boot of a fresh DB and skip thereafter.
+ *
+ * Credentials (default):
+ *   email:    sci@local.host
+ *   password: sci-chat-dev
+ *
+ * Overridable via env: SCI_LOCAL_USER_EMAIL, SCI_LOCAL_USER_PASSWORD,
+ * SCI_LOCAL_USER_NAME. The DB is process-local (in-memory by default),
+ * so these never leave the machine.
+ *
+ * Why inline rather than `npm run create-user`: in-process Mongo means
+ * a separately-spawned `node config/create-user.js` would connect to
+ * its own ephemeral instance and write to nothing. The seed has to
+ * share the bootstrap process's Mongo handle.
+ */
+async function seedLocalUser() {
+  // Defaults pass LibreChat's validation: real-looking domain (.host)
+  // and 8+ char password. Both are documented; user can change in
+  // Settings or via the SCI_LOCAL_USER_* env vars.
+  const email    = process.env.SCI_LOCAL_USER_EMAIL    || 'sci@local.host';
+  const password = process.env.SCI_LOCAL_USER_PASSWORD || 'sci-chat-dev';
+  const name     = process.env.SCI_LOCAL_USER_NAME     || 'Sci User';
+  const username = email.split('@')[0];
+
+  // Open a side connection to the same Mongo URI to do the seed,
+  // since the main api/server/index.js will open its own with mongoose
+  // a moment later. Two connections to the same in-memory instance
+  // share state.
+  const mongoose = require('mongoose');
+  const mongoUri = process.env.MONGO_URI;
+  let connected = false;
+  try {
+    await mongoose.connect(mongoUri);
+    connected = true;
+    const { createModels } = require('@librechat/data-schemas');
+    const { User } = createModels(mongoose);
+
+    const existing = await User.findOne({ email }).lean();
+    if (existing) {
+      console.log(`[sci-bootstrap] local user already exists (${email}) — skipping seed`);
+      return;
+    }
+
+    // The model has password hashing wired in pre-save; calling
+    // User.create() with a plain password is the documented path
+    // (see config/create-user.js for parity).
+    require('module-alias')({ base: path.join(__dirname, 'api') });
+    const { registerUser } = require(
+      path.join(__dirname, 'api/server/services/AuthService')
+    );
+    const result = await registerUser(
+      { email, password, confirm_password: password, name, username },
+      { emailVerified: true },
+    );
+    if (result.status === 200) {
+      console.log(`[sci-bootstrap] seeded local user ${email} / password "${password}"`);
+    } else {
+      console.warn(
+        `[sci-bootstrap] user seed returned status ${result.status}: ${result.message}`,
+      );
+    }
+  } catch (e) {
+    console.warn('[sci-bootstrap] user seed failed (non-fatal):', e.message);
+  } finally {
+    if (connected) {
+      // Close the side connection so the main server's mongoose.connect
+      // gets a fresh handle. Otherwise the api server reuses ours and
+      // its lifecycle hooks may misfire.
+      await mongoose.disconnect();
+    }
+  }
+}
