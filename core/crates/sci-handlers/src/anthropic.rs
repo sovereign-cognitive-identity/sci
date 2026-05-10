@@ -84,6 +84,7 @@ pub async fn handle_anthropic_messages(
     // the prefix (Claude Code in the call chain), we leave it alone.
     if oauth_active {
         prepend_claude_code_prefix(&mut body);
+        sanitize_body_for_oauth(&mut body);
     }
 
     let upstream_body = serde_json::to_vec(&body)
@@ -888,6 +889,43 @@ fn prepend_claude_code_prefix(body: &mut Value) {
         _ => {
             body["system"] = Value::String(prefix.to_string());
         }
+    }
+}
+
+/// Body-shape fixups applied only when the OAuth bearer fall-through
+/// is in play. The Pro/Max OAuth path on `/v1/messages` rejects (or
+/// rate-limits) several fields that the API-key tier accepts, so we
+/// strip them before forwarding. Each removed field is documented
+/// below with the upstream behavior we observed.
+///
+/// Verified against `api.anthropic.com` 2026-05-10 with a fresh OAuth
+/// bearer:
+///
+///   • `thinking: {"type":"adaptive"}`  → 400 invalid_request_error,
+///                                          "adaptive thinking is not
+///                                          supported on this model"
+///                                          (after several retries
+///                                          devolves to 429 rate_limit
+///                                          per the abuse-detection
+///                                          escalation we hit before)
+///
+/// LibreChat sends these by default for newer models; we'd otherwise
+/// have to fork its config. Stripping at the Sci layer keeps the
+/// sci-chat fork unmodified and works for any client whose body shape
+/// has the same problem.
+fn sanitize_body_for_oauth(body: &mut Value) {
+    let Some(obj) = body.as_object_mut() else { return; };
+
+    // ── thinking ────────────────────────────────────────────────────
+    // Remove unconditionally on the OAuth path. Real Claude Code's
+    // request shape doesn't include `thinking`; absence is the safe
+    // default. If/when extended thinking is supported on subscriber
+    // bearers, lift this strip.
+    if obj.remove("thinking").is_some() {
+        tracing::debug!(
+            target: "sci_handlers::anthropic::oauth_sanitize",
+            "stripped `thinking` field (rejected on OAuth bearer path)",
+        );
     }
 }
 
