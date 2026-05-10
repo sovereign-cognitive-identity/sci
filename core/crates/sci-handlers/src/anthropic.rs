@@ -159,19 +159,43 @@ pub async fn handle_anthropic_messages(
         .unwrap_or("");
     let is_sse = resp_content_type.starts_with("text/event-stream");
 
+    // SCI-130 / flight-recorder storage hook. Both the streaming and
+    // non-streaming paths feed the same `spawn_store_turn` once the
+    // assistant's text is in hand:
+    //
+    //   - SSE: register a finalize callback on `DeanonymizingStream`
+    //     that fires after the upstream stream ends. The callback
+    //     receives the fully deanonymized assistant text already
+    //     accumulated by the deanonymizer.
+    //   - JSON: `deanonymize_json_body` extracts the assistant text
+    //     synchronously after deanon completes and we hand both
+    //     (user, assistant) directly to the spawn.
+    //
+    // `spawn_store_turn` mirrors the previous `spawn_store_interaction`
+    // contract (filter-then-fire-and-forget) and stores BOTH the user
+    // prompt and the assistant response so future recall surfaces the
+    // assistant's stable claims ("My name is Casey") not just the
+    // user's questions. See SCI-150 / flight-recorder design.
     let (body_stream, inspect_upstream_raw): (BodyStream, Option<bytes::Bytes>) = if is_sse {
-        // SSE: stream straight through the deanonymizer; we don't
-        // buffer the upstream body, so no inspect snapshot. Per-chunk
-        // tracing is a future enhancement.
-        (
-            DeanonymizingStream::new().wrap(upstream_resp.body, session_map),
-            None,
-        )
+        let state_for_finalize = state.clone();
+        let user_text_for_finalize = original_user_text.clone();
+        let stream = DeanonymizingStream::new().wrap_with_finalize(
+            upstream_resp.body,
+            session_map,
+            move |assistant_text| {
+                spawn_store_turn(state_for_finalize, user_text_for_finalize, assistant_text);
+            },
+        );
+        (stream, None)
     } else {
         // JSON: `deanonymize_json_body` already buffers the full
         // upstream body before deanon — return that buffer too so
-        // the platform shell can emit it as an inspector event.
-        let (stream, raw) = deanonymize_json_body(upstream_resp.body, session_map).await?;
+        // the platform shell can emit it as an inspector event,
+        // plus the extracted deanonymized assistant text for the
+        // flight recorder.
+        let (stream, raw, assistant_text) =
+            deanonymize_json_body(upstream_resp.body, session_map).await?;
+        spawn_store_turn(state.clone(), original_user_text.clone(), assistant_text);
         (stream, Some(raw))
     };
 
@@ -180,23 +204,6 @@ pub async fn handle_anthropic_messages(
     // platform shell reads it for telemetry, then strips it before
     // forwarding to the actual client.
     headers.insert("x-sci-masked".into(), masked_count.to_string());
-
-    // SCI-130 storage hook: fire-and-forget store of the (pre-anon)
-    // user message into the episodic memory. Mirrors the TS proxy's
-    // `storeInteraction` at packages/proxy/src/middleware/memory.ts:
-    //
-    //   - Only stores if the user text is non-trivial (>20 chars)
-    //   - Stores the ORIGINAL text (real names), not the masked one —
-    //     anonymization only governs what leaves the machine
-    //   - Uses the 'work' profile by default (matches TS contract)
-    //   - Fire-and-forget: embedding + write run on a background task
-    //     so they don't add latency to the response stream
-    //
-    // We only fire on the 2xx success path (we're past the early-return
-    // for non-2xx above); the store therefore reflects "interactions
-    // the user actually had with the model" not "every parse-able body
-    // we sent upstream."
-    spawn_store_interaction(state.clone(), original_user_text);
 
     Ok(HandlerResponse {
         status:  upstream_resp.status,
@@ -358,40 +365,65 @@ fn looks_like_slash_command_output(s: &str) -> bool {
         && !trimmed.contains(' ')
 }
 
-/// Spawn a background task that embeds + persists the user message.
-/// Non-blocking: if the embedder is slow or the DB stalls, the user's
-/// response stream is unaffected. All errors are swallowed (logged at
-/// debug only) — failing to remember an interaction is a soft failure,
-/// not worth surfacing to the model client.
-fn spawn_store_interaction(state: Arc<HandlerState>, user_text: String) {
-    let trimmed = user_text.trim();
-    if trimmed.chars().count() < STORE_MIN_CHARS {
+/// Spawn a background task that embeds + persists both halves of a
+/// completed turn — the (pre-anon) user prompt and the deanonymized
+/// assistant response. Non-blocking: if the embedder is slow or the DB
+/// stalls, the user's response stream is unaffected. All errors are
+/// swallowed (logged at debug only) — failing to remember an
+/// interaction is a soft failure, not worth surfacing to the model
+/// client.
+///
+/// The user-text gating (`is_agent_automation_prompt`,
+/// `looks_like_slash_command_output`, length floor) decides whether
+/// the WHOLE turn is recorded. If the user prompt is junk (Claude
+/// Code's internal title-generation calls, slash-command pings), we
+/// skip the assistant half too — that response was about junk too.
+///
+/// Assistant text is stored only if non-trivial (length floor) and
+/// gets a `role: assistant` metadata field so recall + future
+/// audit_turns reconstruction can distinguish the two sides.
+fn spawn_store_turn(
+    state:           Arc<HandlerState>,
+    user_text:       String,
+    assistant_text:  String,
+) {
+    let user_trimmed = user_text.trim();
+    if user_trimmed.chars().count() < STORE_MIN_CHARS {
         return;
     }
-    if is_agent_automation_prompt(trimmed) {
-        // Don't pollute the memory with Claude Code's internal
-        // suggestion / summarization / planning prompts. The user
-        // didn't type these; storing them as if they did would
-        // surface garbage during recall (and bloat the corpus).
+    if is_agent_automation_prompt(user_trimmed) {
         tracing::debug!(
-            preview = &trimmed[..trimmed.len().min(60)],
+            preview = &user_trimmed[..user_trimmed.len().min(60)],
             "skipping memory write: looks like agent automation prompt",
         );
         return;
     }
-    if looks_like_slash_command_output(trimmed) {
-        // E.g. Claude Code's `/quota`, `/model`, `/cost` slash
-        // commands — they fire short single-token user messages as
-        // meta-calls. Keeping them out of recall.
+    if looks_like_slash_command_output(user_trimmed) {
         tracing::debug!(
-            preview = trimmed,
+            preview = user_trimmed,
             "skipping memory write: looks like slash-command output",
         );
         return;
     }
+
     tokio::spawn(async move {
-        if let Err(e) = store_interaction(&state, &user_text).await {
-            tracing::debug!(error = %e, "memory write failed (non-fatal)");
+        // Group both sides under one timestamp so a future audit_turns
+        // join can pair them via metadata.turn_group. Cheap.
+        let turn_group = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+            .to_string();
+
+        if let Err(e) = store_interaction(&state, &user_text, "user", &turn_group).await {
+            tracing::debug!(error = %e, role = "user", "memory write failed (non-fatal)");
+        }
+
+        let asst_trimmed = assistant_text.trim();
+        if asst_trimmed.chars().count() >= STORE_MIN_CHARS
+            && let Err(e) = store_interaction(&state, &assistant_text, "assistant", &turn_group).await
+        {
+            tracing::debug!(error = %e, role = "assistant", "memory write failed (non-fatal)");
         }
     });
 }
@@ -433,7 +465,12 @@ fn chunk_for_storage(text: &str) -> Vec<String> {
     chunks
 }
 
-async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result<()> {
+async fn store_interaction(
+    state:      &Arc<HandlerState>,
+    text:       &str,
+    role:       &str,
+    turn_group: &str,
+) -> Result<()> {
     // Resolve profile (drop the storage lock before .await, same as
     // recall — clippy::await_holding_lock is enforced).
     let profile_id = {
@@ -445,11 +482,11 @@ async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result
         p.id
     };
 
-    let chunks = chunk_for_storage(user_text);
+    let chunks = chunk_for_storage(text);
     let chunk_count = chunks.len();
     // Group-id correlates chunks from the same paste so a future UI
     // can render them together. Cheap, just a millisecond timestamp.
-    let group_id = std::time::SystemTime::now()
+    let chunk_group = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
@@ -465,10 +502,12 @@ async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result
         let mut metadata = sci_memory::Metadata::new();
         metadata.insert("has_response".into(), serde_json::Value::Bool(true));
         metadata.insert("source".into(),       serde_json::Value::String("rust-helper".into()));
+        metadata.insert("role".into(),         serde_json::Value::String(role.into()));
+        metadata.insert("turn_group".into(),   serde_json::Value::String(turn_group.into()));
         if chunk_count > 1 {
             metadata.insert(
                 "chunk".into(),
-                serde_json::json!({"index": idx, "of": chunk_count, "group": group_id.to_string()}),
+                serde_json::json!({"index": idx, "of": chunk_count, "group": chunk_group.to_string()}),
             );
         }
         storage.store_episodic(&sci_memory::StoreEpisodicInput {
@@ -482,8 +521,9 @@ async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result
     }
     if chunk_count > 1 {
         tracing::debug!(
+            role,
             chunks = chunk_count,
-            total_chars = user_text.chars().count(),
+            total_chars = text.chars().count(),
             "stored chunked memory",
         );
     }
@@ -517,7 +557,7 @@ async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result
 async fn deanonymize_json_body(
     mut body:      BodyStream,
     session_map:   TokenMap,
-) -> Result<(BodyStream, bytes::Bytes)> {
+) -> Result<(BodyStream, bytes::Bytes, String)> {
     use futures::StreamExt;
 
     let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
@@ -550,18 +590,51 @@ async fn deanonymize_json_body(
 
     // Parse + deanon. On any parse failure we pass through untouched so
     // a malformed-but-real-error response still reaches the client.
-    let rewritten: Vec<u8> = match serde_json::from_slice::<Value>(&buf) {
+    // The flight-recorder also wants the deanonymized assistant text
+    // so it can be paired with the user prompt + persisted to
+    // audit_turns. Extract it after deanon so the captured text matches
+    // what the client sees.
+    let (rewritten, assistant_text): (Vec<u8>, String) = match serde_json::from_slice::<Value>(&buf) {
         Ok(mut v) => {
             deanonymize_messages_response(&mut v, &session_map);
-            serde_json::to_vec(&v).unwrap_or(buf)
+            let assistant_text = extract_assistant_text(&v);
+            let bytes = serde_json::to_vec(&v).unwrap_or(buf);
+            (bytes, assistant_text)
         }
-        Err(_) => buf,
+        Err(_) => (buf, String::new()),
     };
 
     let stream: BodyStream = Box::pin(futures::stream::once(async move {
         Ok::<_, std::io::Error>(bytes::Bytes::from(rewritten))
     }));
-    Ok((stream, raw))
+    Ok((stream, raw, assistant_text))
+}
+
+/// Pull the user-visible text out of a deanonymized non-streaming
+/// `/v1/messages` response. Concatenates every `content[*].text` block
+/// in order. Skips `thinking` blocks (the model's chain-of-thought
+/// isn't part of what the user reads as the answer) and tool-use blocks
+/// (those carry tool args, not prose). Mirrors what
+/// `DeanonymizingStream` accumulates in `full_response` on the SSE
+/// path so the audit_turns row carries the same artifact regardless
+/// of streaming vs non-streaming.
+fn extract_assistant_text(value: &Value) -> String {
+    let Some(content) = value.get("content").and_then(|v| v.as_array()) else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for block in content {
+        let block_type = block.get("type").and_then(|v| v.as_str());
+        if block_type == Some("text")
+            && let Some(t) = block.get("text").and_then(|v| v.as_str())
+        {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(t);
+        }
+    }
+    out
 }
 
 /// Walk a parsed `/v1/messages` response and rewrite token-shaped

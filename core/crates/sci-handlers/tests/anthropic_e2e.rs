@@ -241,22 +241,26 @@ async fn round_trip_persists_user_message_to_episodic_memory() {
 
     // The store is fire-and-forget on a tokio::spawn — give it a
     // moment to land. With NoopEmbedder + in-memory SQLite this is
-    // sub-millisecond, but the scheduler still has to tick.
+    // sub-millisecond, but the scheduler still has to tick. Wait for
+    // BOTH halves of the turn (user + assistant) to land — the
+    // flight-recorder design persists both sides paired by turn_group.
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let s = storage.lock().unwrap();
-        if s.get_stats().unwrap().episodic >= 1 {
+        if s.get_stats().unwrap().episodic >= 2 {
             break;
         }
     }
 
-    // Final assertion: exactly one episodic row, content == original
-    // (un-anonymized) user text.
+    // Final assertion: two episodic rows, one user (original
+    // un-anonymized text) + one assistant (deanonymized response). The
+    // flight-recorder turn-pair lets recall surface stable assistant
+    // claims, not just user questions.
     let s = storage.lock().unwrap();
     let stats = s.get_stats().expect("get_stats");
     assert_eq!(
-        stats.episodic, 1,
-        "expected 1 episodic memory after a successful round-trip, got {}",
+        stats.episodic, 2,
+        "expected 2 episodic memories (user + assistant) after a round-trip, got {}",
         stats.episodic,
     );
 
@@ -271,7 +275,14 @@ async fn round_trip_persists_user_message_to_episodic_memory() {
     }).expect("recall");
     assert!(
         hits.iter().any(|h| h.content == user_text),
-        "expected stored content to match original (real names), got: {hits:?}",
+        "expected stored user content to match original (real names), got: {hits:?}",
+    );
+    // The deanonymized assistant text — `got it, openclaw.dev` — must
+    // also be in the corpus so a future "what did Claude say about
+    // openclaw" query can hit it.
+    assert!(
+        hits.iter().any(|h| h.content.contains("got it, openclaw.dev")),
+        "expected stored assistant content to contain deanonymized URL, got: {hits:?}",
     );
 }
 

@@ -51,13 +51,49 @@ impl DeanonymizingStream {
     /// inner `Arc<Mutex>` so the caller can read it after the stream
     /// terminates.
     pub fn wrap(&self, upstream: BodyStream, token_map: TokenMap) -> BodyStream {
+        self.wrap_inner(upstream, token_map, None)
+    }
+
+    /// Like `wrap`, but invokes `on_complete(full_deanonymized_text)`
+    /// exactly once after the upstream stream finishes (either via
+    /// natural EOF or after a tail-buffer flush). The callback runs
+    /// inline on the stream's task — keep it cheap; spawn anything
+    /// slow (DB writes, embeddings) onto its own task.
+    ///
+    /// This is the flight-recorder hook: the callback receives the
+    /// fully assembled, deanonymized assistant text and can persist
+    /// it (audit_turns row, episodic memory, SCI-138 event emission,
+    /// etc.) without bloating the streaming hot path.
+    ///
+    /// The callback is NOT invoked if the stream errors out partway —
+    /// in that case `full_response` may still hold a partial transcript
+    /// that the caller can inspect via the `full_response` Arc.
+    pub fn wrap_with_finalize<F>(
+        &self,
+        upstream:    BodyStream,
+        token_map:   TokenMap,
+        on_complete: F,
+    ) -> BodyStream
+    where
+        F: FnOnce(String) + Send + 'static,
+    {
+        self.wrap_inner(upstream, token_map, Some(Box::new(on_complete)))
+    }
+
+    fn wrap_inner(
+        &self,
+        upstream:    BodyStream,
+        token_map:   TokenMap,
+        on_complete: Option<Box<dyn FnOnce(String) + Send + 'static>>,
+    ) -> BodyStream {
         let full = self.full_response.clone();
         let mut buf: Vec<u8> = Vec::new();
         let mut upstream = upstream;
+        let mut on_complete = on_complete;
 
         // `async_stream::stream!` builds an `impl Stream<Item = ...>`
-        // from imperative async code. State (buf, full, token_map)
-        // lives across yield points cleanly.
+        // from imperative async code. State (buf, full, token_map,
+        // on_complete) lives across yield points cleanly.
         let stream = async_stream::stream! {
             while let Some(chunk) = upstream.next().await {
                 let chunk = match chunk {
@@ -83,6 +119,18 @@ impl DeanonymizingStream {
             // truncating.
             if !buf.is_empty() {
                 yield Ok(Bytes::from(buf));
+            }
+
+            // Finalize: read the accumulated deanonymized text and
+            // hand it to the caller's flight-recorder hook. Done
+            // AFTER yielding the tail buffer so the client sees the
+            // whole transcript before storage fires (matches user
+            // expectation: "the answer arrives, then it's logged").
+            if let Some(cb) = on_complete.take() {
+                let text = full.lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                cb(text);
             }
         };
         Box::pin(stream)
@@ -463,6 +511,37 @@ mod tests {
             "input_json_delta deanon failed; got: {text}",
         );
         assert!(!text.contains(&token), "token leaked in tool input: {text}");
+    }
+
+    /// Flight-recorder hook: `wrap_with_finalize` invokes the callback
+    /// exactly once after the upstream stream ends, with the full
+    /// deanonymized assistant text. Pins the contract that downstream
+    /// consumers (audit_turns writer, SCI-138 emitter) can rely on
+    /// receiving the assembled transcript without polling
+    /// `full_response` themselves.
+    #[test]
+    fn finalize_callback_fires_with_deanonymized_text() {
+        let r = anonymize("OpenClaw is shipping", None);
+        let token = r.token_map.forward.get("OpenClaw").unwrap().clone();
+        let event = format!(
+            "event: content_block_delta\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\
+             \"delta\":{{\"type\":\"text_delta\",\"text\":\"shipping {token} v2\"}}}}\n\n",
+        );
+        let upstream: BodyStream = Box::pin(stream::iter(vec![
+            Ok::<_, std::io::Error>(Bytes::from(event.into_bytes())),
+        ]));
+
+        let captured: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let captured_for_cb = captured.clone();
+        let de = DeanonymizingStream::new();
+        let stream = de.wrap_with_finalize(upstream, r.token_map, move |text| {
+            *captured_for_cb.lock().unwrap() = Some(text);
+        });
+        let _ = collect_bytes(stream);
+
+        let got = captured.lock().unwrap().clone();
+        assert_eq!(got.as_deref(), Some("shipping OpenClaw v2"));
     }
 
     /// `content_block_start` for a `tool_use` block carries the initial
