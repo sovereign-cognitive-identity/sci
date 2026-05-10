@@ -850,44 +850,84 @@ const CLAUDE_CODE_PREFIX_SEPARATOR: &str = "\n\n";
 /// the prefix.
 fn prepend_claude_code_prefix(body: &mut Value) {
     let prefix = CLAUDE_CODE_SYSTEM_PREFIX;
-    let sep    = CLAUDE_CODE_PREFIX_SEPARATOR;
+
+    // Anthropic's OAuth-bearer gate is *exact-match* on the system
+    // field when it's a STRING — anything appended (even another
+    // sentence about tools) trips a 429 rate_limit_error. With the
+    // ARRAY-of-blocks shape, only the first block has to match the
+    // canonical phrase exactly; additional blocks (recall, caller's
+    // own system content) are accepted. Verified by direct curl
+    // bisection on 2026-05-10.
+    //
+    // So the fix is uniform: always convert `system` to the array
+    // shape on the OAuth path, with the canonical prefix as block[0]
+    // (exact, no separator) and any caller-provided system content
+    // wrapped as block[1+].
+    let canonical_block = serde_json::json!({"type":"text","text":prefix});
 
     match body.get_mut("system") {
-        // Already a string. Idempotent prepend.
+        // String form. Convert to [{prefix}, {existing_string}] —
+        // unless the existing string IS the prefix already (idempotent
+        // for retries / cache hits).
         Some(Value::String(s)) => {
-            if !s.starts_with(prefix) {
-                if s.is_empty() {
-                    *s = prefix.to_string();
+            if s == prefix {
+                // already exactly the prefix, just promote to array
+                // for shape-uniformity.
+                *body.get_mut("system").unwrap() = Value::Array(vec![canonical_block]);
+            } else if s.starts_with(prefix) {
+                // Was prefix + extra (probably a previous string-shape
+                // injection). Split: keep the prefix as block[0],
+                // strip leading separator + put rest as block[1].
+                let rest = s[prefix.len()..].trim_start_matches(['\n', ' ']).to_string();
+                let blocks = if rest.is_empty() {
+                    vec![canonical_block]
                 } else {
-                    *s = format!("{prefix}{sep}{s}");
-                }
+                    vec![canonical_block, serde_json::json!({"type":"text","text":rest})]
+                };
+                *body.get_mut("system").unwrap() = Value::Array(blocks);
+            } else if s.is_empty() {
+                *body.get_mut("system").unwrap() = Value::Array(vec![canonical_block]);
+            } else {
+                let original = s.clone();
+                *body.get_mut("system").unwrap() = Value::Array(vec![
+                    canonical_block,
+                    serde_json::json!({"type":"text","text":original}),
+                ]);
             }
         }
-        // Array-of-blocks shape (Anthropic also accepts this for
-        // ergonomic prompt-caching usage). Insert a leading text block
-        // unless the first text block already leads with the prefix.
+        // Already an array. Make sure block[0] is the exact canonical
+        // phrase. If the first text block already starts with the
+        // prefix but has trailing content in the SAME block, split it.
         Some(Value::Array(blocks)) => {
-            let already_prefixed = blocks
-                .iter()
-                .find_map(|b| {
+            let first_text = blocks
+                .first()
+                .and_then(|b| {
                     if b.get("type").and_then(|v| v.as_str()) == Some("text") {
                         b.get("text").and_then(|v| v.as_str())
                     } else {
                         None
                     }
-                })
-                .is_some_and(|t| t.starts_with(prefix));
-            if !already_prefixed {
-                let block = serde_json::json!({
-                    "type": "text",
-                    "text": prefix,
                 });
-                blocks.insert(0, block);
+            match first_text {
+                Some(t) if t == prefix => { /* perfect — leave alone */ }
+                Some(t) if t.starts_with(prefix) => {
+                    // Split block[0] so the prefix is alone in block[0]
+                    // and the rest moves to block[1].
+                    let rest = t[prefix.len()..].trim_start_matches(['\n', ' ']).to_string();
+                    blocks[0] = canonical_block.clone();
+                    if !rest.is_empty() {
+                        blocks.insert(1, serde_json::json!({"type":"text","text":rest}));
+                    }
+                }
+                _ => {
+                    // Prefix not at block[0] — prepend.
+                    blocks.insert(0, canonical_block);
+                }
             }
         }
-        // Any other shape (or absent). Replace with a fresh string.
+        // Absent or unsupported shape. Set fresh array.
         _ => {
-            body["system"] = Value::String(prefix.to_string());
+            body["system"] = Value::Array(vec![canonical_block]);
         }
     }
 }
