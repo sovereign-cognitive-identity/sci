@@ -254,40 +254,90 @@ const STORE_MIN_CHARS: usize = 5;
 const DEFAULT_STORE_PROFILE: &str = "work";
 
 /// True if `s` looks like an agent's internal automation prompt
-/// rather than a real user turn. Heuristic: leading `[` followed by
-/// an ALL-CAPS marker terminated by `:` or `]`. Catches the patterns
-/// Claude Code (and similar agentic CLIs) use to wrap meta-instructions
-/// as user-role messages — `[SUGGESTION MODE: ...]`, `[SUMMARY: ...]`,
-/// `[SYSTEM: ...]`, etc.
+/// rather than a real user turn. Three families of patterns:
 ///
-/// We deliberately don't hard-code a marker list because (a) tools
-/// add new markers all the time and (b) any structural pattern that
-/// looks like `[CAPS_MARKER:` or `[CAPS_MARKER]` is overwhelmingly
-/// likely to be agent-internal rather than human-typed. False positives
-/// (a user prompt that happens to begin `[BUG REPORT:`) are an
-/// acceptable trade — those would be infrequent AND non-destructive
-/// (worst case: one user prompt isn't remembered).
+///   1. **Bracket markers** — `[SUGGESTION MODE: ...]`,
+///      `[SUMMARY: ...]`, `[SYSTEM: ...]`. Original Claude Code-shape.
+///
+///   2. **XML/HTML-like opening tags** — `<system-reminder>`,
+///      `<task>`, `<conversation>`. Claude Code uses these as
+///      conversation control envelopes; they get sent as user-role
+///      content but are pure metadata. Casey's DB had 14 KB blobs of
+///      `<system-reminder>The following deferred tools are now
+///      available …` getting stored as if they were user input.
+///
+///   3. **Known agent-prompt prefixes** — LibreChat fires "Provide a
+///      concise, 5-word-or-less title for the conversation …" after
+///      every chat to auto-name conversations, and "The user stepped
+///      away and is coming back. Recap …" on session-resume. These
+///      are imperative instructions TO the model phrased about the
+///      conversation in third person — never how a real user talks
+///      about themselves.
+///
+/// False positives (a user prompt that happens to begin `[BUG REPORT:`
+/// or `<note>` or `Provide a step-by-step …`) are accepted: worst case
+/// is one prompt not remembered. Better than letting a 14 KB
+/// system-reminder blob clog recall.
 fn is_agent_automation_prompt(s: &str) -> bool {
     let trimmed = s.trim_start();
-    if !trimmed.starts_with('[') {
-        return false;
+
+    // Family 1: `[CAPS_MARKER:` or `[CAPS_MARKER]`.
+    if trimmed.starts_with('[') {
+        let after_bracket = &trimmed[1..];
+        let end = after_bracket
+            .find([':', ']'])
+            .unwrap_or(after_bracket.len().min(64));
+        if end > 0 {
+            let marker = &after_bracket[..end];
+            let has_upper = marker.chars().any(|c| c.is_ascii_uppercase());
+            let only_marker_chars = marker
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ' || c == '_');
+            if has_upper && only_marker_chars {
+                return true;
+            }
+        }
     }
-    // Take everything between the leading `[` and the first `:` or `]`.
-    let after_bracket = &trimmed[1..];
-    let end = after_bracket
-        .find([':', ']'])
-        .unwrap_or(after_bracket.len().min(64)); // bound for runaway input
-    if end == 0 {
-        return false;
+
+    // Family 2: `<lowercase-or-snake-case-tag>` at start. Real users
+    // don't open messages with HTML/XML tags; agents use them as
+    // metadata envelopes.
+    if trimmed.starts_with('<') {
+        // Match `<[a-z][a-z0-9_-]*>` — same shape Claude Code uses.
+        let after_lt = &trimmed[1..];
+        if let Some(end) = after_lt.find('>')
+            && end > 0
+            && end < 32  // bound runaway
+        {
+            let tag = &after_lt[..end];
+            let well_formed = tag
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+                && tag.starts_with(|c: char| c.is_ascii_lowercase());
+            if well_formed && !tag.is_empty() {
+                return true;
+            }
+        }
     }
-    let marker = &after_bracket[..end];
-    // Marker must contain at least one uppercase letter and consist
-    // ONLY of uppercase letters / digits / spaces / underscores.
-    let has_upper = marker.chars().any(|c| c.is_ascii_uppercase());
-    let only_marker_chars = marker
-        .chars()
-        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == ' ' || c == '_');
-    has_upper && only_marker_chars
+
+    // Family 3: known LibreChat / agent imperative-instruction
+    // prefixes. Each one is a stable phrasing — they don't
+    // paraphrase between requests.
+    const KNOWN_AGENT_PREFIXES: &[&str] = &[
+        "Provide a concise, 5-word-or-less title for",
+        "Provide a concise title for",
+        "Generate a title for the conversation",
+        "The user stepped away and is coming back",
+        "Recap in under ",
+        "Summarize the following conversation",
+    ];
+    for p in KNOWN_AGENT_PREFIXES {
+        if trimmed.starts_with(p) {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// True if `s` looks like a slash-command output rather than a real
@@ -346,6 +396,43 @@ fn spawn_store_interaction(state: Arc<HandlerState>, user_text: String) {
     });
 }
 
+/// Above this character count, content is chunked at paragraph
+/// boundaries before storage (see chunk_for_storage). Tuned for the
+/// resume case: a typical resume runs 3–10 KB; chunks per paragraph
+/// (job entry, summary section) work out to ~200–800 chars each,
+/// well-suited for BGE's 512-token window.
+const CHUNK_THRESHOLD_CHARS: usize = 1500;
+
+/// Split a long pasted block into semantic chunks for embedding.
+/// Single-vector embeddings of long content diffuse the signal across
+/// many topics — Casey's resume (6 KB) was stored as one row with
+/// one vector, and recall on "where have I worked?" couldn't surface
+/// it because the embedding averaged across personal info, summary,
+/// every job, etc. Per-paragraph chunks let each section's embedding
+/// stay topically focused and individually recallable.
+///
+/// Strategy: split on `\n\n` (paragraph boundaries) — the most reliable
+/// semantic break in formatted text. Filter out empty/short fragments.
+/// If the result is a single chunk (no paragraph breaks found),
+/// preserve the original text as-is (no point chunking a one-line
+/// message just because it's long).
+fn chunk_for_storage(text: &str) -> Vec<String> {
+    if text.chars().count() <= CHUNK_THRESHOLD_CHARS {
+        return vec![text.to_string()];
+    }
+    let chunks: Vec<String> = text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && s.chars().count() >= STORE_MIN_CHARS)
+        .map(str::to_string)
+        .collect();
+    if chunks.len() <= 1 {
+        // No paragraph breaks worth using — keep as a single chunk.
+        return vec![text.to_string()];
+    }
+    chunks
+}
+
 async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result<()> {
     // Resolve profile (drop the storage lock before .await, same as
     // recall — clippy::await_holding_lock is enforced).
@@ -358,25 +445,48 @@ async fn store_interaction(state: &Arc<HandlerState>, user_text: &str) -> Result
         p.id
     };
 
-    // Embed the user text. Cheap with NoopEmbedder (returns zeros);
-    // ~tens of ms with BgeEmbedder. Off the critical path because
-    // we're inside a `tokio::spawn`.
-    let embedding = state.embedder.embed(user_text).await?;
+    let chunks = chunk_for_storage(user_text);
+    let chunk_count = chunks.len();
+    // Group-id correlates chunks from the same paste so a future UI
+    // can render them together. Cheap, just a millisecond timestamp.
+    let group_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
 
-    // Write. Re-acquire the lock briefly.
-    let storage = state.storage.lock()
-        .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
-    let mut metadata = sci_memory::Metadata::new();
-    metadata.insert("has_response".into(), serde_json::Value::Bool(true));
-    metadata.insert("source".into(),       serde_json::Value::String("rust-helper".into()));
-    storage.store_episodic(&sci_memory::StoreEpisodicInput {
-        profile_id: &profile_id,
-        content:    user_text,
-        embedding:  &embedding,
-        source:     Some("proxy"),
-        agent_id:   None,
-        metadata,
-    })?;
+    for (idx, chunk) in chunks.iter().enumerate() {
+        // Embed each chunk separately. Cheap with NoopEmbedder (returns
+        // zeros); ~tens of ms with BgeEmbedder. Off the critical path
+        // because we're inside a `tokio::spawn`.
+        let embedding = state.embedder.embed(chunk).await?;
+
+        let storage = state.storage.lock()
+            .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
+        let mut metadata = sci_memory::Metadata::new();
+        metadata.insert("has_response".into(), serde_json::Value::Bool(true));
+        metadata.insert("source".into(),       serde_json::Value::String("rust-helper".into()));
+        if chunk_count > 1 {
+            metadata.insert(
+                "chunk".into(),
+                serde_json::json!({"index": idx, "of": chunk_count, "group": group_id.to_string()}),
+            );
+        }
+        storage.store_episodic(&sci_memory::StoreEpisodicInput {
+            profile_id: &profile_id,
+            content:    chunk,
+            embedding:  &embedding,
+            source:     Some("proxy"),
+            agent_id:   None,
+            metadata,
+        })?;
+    }
+    if chunk_count > 1 {
+        tracing::debug!(
+            chunks = chunk_count,
+            total_chars = user_text.chars().count(),
+            "stored chunked memory",
+        );
+    }
     Ok(())
 }
 
@@ -1269,51 +1379,59 @@ mod tests {
 
     // ── SCI-147: Claude Code system-prompt mimicry ────────────────────────
 
+    // Note: prepend_claude_code_prefix now ALWAYS converts `system` to
+    // an array — the Anthropic OAuth gate is exact-match on the
+    // STRING form of system, so any deviation 429s. Array form lets
+    // additional blocks ride along behind a clean canonical-prefix
+    // block[0]. The tests below assert the new array shape; the
+    // pre-array string-shape tests have been replaced.
+
     #[test]
-    fn claude_code_prefix_inserted_when_system_absent() {
+    fn claude_code_prefix_creates_array_when_system_absent() {
         let mut body: Value = serde_json::from_str(
             r#"{"messages":[{"role":"user","content":"hi"}]}"#,
         )
         .unwrap();
         prepend_claude_code_prefix(&mut body);
-        let s = body["system"].as_str().expect("system should be a string");
-        assert_eq!(s, CLAUDE_CODE_SYSTEM_PREFIX);
+        let arr = body["system"].as_array().expect("system should be an array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
     }
 
     #[test]
-    fn claude_code_prefix_prepended_to_string_system() {
+    fn claude_code_prefix_splits_string_system_into_two_blocks() {
         let mut body: Value = serde_json::from_str(
             r#"{"system":"Be terse.","messages":[]}"#,
         )
         .unwrap();
         prepend_claude_code_prefix(&mut body);
-        let s = body["system"].as_str().unwrap();
-        assert!(s.starts_with(CLAUDE_CODE_SYSTEM_PREFIX), "got: {s:?}");
-        assert!(s.ends_with("Be terse."), "user prompt should follow prefix: {s:?}");
-        // Two newlines between prefix and the user's prompt — keeps the
-        // gate phrase as its own paragraph.
-        assert!(s.contains("\n\n"), "expected paragraph break: {s:?}");
+        let arr = body["system"].as_array().expect("system should be an array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
+        assert_eq!(arr[1]["text"], "Be terse.");
     }
 
     #[test]
     fn claude_code_prefix_idempotent_on_string_system() {
-        // Caller (e.g. Claude Code in front of Sci) already stamped
-        // the prefix. Sci should not double it.
+        // String system that already starts with the canonical prefix
+        // (with a trailing instruction) should split cleanly into
+        // [{prefix}, {rest}] — the rest is preserved exactly once.
         let mut body: Value = serde_json::from_str(&format!(
             r#"{{"system":"{prefix}\n\nBe terse.","messages":[]}}"#,
             prefix = CLAUDE_CODE_SYSTEM_PREFIX,
         ))
         .unwrap();
-        let before = body["system"].as_str().unwrap().to_string();
         prepend_claude_code_prefix(&mut body);
-        let after = body["system"].as_str().unwrap();
-        assert_eq!(before, after, "idempotent prepend must not modify");
-        // And specifically: the prefix appears exactly once.
-        assert_eq!(
-            after.matches(CLAUDE_CODE_SYSTEM_PREFIX).count(),
-            1,
-            "prefix duplicated: {after:?}",
-        );
+        let arr = body["system"].as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
+        assert_eq!(arr[1]["text"], "Be terse.");
+        // Idempotence: running again should produce the same result.
+        prepend_claude_code_prefix(&mut body);
+        let arr2 = body["system"].as_array().unwrap();
+        assert_eq!(arr2.len(), 2);
+        assert_eq!(arr2[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
+        assert_eq!(arr2[1]["text"], "Be terse.");
     }
 
     #[test]
@@ -1503,14 +1621,87 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_prefix_handles_empty_string_system() {
+    fn claude_code_prefix_handles_empty_string_system_as_array() {
         let mut body: Value = serde_json::from_str(
             r#"{"system":"","messages":[]}"#,
         )
         .unwrap();
         prepend_claude_code_prefix(&mut body);
-        // Empty + prefix should be exactly the prefix (no trailing
-        // separator that'd render as a stray "\n\n" to the model).
-        assert_eq!(body["system"].as_str().unwrap(), CLAUDE_CODE_SYSTEM_PREFIX);
+        // Empty + prefix should produce a single-block array with
+        // exactly the canonical prefix.
+        let arr = body["system"].as_array().expect("system should be array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
+    }
+
+    // ── chunking on storage (long-paste recall fix) ───────────────────
+
+    #[test]
+    fn chunk_for_storage_short_text_unchanged() {
+        let s = "Hi, my name is Casey.";
+        assert_eq!(chunk_for_storage(s), vec![s.to_string()]);
+    }
+
+    #[test]
+    fn chunk_for_storage_long_no_breaks_unchanged() {
+        // No paragraph breaks → keep as one chunk even if long.
+        let s = "a".repeat(2000);
+        assert_eq!(chunk_for_storage(&s), vec![s.clone()]);
+    }
+
+    #[test]
+    fn chunk_for_storage_paragraph_split() {
+        // Resume-shaped: long enough to trigger threshold, multiple
+        // paragraph breaks.
+        let para_a = "Director of Product Management at linqd. ".repeat(40);
+        let para_b = "Head of Strategy at ITRS Group. ".repeat(40);
+        let para_c = "VP Business Development at OP5. ".repeat(40);
+        let combined = format!("{para_a}\n\n{para_b}\n\n{para_c}");
+        let chunks = chunk_for_storage(&combined);
+        assert_eq!(chunks.len(), 3, "expected 3 paragraphs, got {}", chunks.len());
+        assert!(chunks[0].contains("linqd"));
+        assert!(chunks[1].contains("ITRS"));
+        assert!(chunks[2].contains("OP5"));
+    }
+
+    #[test]
+    fn chunk_for_storage_filters_short_fragments() {
+        let para_a = "x".repeat(2000);
+        let combined = format!("{para_a}\n\nhi\n\n");  // "hi" is 2 chars, below STORE_MIN_CHARS
+        let chunks = chunk_for_storage(&combined);
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].starts_with("x"));
+    }
+
+    // ── widened agent-automation filter ──────────────────────────────
+
+    #[test]
+    fn agent_automation_catches_xml_tag_envelopes() {
+        assert!(is_agent_automation_prompt("<system-reminder>foo bar baz"));
+        assert!(is_agent_automation_prompt("<task>do the thing</task>"));
+        assert!(is_agent_automation_prompt("<conversation>...</conversation>"));
+        // mixed case in tag → reject (real xml is lowercase by Claude convention)
+        assert!(!is_agent_automation_prompt("<TASK>"));
+        // tag with space (not a tag)
+        assert!(!is_agent_automation_prompt("<not a tag>"));
+    }
+
+    #[test]
+    fn agent_automation_catches_known_librechat_prefixes() {
+        assert!(is_agent_automation_prompt(
+            "Provide a concise, 5-word-or-less title for the conversation, using title case"
+        ));
+        assert!(is_agent_automation_prompt(
+            "The user stepped away and is coming back. Recap in under 40 words"
+        ));
+        assert!(is_agent_automation_prompt(
+            "Recap in under 60 words: what did the user just say?"
+        ));
+        assert!(is_agent_automation_prompt(
+            "Summarize the following conversation"
+        ));
+        // Real user messages with similar shape stay through
+        assert!(!is_agent_automation_prompt("Provide me feedback on this code"));
+        assert!(!is_agent_automation_prompt("Recap what I just said"));  // user might say this
     }
 }
