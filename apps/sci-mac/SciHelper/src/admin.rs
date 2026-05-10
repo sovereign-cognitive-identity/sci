@@ -73,6 +73,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/sci/audit_turns/:id",   get(get_audit_turn))
         .route("/sci/profiles",          get(list_profiles).post(create_profile))
         .route("/sci/active_profile",    get(get_active_profile).post(set_active_profile))
+        .route("/sci/active_project",    get(get_active_project).post(set_active_project))
         .route("/sci/recall",            get(preview_recall))
         .route("/sci/events",            get(events_stream))
         .layer(cors)
@@ -238,6 +239,59 @@ async fn set_active_profile(
     }
     tracing::info!(profile = name, "active profile set");
     Ok(Json(ActiveProfileResponse { name: name.to_owned() }))
+}
+
+// ── /sci/active_project (SCI-159 Project Mode) ────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveProjectResponse {
+    /// Absolute path of the active project's working directory, or
+    /// `null` when no project is set.
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SetActiveProjectBody {
+    /// Pass an absolute path to set the project, or `null` (or empty
+    /// string) to clear it.
+    path: Option<String>,
+}
+
+/// SCI-159: read the currently-active project working directory.
+/// `null` means no project mode is active.
+async fn get_active_project(State(s): State<AdminState>) -> Json<ActiveProjectResponse> {
+    Json(ActiveProjectResponse {
+        path: s.handler_state.active_project_path(),
+    })
+}
+
+/// SCI-159: set or clear the active project working directory.
+/// We do not validate that the path exists on disk — the helper is
+/// localhost-only and the path is just metadata threaded into the
+/// system prompt; an invalid path produces a no-op recall hit but
+/// no security impact. Trimming + collapsing empty-string-to-None
+/// keeps the wire shape ergonomic for the JS client.
+async fn set_active_project(
+    State(s):    State<AdminState>,
+    Json(input): Json<SetActiveProjectBody>,
+) -> Result<Json<ActiveProjectResponse>, AdminError> {
+    let normalized: Option<String> = input
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    {
+        let mut g = s.handler_state.active_project.lock()
+            .map_err(|_| AdminError::Internal("active_project lock poisoned".into()))?;
+        *g = normalized.clone();
+    }
+    match &normalized {
+        Some(p) => tracing::info!(project = %p, "active project set"),
+        None    => tracing::info!("active project cleared"),
+    }
+    Ok(Json(ActiveProjectResponse { path: normalized }))
 }
 
 // ── /sci/recall ────────────────────────────────────────────────────────────

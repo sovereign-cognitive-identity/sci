@@ -75,6 +75,13 @@ pub async fn handle_anthropic_messages(
     let recall_seed = extract_recall_seed(&body);
     let _ = inject_memory_context(&mut body, &recall_seed, &state).await;
 
+    // SCI-159: Project Mode. If the user has set an active project
+    // working directory, inject a "Working directory: <path>" hint
+    // into the system prompt so the model defaults filesystem-tool
+    // paths to it and accepts relative path references. No-op when
+    // active_project is None.
+    inject_project_context(&mut body, &state);
+
     // ── 3. Build upstream request ──────────────────────────────────────────
     let upstream_url = format!("https://{}{}", req.hostname, req.url);
     let UpstreamHeaderPlan { headers: upstream_headers, oauth_active }
@@ -1250,6 +1257,44 @@ const CLAUDE_CODE_SYSTEM_PREFIX: &str =
 const CLAUDE_CODE_PREFIX_SEPARATOR: &str = "\n\n";
 
 /// Stamp the Claude Code prefix onto `body.system`. Mutates in place.
+/// SCI-159: prepend a "Working directory" hint to the system prompt
+/// when the user has set an active project. No-op when no project is
+/// set (preserves prior behavior). The injected block is a separate
+/// system text block — sits between the prior content and the user's
+/// existing system instructions so it carries high salience without
+/// burying the user's own system prompt.
+///
+/// Anthropic accepts `system` as either a string or an array of typed
+/// blocks; this helper handles both. The injection is observable in
+/// the audit_turns row's `request_body` for debugging.
+pub fn inject_project_context(body: &mut Value, state: &Arc<HandlerState>) {
+    let Some(path) = state.active_project_path() else { return; };
+    let trimmed = path.trim();
+    if trimmed.is_empty() { return; }
+
+    let hint = format!(
+        "Working directory: {trimmed}\n\nWhen the user mentions files \
+         or paths without an absolute prefix, default to this directory. \
+         When using filesystem tools, prefer paths under this directory.",
+    );
+    let block = serde_json::json!({"type": "text", "text": hint});
+
+    match body.get_mut("system") {
+        Some(Value::Array(arr)) => arr.insert(0, block),
+        Some(Value::String(s)) => {
+            let prior = std::mem::take(s);
+            let mut blocks = vec![block];
+            if !prior.is_empty() {
+                blocks.push(serde_json::json!({"type": "text", "text": prior}));
+            }
+            body["system"] = Value::Array(blocks);
+        }
+        _ => {
+            body["system"] = Value::Array(vec![block]);
+        }
+    }
+}
+
 /// Idempotent: if the existing system field already starts with the
 /// canonical phrase, nothing changes (so Claude Code → Sci → Anthropic
 /// chains don't accumulate duplicates).
@@ -1381,6 +1426,49 @@ fn sanitize_body_for_oauth(body: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SCI-159: project mode injects a "Working directory: <path>" hint
+    /// at index 0 of the system array. No-op when active_project is None.
+    #[test]
+    fn inject_project_context_prepends_when_set() {
+        use crate::state::NoopEmbedder;
+        use crate::upstream::UpstreamClient;
+        use sci_memory::LocalAdapter;
+        use std::sync::{Arc, Mutex};
+
+        struct DummyUpstream;
+        #[async_trait::async_trait]
+        impl UpstreamClient for DummyUpstream {
+            async fn send(
+                &self,
+                _req: crate::upstream::UpstreamRequest,
+            ) -> std::result::Result<crate::upstream::UpstreamResponse, std::io::Error> {
+                unreachable!()
+            }
+        }
+
+        let storage  = Arc::new(Mutex::new(LocalAdapter::open_in_memory().unwrap()));
+        let embedder: Arc<dyn crate::Embedder> = Arc::new(NoopEmbedder);
+        let upstream: Arc<dyn UpstreamClient> = Arc::new(DummyUpstream);
+        let state = Arc::new(HandlerState::new(storage, embedder, upstream));
+
+        // No project set → no-op
+        let mut body = serde_json::json!({"system": "you are helpful"});
+        inject_project_context(&mut body, &state);
+        assert_eq!(body["system"], "you are helpful", "no project → no change");
+
+        // Project set → prepended as block[0], original system as block[1]
+        *state.active_project.lock().unwrap() = Some("/Users/me/proj".into());
+        let mut body = serde_json::json!({"system": "you are helpful"});
+        inject_project_context(&mut body, &state);
+        assert!(body["system"].is_array());
+        let arr = body["system"].as_array().unwrap();
+        assert_eq!(arr[0]["type"], "text");
+        let hint = arr[0]["text"].as_str().unwrap();
+        assert!(hint.starts_with("Working directory: /Users/me/proj"),
+            "expected working-dir hint at block[0], got: {hint}");
+        assert_eq!(arr[1]["text"], "you are helpful");
+    }
 
     #[test]
     fn anonymize_string_message() {

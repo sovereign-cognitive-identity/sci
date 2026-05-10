@@ -58,6 +58,15 @@ pub struct HandlerState {
     /// clone is fine. Default `"work"` matches the prior hard-coded
     /// behavior so existing flows are unaffected on first boot.
     pub active_profile: Arc<Mutex<String>>,
+
+    /// SCI-159: globally-active project working directory. When set,
+    /// handlers prepend a "Working directory: <path>" hint to the
+    /// system prompt so model defaults filesystem-tool paths to this
+    /// directory and accepts relative path references from the user.
+    /// `None` means no project context is injected (the prior
+    /// behavior). Same single-global-per-helper trade-off as
+    /// `active_profile` — acceptable for v1 daily-driver use.
+    pub active_project: Arc<Mutex<Option<String>>>,
 }
 
 impl HandlerState {
@@ -71,6 +80,7 @@ impl HandlerState {
             embedder,
             upstream,
             active_profile: Arc::new(Mutex::new("work".to_string())),
+            active_project: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -80,5 +90,10 @@ impl HandlerState {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_else(|_| "work".to_string())
+    }
+
+    /// Read the current active project working directory, if any.
+    pub fn active_project_path(&self) -> Option<String> {
+        self.active_project.lock().ok().and_then(|g| g.clone())
     }
 }

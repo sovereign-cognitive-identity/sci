@@ -208,6 +208,56 @@ async fn active_profile_round_trips_and_creating_new_profile_works() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_project_set_get_clear_round_trips() {
+    // SCI-159: GET defaults to null. POST with a path stores it.
+    // POST with null clears it. Empty-string path is treated as null.
+    let (state, _storage, _events) = make_state();
+    let base = spawn(state).await;
+    let client = reqwest::Client::new();
+
+    // Default = null
+    let initial: serde_json::Value = reqwest::get(format!("{base}/sci/active_project"))
+        .await.unwrap().json().await.unwrap();
+    assert!(initial["path"].is_null());
+
+    // Set
+    let path = "/Users/me/src/myproject";
+    let set: serde_json::Value = client
+        .post(format!("{base}/sci/active_project"))
+        .json(&serde_json::json!({"path": path}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+    assert_eq!(set["path"], path);
+
+    // Read-back
+    let got: serde_json::Value = reqwest::get(format!("{base}/sci/active_project"))
+        .await.unwrap().json().await.unwrap();
+    assert_eq!(got["path"], path);
+
+    // Clear via null
+    let cleared: serde_json::Value = client
+        .post(format!("{base}/sci/active_project"))
+        .json(&serde_json::json!({"path": null}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+    assert!(cleared["path"].is_null());
+
+    // Empty string = null
+    let after_set: serde_json::Value = client
+        .post(format!("{base}/sci/active_project"))
+        .json(&serde_json::json!({"path": "/x"}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+    assert_eq!(after_set["path"], "/x");
+    let empty_clears: serde_json::Value = client
+        .post(format!("{base}/sci/active_project"))
+        .json(&serde_json::json!({"path": "  "}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+    assert!(empty_clears["path"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn events_sse_delivers_emitted_events() {
     use futures::StreamExt;
     let (state, _storage, events) = make_state();

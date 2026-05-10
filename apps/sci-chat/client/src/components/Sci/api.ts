@@ -94,6 +94,18 @@ export function setActiveProfile(name: string): Promise<{ name: string }> {
   return postJson<{ name: string }>('/sci/active_profile', { name });
 }
 
+export interface ActiveProject {
+  path: string | null;
+}
+
+export function getActiveProject(): Promise<ActiveProject> {
+  return getJson<ActiveProject>('/sci/active_project');
+}
+
+export function setActiveProject(path: string | null): Promise<ActiveProject> {
+  return postJson<ActiveProject>('/sci/active_project', { path });
+}
+
 export function eventsUrl(): string {
   return `${HELPER_BASE}/sci/events`;
 }

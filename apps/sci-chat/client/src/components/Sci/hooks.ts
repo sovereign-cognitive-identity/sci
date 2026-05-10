@@ -16,20 +16,23 @@ import {
   createProfile,
   eventsUrl,
   getActiveProfile,
+  getActiveProject,
   getAuditTurn,
   getStatus,
   listAuditTurns,
   listProfiles,
   previewRecall,
   setActiveProfile,
+  setActiveProject,
 } from './api';
 import type { HelperEvent } from './types';
 
-const QK_TURNS    = ['sci', 'audit_turns'] as const;
-const QK_STATUS   = ['sci', 'status'] as const;
-const QK_PROFILES = ['sci', 'profiles'] as const;
-const QK_ACTIVE   = ['sci', 'active_profile'] as const;
-const QK_TURN     = (id: string) => ['sci', 'audit_turn', id] as const;
+const QK_TURNS         = ['sci', 'audit_turns'] as const;
+const QK_STATUS        = ['sci', 'status'] as const;
+const QK_PROFILES      = ['sci', 'profiles'] as const;
+const QK_ACTIVE        = ['sci', 'active_profile'] as const;
+const QK_ACTIVE_PROJ   = ['sci', 'active_project'] as const;
+const QK_TURN          = (id: string) => ['sci', 'audit_turn', id] as const;
 
 /**
  * SCI-157 dogfood found a stuck-loading bug when `useAuditTurns` was
@@ -134,6 +137,37 @@ export function useCreateProfile() {
   return useMutation({
     mutationFn: (name: string) => createProfile(name),
     onSuccess:  () => qc.invalidateQueries({ queryKey: QK_PROFILES }),
+  });
+}
+
+/**
+ * SCI-159: read the helper's currently-active project working directory.
+ * `null` means no project mode.
+ */
+export function useActiveProject(enabled = true) {
+  return useQuery({
+    queryKey: QK_ACTIVE_PROJ,
+    queryFn:  getActiveProject,
+    enabled,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * SCI-159: set or clear the active project. Pass `null` to clear.
+ * Invalidates the audit_turns query because the working-dir context
+ * changes the system prompt going forward (next turn will look
+ * different in the inspector).
+ */
+export function useSetActiveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (path: string | null) => setActiveProject(path),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: QK_ACTIVE_PROJ });
+      qc.invalidateQueries({ queryKey: QK_TURNS });
+    },
   });
 }
 

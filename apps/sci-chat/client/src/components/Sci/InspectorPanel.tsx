@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 
 import ProfileSelector from './ProfileSelector';
+import ProjectSelector from './ProjectSelector';
 import RecallPreview from './RecallPreview';
 import { useActiveProfile, useAuditEvents, useAuditTurns, useHelperStatus } from './hooks';
 import TurnCard from './TurnCard';
@@ -154,6 +155,7 @@ function Header({
         )}
       </div>
       <div className="flex items-center gap-2">
+        <ProjectSelector enabled={enabled} />
         <ProfileSelector enabled={enabled} />
         <button
           type="button"
