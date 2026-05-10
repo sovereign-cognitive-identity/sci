@@ -199,10 +199,13 @@ async fn inject_memory_context(
 ) -> Result<()> {
     if seed.is_empty() { return Ok(()); }
 
+    let profile_name = state.active_profile_name();
     let profile_id = {
         let storage = state.storage.lock()
             .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
-        let Some(p) = storage.get_profile("work")? else { return Ok(()); };
+        let resolved = storage.get_profile(&profile_name)?
+            .or(storage.get_profile("work")?);
+        let Some(p) = resolved else { return Ok(()); };
         p.id
     };
 

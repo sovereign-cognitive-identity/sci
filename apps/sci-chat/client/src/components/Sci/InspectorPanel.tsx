@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from 'react';
 
+import ProfileSelector from './ProfileSelector';
 import { useAuditEvents, useAuditTurns, useHelperStatus } from './hooks';
 import TurnCard from './TurnCard';
 
@@ -73,7 +74,7 @@ export default function InspectorPanel() {
             setWidth((w) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w - delta)));
           }} />
           <div className="flex h-full flex-1 flex-col">
-            <Header status={status.data} onClose={() => setOpen(false)} />
+            <Header status={status.data} onClose={() => setOpen(false)} enabled={open} />
             <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
               {turns.isLoading && (
                 <p className="text-sm text-text-secondary">Loading turns…</p>
@@ -124,13 +125,15 @@ function Toggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
 function Header({
   status,
   onClose,
+  enabled,
 }: {
   status: import('./types').HelperStatus | undefined;
   onClose: () => void;
+  enabled: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-border-medium px-3 py-2">
-      <div className="flex flex-col">
+    <div className="flex items-center justify-between gap-2 border-b border-border-medium px-3 py-2">
+      <div className="flex min-w-0 flex-col">
         <div className="text-sm font-semibold text-text-primary">Sci flight recorder</div>
         {status && (
           <div className="text-[11px] text-text-secondary">
@@ -139,17 +142,20 @@ function Header({
           </div>
         )}
       </div>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label="Close inspector"
-        className="
-          rounded-md px-2 py-1 text-text-secondary
-          hover:bg-surface-secondary hover:text-text-primary
-        "
-      >
-        ✕
-      </button>
+      <div className="flex items-center gap-2">
+        <ProfileSelector enabled={enabled} />
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close inspector"
+          className="
+            rounded-md px-2 py-1 text-text-secondary
+            hover:bg-surface-secondary hover:text-text-primary
+          "
+        >
+          ✕
+        </button>
+      </div>
     </div>
   );
 }

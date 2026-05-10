@@ -71,7 +71,8 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/sci/audit_turns",       get(list_audit_turns))
         .route("/sci/audit_turns/count", get(count_token_original))
         .route("/sci/audit_turns/:id",   get(get_audit_turn))
-        .route("/sci/profiles",          get(list_profiles))
+        .route("/sci/profiles",          get(list_profiles).post(create_profile))
+        .route("/sci/active_profile",    get(get_active_profile).post(set_active_profile))
         .route("/sci/recall",            get(preview_recall))
         .route("/sci/events",            get(events_stream))
         .layer(cors)
@@ -176,6 +177,67 @@ async fn count_token_original(
 async fn list_profiles(State(s): State<AdminState>) -> Result<Json<Vec<Profile>>, AdminError> {
     let profiles = with_storage(&s, |a| a.list_profiles())?;
     Ok(Json(profiles))
+}
+
+#[derive(Deserialize)]
+struct CreateProfileBody {
+    name: String,
+}
+
+/// SCI-156: create a profile. Idempotent — calling with an existing
+/// name returns that profile. Empty / whitespace-only names are 400.
+async fn create_profile(
+    State(s):    State<AdminState>,
+    Json(input): Json<CreateProfileBody>,
+) -> Result<Json<Profile>, AdminError> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AdminError::BadRequest("profile name cannot be empty".into()));
+    }
+    let owned = name.to_owned();
+    let profile = with_storage(&s, |a| a.create_profile(&owned))?;
+    Ok(Json(profile))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveProfileResponse {
+    name: String,
+}
+
+/// SCI-156: read the currently-active profile name. The handlers
+/// (anthropic.rs / openai.rs / google.rs) use this name to route
+/// recall + storage. Default `"work"` on first boot.
+async fn get_active_profile(State(s): State<AdminState>) -> Json<ActiveProfileResponse> {
+    Json(ActiveProfileResponse {
+        name: s.handler_state.active_profile_name(),
+    })
+}
+
+#[derive(Deserialize)]
+struct SetActiveProfileBody {
+    name: String,
+}
+
+/// SCI-156: set the active profile name. The string is stored as-is;
+/// resolution to a profile-id happens lazily per-request inside the
+/// handlers. We don't validate that the name exists here so a user can
+/// type-then-create a profile in either order.
+async fn set_active_profile(
+    State(s):    State<AdminState>,
+    Json(input): Json<SetActiveProfileBody>,
+) -> Result<Json<ActiveProfileResponse>, AdminError> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err(AdminError::BadRequest("profile name cannot be empty".into()));
+    }
+    {
+        let mut g = s.handler_state.active_profile.lock()
+            .map_err(|_| AdminError::Internal("active_profile lock poisoned".into()))?;
+        *g = name.to_owned();
+    }
+    tracing::info!(profile = name, "active profile set");
+    Ok(Json(ActiveProfileResponse { name: name.to_owned() }))
 }
 
 // ── /sci/recall ────────────────────────────────────────────────────────────

@@ -312,9 +312,9 @@ fn extract_user_text(body: &Value) -> String {
 /// real one-line questions through.
 const STORE_MIN_CHARS: usize = 5;
 
-/// Default profile name. Matches the TS proxy's hard-coded `'work'`.
-/// Per-conversation profile selection is a future enhancement that
-/// will surface in the macOS Settings UI.
+/// SCI-156: profile name fallback if `state.active_profile_name()`
+/// returns something we can't resolve. Matches the TS proxy's
+/// hard-coded `'work'` so behavior on a fresh DB is unchanged.
 const DEFAULT_STORE_PROFILE: &str = "work";
 
 /// True if `s` looks like an agent's internal automation prompt
@@ -595,10 +595,21 @@ async fn record_audit_turn(
     latency_ms:     u64,
     token_mappings: &[TokenMappingSnap],
 ) -> Result<()> {
+    let profile_name = state.active_profile_name();
     let profile_id = {
         let storage = state.storage.lock()
             .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
-        storage.get_profile(DEFAULT_STORE_PROFILE)?.map(|p| p.id)
+        // Fall through from the requested profile to "work" so a
+        // bad active-profile setting doesn't silently lose audit
+        // rows. If both are missing, we just don't write the audit
+        // turn (same behavior as before this change).
+        let by_active = storage.get_profile(&profile_name)?;
+        let resolved  = if by_active.is_some() {
+            by_active
+        } else {
+            storage.get_profile(DEFAULT_STORE_PROFILE)?
+        };
+        resolved.map(|p| p.id)
     };
 
     let mappings: Vec<sci_memory::TokenMappingInput<'_>> = token_mappings
@@ -680,12 +691,16 @@ async fn store_interaction(
     turn_group: &str,
 ) -> Result<()> {
     // Resolve profile (drop the storage lock before .await, same as
-    // recall — clippy::await_holding_lock is enforced).
+    // recall — clippy::await_holding_lock is enforced). SCI-156:
+    // honor the active profile; fall back to "work" if it's missing.
+    let profile_name = state.active_profile_name();
     let profile_id = {
         let storage = state.storage.lock()
             .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
-        let Some(p) = storage.get_profile(DEFAULT_STORE_PROFILE)? else {
-            return Ok(()); // profile missing → no-op, same as TS
+        let resolved = storage.get_profile(&profile_name)?
+            .or(storage.get_profile(DEFAULT_STORE_PROFILE)?);
+        let Some(p) = resolved else {
+            return Ok(()); // both profiles missing → no-op, same as TS
         };
         p.id
     };
@@ -980,10 +995,13 @@ async fn inject_memory_context(
     // take real wall time once SCI-130 ships). Re-acquire to do the
     // recall. Never holding the lock across `.await` is a hard
     // requirement — `clippy::await_holding_lock` enforces it.
+    let profile_name = state.active_profile_name();
     let profile_id = {
         let storage = state.storage.lock()
             .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
-        let Some(p) = storage.get_profile("work")? else { return Ok(()); };
+        let resolved = storage.get_profile(&profile_name)?
+            .or(storage.get_profile("work")?);
+        let Some(p) = resolved else { return Ok(()); };
         p.id
     };
 

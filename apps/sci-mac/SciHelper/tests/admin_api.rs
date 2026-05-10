@@ -160,6 +160,54 @@ async fn profiles_endpoint_lists_seeded_profiles() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_profile_round_trips_and_creating_new_profile_works() {
+    // SCI-156: GET /sci/active_profile defaults to "work"; POSTing
+    // changes it. POST /sci/profiles creates a new one. The new
+    // profile then shows in /sci/profiles.
+    let (state, _storage, _events) = make_state();
+    let base = spawn(state).await;
+
+    // Default
+    let initial: serde_json::Value = reqwest::get(format!("{base}/sci/active_profile"))
+        .await.unwrap().json().await.unwrap();
+    assert_eq!(initial["name"], "work");
+
+    // Switch
+    let client = reqwest::Client::new();
+    let switched: serde_json::Value = client
+        .post(format!("{base}/sci/active_profile"))
+        .json(&serde_json::json!({"name": "personal"}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+    assert_eq!(switched["name"], "personal");
+
+    // Read-back confirms
+    let read_back: serde_json::Value = reqwest::get(format!("{base}/sci/active_profile"))
+        .await.unwrap().json().await.unwrap();
+    assert_eq!(read_back["name"], "personal");
+
+    // Create a new profile + verify it appears in the list
+    let created: serde_json::Value = client
+        .post(format!("{base}/sci/profiles"))
+        .json(&serde_json::json!({"name": "project-foo"}))
+        .send().await.unwrap()
+        .json().await.unwrap();
+    assert_eq!(created["name"], "project-foo");
+
+    let profiles: Vec<serde_json::Value> = reqwest::get(format!("{base}/sci/profiles"))
+        .await.unwrap().json().await.unwrap();
+    let names: Vec<&str> = profiles.iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"project-foo"));
+
+    // Empty name → 400
+    let bad = client
+        .post(format!("{base}/sci/active_profile"))
+        .json(&serde_json::json!({"name": "  "}))
+        .send().await.unwrap();
+    assert_eq!(bad.status(), 400);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn events_sse_delivers_emitted_events() {
     use futures::StreamExt;
     let (state, _storage, events) = make_state();

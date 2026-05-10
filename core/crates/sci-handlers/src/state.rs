@@ -51,6 +51,13 @@ pub struct HandlerState {
     pub storage:  Arc<Mutex<LocalAdapter>>,
     pub embedder: Arc<dyn Embedder>,
     pub upstream: Arc<dyn UpstreamClient>,
+    /// SCI-156: globally-active identity profile name. Handlers route
+    /// recall + storage to this profile; the admin API GETs/POSTs it.
+    /// `Mutex<String>` rather than `ArcSwap` because reads/writes are
+    /// rare (once per turn / once per profile-switch) and a tiny
+    /// clone is fine. Default `"work"` matches the prior hard-coded
+    /// behavior so existing flows are unaffected on first boot.
+    pub active_profile: Arc<Mutex<String>>,
 }
 
 impl HandlerState {
@@ -59,6 +66,19 @@ impl HandlerState {
         embedder: Arc<dyn Embedder>,
         upstream: Arc<dyn UpstreamClient>,
     ) -> Self {
-        Self { storage, embedder, upstream }
+        Self {
+            storage,
+            embedder,
+            upstream,
+            active_profile: Arc::new(Mutex::new("work".to_string())),
+        }
+    }
+
+    /// Read the current active profile name. Brief lock; clone returns.
+    pub fn active_profile_name(&self) -> String {
+        self.active_profile
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_else(|_| "work".to_string())
     }
 }

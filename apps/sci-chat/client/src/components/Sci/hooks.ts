@@ -8,14 +8,25 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { eventsUrl, getAuditTurn, getStatus, listAuditTurns } from './api';
+import {
+  createProfile,
+  eventsUrl,
+  getActiveProfile,
+  getAuditTurn,
+  getStatus,
+  listAuditTurns,
+  listProfiles,
+  setActiveProfile,
+} from './api';
 import type { HelperEvent } from './types';
 
-const QK_TURNS  = ['sci', 'audit_turns'] as const;
-const QK_STATUS = ['sci', 'status'] as const;
-const QK_TURN   = (id: string) => ['sci', 'audit_turn', id] as const;
+const QK_TURNS    = ['sci', 'audit_turns'] as const;
+const QK_STATUS   = ['sci', 'status'] as const;
+const QK_PROFILES = ['sci', 'profiles'] as const;
+const QK_ACTIVE   = ['sci', 'active_profile'] as const;
+const QK_TURN     = (id: string) => ['sci', 'audit_turn', id] as const;
 
 export function useAuditTurns(limit = 50) {
   return useQuery({
@@ -32,6 +43,49 @@ export function useAuditTurn(id: string | null) {
     queryFn:  () => getAuditTurn(id as string),
     enabled:  Boolean(id),
     staleTime: 60_000,
+  });
+}
+
+export function useProfiles(enabled = true) {
+  return useQuery({
+    queryKey: QK_PROFILES,
+    queryFn:  listProfiles,
+    enabled,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useActiveProfile(enabled = true) {
+  return useQuery({
+    queryKey: QK_ACTIVE,
+    queryFn:  getActiveProfile,
+    enabled,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * Set the helper's active profile and refresh both the active and
+ * audit-turns queries so the UI updates immediately.
+ */
+export function useSetActiveProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => setActiveProfile(name),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: QK_ACTIVE });
+      qc.invalidateQueries({ queryKey: QK_TURNS });
+    },
+  });
+}
+
+export function useCreateProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => createProfile(name),
+    onSuccess:  () => qc.invalidateQueries({ queryKey: QK_PROFILES }),
   });
 }
 

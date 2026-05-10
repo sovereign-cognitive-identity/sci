@@ -47,6 +47,32 @@ export function listProfiles(): Promise<Profile[]> {
   return getJson<Profile[]>('/sci/profiles');
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${HELPER_BASE}${path}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).error ?? ''; } catch { /* ignore */ }
+    throw new Error(`Sci helper ${path} → ${res.status}${detail ? `: ${detail}` : ''}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export function createProfile(name: string): Promise<Profile> {
+  return postJson<Profile>('/sci/profiles', { name });
+}
+
+export function getActiveProfile(): Promise<{ name: string }> {
+  return getJson<{ name: string }>('/sci/active_profile');
+}
+
+export function setActiveProfile(name: string): Promise<{ name: string }> {
+  return postJson<{ name: string }>('/sci/active_profile', { name });
+}
+
 export function eventsUrl(): string {
   return `${HELPER_BASE}/sci/events`;
 }
