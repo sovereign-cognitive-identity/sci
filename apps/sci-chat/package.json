@@ -98,7 +98,8 @@
     "migrate:orphaned-agent-files": "node config/migrate-orphaned-agent-files.js",
     "migrate:orphaned-agent-files:batch": "node config/migrate-orphaned-agent-files.js --batch-size=50",
     "dev:sci": "bin/sci-chat-dev",
-    "dev:sci-frontend": "cd client && npm run dev"
+    "dev:sci-frontend": "cd client && npm run dev",
+    "dev": "concurrently --names backend,frontend --prefix-colors blue,magenta \"npm:dev:sci\" \"npm:dev:sci-frontend\""
   },
   "repository": {
     "type": "git",
@@ -118,6 +119,7 @@
     "@playwright/test": "^1.56.1",
     "@types/react-virtualized": "^9.22.0",
     "caniuse-lite": "^1.0.30001741",
+    "concurrently": "^9.2.1",
     "cross-env": "^7.0.3",
     "elliptic": "^6.6.1",
     "eslint": "^9.39.1",
