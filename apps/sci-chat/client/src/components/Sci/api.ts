@@ -1,0 +1,52 @@
+/**
+ * Helper admin API client. Hits `http://127.0.0.1:3002` directly from
+ * the browser — CORS on the helper allows any origin because the
+ * listener is hardcoded to 127.0.0.1.
+ *
+ * Override via `VITE_SCI_HELPER_URL` if running against a non-default
+ * helper port (e.g. for tests).
+ */
+
+import type {
+  AuditTurn,
+  AuditTurnDetail,
+  HelperStatus,
+  Profile,
+} from './types';
+
+const HELPER_BASE: string =
+  (typeof import.meta !== 'undefined' &&
+    (import.meta as { env?: { VITE_SCI_HELPER_URL?: string } }).env?.VITE_SCI_HELPER_URL) ||
+  'http://127.0.0.1:3002';
+
+async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${HELPER_BASE}${path}`);
+  if (!res.ok) {
+    throw new Error(`Sci helper ${path} → ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export function listAuditTurns(limit = 50, profile?: string): Promise<AuditTurn[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (profile) {
+    params.set('profile', profile);
+  }
+  return getJson<AuditTurn[]>(`/sci/audit_turns?${params}`);
+}
+
+export function getAuditTurn(id: string): Promise<AuditTurnDetail> {
+  return getJson<AuditTurnDetail>(`/sci/audit_turns/${encodeURIComponent(id)}`);
+}
+
+export function getStatus(): Promise<HelperStatus> {
+  return getJson<HelperStatus>('/sci/status');
+}
+
+export function listProfiles(): Promise<Profile[]> {
+  return getJson<Profile[]>('/sci/profiles');
+}
+
+export function eventsUrl(): string {
+  return `${HELPER_BASE}/sci/events`;
+}
