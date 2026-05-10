@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# sci-chat-dev — boot the LibreChat-fork backend in Sci-integration mode.
+#
+# Why a shell wrapper rather than a pure node script:
+#
+#   `NODE_EXTRA_CA_CERTS` is read by Node *at process startup*, not
+#   lazily. Setting it from JS (e.g. via process.env in sci-bootstrap.js)
+#   is too late — TLS contexts are already initialized by then. We
+#   have to export it before `node` is exec'd.
+#
+# What this does:
+#
+#   1. Loads everything in apps/sci-chat/.env into the env (including
+#      HTTPS_PROXY, NODE_EXTRA_CA_CERTS, and the auth secrets).
+#   2. Validates that ~/.sci/ca.crt actually exists (otherwise TLS to
+#      Sci's MITM cert will fail with confusing errors).
+#   3. Validates that sci-helper is listening on the configured
+#      HTTPS_PROXY port — failing loudly here saves debugging time
+#      vs. a half-booted server hitting timeouts.
+#   4. Execs `node sci-bootstrap.js` with the loaded env.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+ENV_FILE=".env"
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "✗ no .env at $(pwd)/$ENV_FILE — run setup first" >&2
+    exit 1
+fi
+
+# Pull *only* the two vars Node needs at process startup — sourcing
+# the whole .env would fail because LibreChat config values like
+# `SESSION_EXPIRY=1000 * 60 * 60` are JS expressions that the shell
+# would interpret (the `*` as a glob). dotenv does the rest in JS.
+export HTTPS_PROXY="$(grep -E '^HTTPS_PROXY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+export NODE_EXTRA_CA_CERTS="$(grep -E '^NODE_EXTRA_CA_CERTS=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+
+# Sanity: CA file must exist for Node's TLS to trust Sci's MITM cert.
+if [[ -n "${NODE_EXTRA_CA_CERTS:-}" && ! -f "$NODE_EXTRA_CA_CERTS" ]]; then
+    echo "✗ NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS — file not found" >&2
+    echo "  Start sci-helper at least once to generate ~/.sci/ca.crt" >&2
+    exit 1
+fi
+
+# Sanity: sci-helper should be listening. We accept either the proxy
+# port being reachable or the user explicitly waving us through with
+# `SCI_NO_HELPER_CHECK=1`.
+if [[ -z "${SCI_NO_HELPER_CHECK:-}" && -n "${HTTPS_PROXY:-}" ]]; then
+    PROXY_HOST_PORT="${HTTPS_PROXY#http://}"
+    PROXY_HOST_PORT="${PROXY_HOST_PORT#https://}"
+    PROXY_HOST_PORT="${PROXY_HOST_PORT%/}"
+    if ! nc -z "${PROXY_HOST_PORT%:*}" "${PROXY_HOST_PORT##*:}" 2>/dev/null; then
+        echo "⚠️  HTTPS_PROXY=$HTTPS_PROXY is not listening." >&2
+        echo "    Start it with: sci-helper-start  (or set SCI_NO_HELPER_CHECK=1 to bypass)" >&2
+        exit 1
+    fi
+fi
+
+exec node sci-bootstrap.js
