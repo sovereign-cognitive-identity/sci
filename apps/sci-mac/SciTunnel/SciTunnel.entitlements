@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Marks this binary as a transparent-proxy provider — selective
+         per-flow interception by hostname/port rule, NOT a full IP
+         tunnel. SCI-134 swapped from packet-tunnel-provider for the
+         right architecture: NETransparentProxyProvider gives us
+         flow-level callbacks (`handleNewFlow(_:)`) the OS pre-routes
+         to us when a registered NENetworkRule matches, and the OS
+         handles all the TCP machinery. Packet-level capture would
+         have meant manual IP/TCP reassembly + IP-based routing that
+         breaks for CDN-fronted hosts. -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>transparent-proxy-provider</string>
+    </array>
+    <!-- The provider runs in its own sandboxed process. Sandbox is ON
+         for the extension because it doesn't need filesystem write —
+         it only talks to the helper over the Unix socket the app
+         passes in via providerConfiguration. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

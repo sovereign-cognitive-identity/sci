@@ -1,0 +1,389 @@
+# Place names — SCI-123 lexicon for the NER pass.
+#
+# Casts a wider net than first_names: we want both well-known city
+# names AND state/country names, since the user may mention any of
+# them in personal context. Lower-cased.
+#
+# Source: 50 US states + 50 most-populous US cities + ~75 countries +
+# ~50 other commonly-mentioned global cities. Keep it focused — the
+# long-tail of place names is poorly served by lexicons; better to
+# tag as PLACE via grammatical context (e.g. "X, Y" pattern where Y
+# is a state) than by extending this list to a full gazetteer.
+#
+# Multi-word entries are joined with a space ("new york", "san
+# francisco"). The matcher checks both single-word and multi-word
+# windows.
+
+# US states
+alabama
+alaska
+arizona
+arkansas
+california
+colorado
+connecticut
+delaware
+florida
+georgia
+hawaii
+idaho
+illinois
+indiana
+iowa
+kansas
+kentucky
+louisiana
+maine
+maryland
+massachusetts
+michigan
+minnesota
+mississippi
+missouri
+montana
+nebraska
+nevada
+new hampshire
+new jersey
+new mexico
+new york
+north carolina
+north dakota
+ohio
+oklahoma
+oregon
+pennsylvania
+rhode island
+south carolina
+south dakota
+tennessee
+texas
+utah
+vermont
+virginia
+washington
+west virginia
+wisconsin
+wyoming
+
+# Major US cities (50 most populous + tech hubs)
+new york
+los angeles
+chicago
+houston
+phoenix
+philadelphia
+san antonio
+san diego
+dallas
+austin
+jacksonville
+fort worth
+columbus
+charlotte
+indianapolis
+san francisco
+seattle
+denver
+boston
+nashville
+oklahoma city
+las vegas
+portland
+detroit
+memphis
+louisville
+baltimore
+milwaukee
+albuquerque
+tucson
+fresno
+sacramento
+mesa
+atlanta
+kansas city
+miami
+raleigh
+omaha
+long beach
+virginia beach
+oakland
+minneapolis
+tulsa
+arlington
+tampa
+new orleans
+wichita
+cleveland
+bakersfield
+aurora
+anaheim
+honolulu
+santa ana
+riverside
+corpus christi
+lexington
+stockton
+henderson
+saint paul
+st. paul
+cincinnati
+pittsburgh
+greensboro
+anchorage
+plano
+lincoln
+orlando
+irvine
+newark
+toledo
+durham
+chula vista
+fort wayne
+jersey city
+saint petersburg
+laredo
+madison
+chandler
+buffalo
+lubbock
+scottsdale
+reno
+glendale
+gilbert
+winston-salem
+north las vegas
+norfolk
+chesapeake
+garland
+irving
+hialeah
+fremont
+boise
+richmond
+baton rouge
+spokane
+des moines
+
+# Major world cities
+london
+paris
+tokyo
+beijing
+shanghai
+moscow
+delhi
+mumbai
+bangalore
+hyderabad
+chennai
+kolkata
+karachi
+istanbul
+cairo
+sydney
+melbourne
+brisbane
+auckland
+toronto
+montreal
+vancouver
+ottawa
+mexico city
+buenos aires
+sao paulo
+rio de janeiro
+lima
+bogota
+santiago
+caracas
+johannesburg
+cape town
+lagos
+nairobi
+amsterdam
+berlin
+brussels
+copenhagen
+dublin
+helsinki
+lisbon
+madrid
+oslo
+rome
+stockholm
+vienna
+warsaw
+zurich
+geneva
+prague
+budapest
+athens
+edinburgh
+manchester
+glasgow
+seoul
+busan
+osaka
+kyoto
+nagoya
+fukuoka
+sapporo
+hong kong
+taipei
+singapore
+kuala lumpur
+jakarta
+manila
+bangkok
+hanoi
+ho chi minh city
+dubai
+abu dhabi
+riyadh
+tel aviv
+jerusalem
+tehran
+baghdad
+beirut
+ankara
+
+# Countries
+afghanistan
+argentina
+australia
+austria
+belgium
+brazil
+canada
+chile
+china
+colombia
+denmark
+egypt
+finland
+france
+germany
+greece
+hungary
+iceland
+india
+indonesia
+iran
+iraq
+ireland
+israel
+italy
+jamaica
+japan
+jordan
+kenya
+korea
+luxembourg
+malaysia
+mexico
+morocco
+nepal
+netherlands
+norway
+pakistan
+peru
+philippines
+poland
+portugal
+qatar
+romania
+russia
+scotland
+serbia
+singapore
+slovakia
+slovenia
+spain
+sweden
+switzerland
+syria
+taiwan
+thailand
+turkey
+ukraine
+uruguay
+venezuela
+vietnam
+
+# Sci-relevant Texas / Oklahoma references (common in user data)
+oklahoma
+oklahoma city
+tulsa
+broken arrow
+edmond
+norman
+stillwater
+dallas
+fort worth
+houston
+austin
+san antonio
+arlington
+plano
+irving
+mckinney
+frisco
+denton
+lubbock
+amarillo
+
+# Common state abbreviations (these are matched only after a comma —
+# see ner.rs's "X, ST" pattern; we don't catch a bare "OK" or "TX"
+# as a place because they're too prone to false positives).
+ak
+al
+ar
+az
+ca
+co
+ct
+dc
+de
+fl
+ga
+hi
+ia
+id
+il
+in
+ks
+ky
+la
+ma
+md
+me
+mi
+mn
+mo
+ms
+mt
+nc
+nd
+ne
+nh
+nj
+nm
+nv
+ny
+oh
+ok
+or
+pa
+ri
+sc
+sd
+tn
+tx
+ut
+va
+vt
+wa
+wi
+wv
+wy

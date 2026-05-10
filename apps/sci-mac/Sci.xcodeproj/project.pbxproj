@@ -1,0 +1,529 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1010001000000000000000A /* SciApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000001000000000000000A /* SciApp.swift */; };
+		A1010002000000000000000A /* SciEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002000000000000000A /* SciEngine.swift */; };
+		A1010003000000000000000A /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000003000000000000000A /* MenuBarView.swift */; };
+		A1010004000000000000000A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004000000000000000A /* SettingsView.swift */; };
+		A1010005000000000000000A /* TrustHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000005000000000000000A /* TrustHelper.swift */; };
+		B1010001000000000000000B /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000001000000000000000B /* PacketTunnelProvider.swift */; };
+		C1010001000000000000000C /* SciTunnel.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C1000010000000000000000C /* SciTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D1010001000000000000000D /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D1000001000000000000000D /* NetworkExtension.framework */; };
+		D1010002000000000000000D /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D1000001000000000000000D /* NetworkExtension.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E1000001000000000000000E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F1000001000000000000000F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B1000040000000000000000B;
+			remoteInfo = SciTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C1000020000000000000000C /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				C1010001000000000000000C /* SciTunnel.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		A1000001000000000000000A /* SciApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SciApp.swift; sourceTree = "<group>"; };
+		A1000002000000000000000A /* SciEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SciEngine.swift; sourceTree = "<group>"; };
+		A1000003000000000000000A /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		A1000004000000000000000A /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A1000005000000000000000A /* TrustHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrustHelper.swift; sourceTree = "<group>"; };
+		A1000010000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1000011000000000000000A /* Sci.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Sci.entitlements; sourceTree = "<group>"; };
+		A1000020000000000000000A /* Sci.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Sci.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1000001000000000000000B /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		B1000010000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B1000011000000000000000B /* SciTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SciTunnel.entitlements; sourceTree = "<group>"; };
+		C1000010000000000000000C /* SciTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SciTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		D1000001000000000000000D /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1000030000000000000000A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1010001000000000000000D /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B1000030000000000000000B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1010002000000000000000D /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		F1000010000000000000000F = {
+			isa = PBXGroup;
+			children = (
+				F1000011000000000000000F /* Sci */,
+				F1000012000000000000000F /* SciTunnel */,
+				F1000013000000000000000F /* Frameworks */,
+				F1000014000000000000000F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F1000011000000000000000F /* Sci */ = {
+			isa = PBXGroup;
+			children = (
+				A1000001000000000000000A /* SciApp.swift */,
+				A1000002000000000000000A /* SciEngine.swift */,
+				A1000003000000000000000A /* MenuBarView.swift */,
+				A1000004000000000000000A /* SettingsView.swift */,
+				A1000005000000000000000A /* TrustHelper.swift */,
+				A1000010000000000000000A /* Info.plist */,
+				A1000011000000000000000A /* Sci.entitlements */,
+			);
+			path = Sci;
+			sourceTree = "<group>";
+		};
+		F1000012000000000000000F /* SciTunnel */ = {
+			isa = PBXGroup;
+			children = (
+				B1000001000000000000000B /* PacketTunnelProvider.swift */,
+				B1000010000000000000000B /* Info.plist */,
+				B1000011000000000000000B /* SciTunnel.entitlements */,
+			);
+			path = SciTunnel;
+			sourceTree = "<group>";
+		};
+		F1000013000000000000000F /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D1000001000000000000000D /* NetworkExtension.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		F1000014000000000000000F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000020000000000000000A /* Sci.app */,
+				C1000010000000000000000C /* SciTunnel.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1000040000000000000000A /* Sci */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000050000000000000000A /* Build configuration list for PBXNativeTarget "Sci" */;
+			buildPhases = (
+				A1000060000000000000000A /* Build sci-helper (cargo) */,
+				A1000070000000000000000A /* Sources */,
+				A1000030000000000000000A /* Frameworks */,
+				A1000080000000000000000A /* Embed sci-helper into bundle */,
+				C1000020000000000000000C /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E1000020000000000000000E /* PBXTargetDependency */,
+			);
+			name = Sci;
+			productName = Sci;
+			productReference = A1000020000000000000000A /* Sci.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B1000040000000000000000B /* SciTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B1000050000000000000000B /* Build configuration list for PBXNativeTarget "SciTunnel" */;
+			buildPhases = (
+				B1000070000000000000000B /* Sources */,
+				B1000030000000000000000B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SciTunnel;
+			productName = SciTunnel;
+			productReference = C1000010000000000000000C /* SciTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F1000001000000000000000F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					A1000040000000000000000A = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					B1000040000000000000000B = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = F1000002000000000000000F /* Build configuration list for PBXProject "Sci" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = F1000010000000000000000F;
+			productRefGroup = F1000014000000000000000F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1000040000000000000000A /* Sci */,
+				B1000040000000000000000B /* SciTunnel */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1000060000000000000000A /* Build sci-helper (cargo) */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build sci-helper (cargo)";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/sci-helper",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -euo pipefail\n# Build the bundled Rust helper. Cargo is idempotent so re-running\n# this on a clean build is cheap; on first run it pulls down deps\n# and takes ~30s. Output binary is stamped into DERIVED_FILE_DIR so\n# the matching Copy phase can pick it up.\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\nHELPER_DIR=\"$SRCROOT/SciHelper\"\nif [ \"$CONFIGURATION\" = \"Release\" ]; then\n  CARGO_PROFILE=\"--release\"\n  TARGET_SUBDIR=release\nelse\n  CARGO_PROFILE=\"\"\n  TARGET_SUBDIR=debug\nfi\n( cd \"$HELPER_DIR\" && cargo build $CARGO_PROFILE )\ncp \"$HELPER_DIR/target/$TARGET_SUBDIR/sci-helper\" \"$DERIVED_FILE_DIR/sci-helper\"\n";
+		};
+		A1000080000000000000000A /* Embed sci-helper into bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(DERIVED_FILE_DIR)/sci-helper",
+			);
+			name = "Embed sci-helper into bundle";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/sci-helper",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/zsh;
+			shellScript = "set -euo pipefail\n# Place the helper next to the main app executable inside\n# Contents/MacOS/. SciEngine.swift's `bundledHelperPath` looks for\n# it there. chmod +x explicitly because cp can drop the bit when\n# the destination FS is exotic (e.g. a synthetic build dir).\ninstall -m 0755 \"$DERIVED_FILE_DIR/sci-helper\" \"$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/sci-helper\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1000070000000000000000A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1010001000000000000000A /* SciApp.swift in Sources */,
+				A1010002000000000000000A /* SciEngine.swift in Sources */,
+				A1010003000000000000000A /* MenuBarView.swift in Sources */,
+				A1010004000000000000000A /* SettingsView.swift in Sources */,
+				A1010005000000000000000A /* TrustHelper.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B1000070000000000000000B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B1010001000000000000000B /* PacketTunnelProvider.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E1000020000000000000000E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B1000040000000000000000B /* SciTunnel */;
+			targetProxy = E1000001000000000000000E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A1000051000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = Sci/Sci.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2K8AW6SGUJ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sci/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sci.mac;
+				PRODUCT_NAME = Sci;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1000052000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = Sci/Sci.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2K8AW6SGUJ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sci/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sci.mac;
+				PRODUCT_NAME = Sci;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		B1000051000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = SciTunnel/SciTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2K8AW6SGUJ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SciTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sci.mac.tunnel;
+				PRODUCT_NAME = SciTunnel;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Debug;
+		};
+		B1000052000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = SciTunnel/SciTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 2K8AW6SGUJ;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = SciTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sci.mac.tunnel;
+				PRODUCT_NAME = SciTunnel;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Release;
+		};
+		F1000100000000000000000F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		F1000101000000000000000F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1000050000000000000000A /* Build configuration list for PBXNativeTarget "Sci" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000051000000000000000A /* Debug */,
+				A1000052000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B1000050000000000000000B /* Build configuration list for PBXNativeTarget "SciTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B1000051000000000000000B /* Debug */,
+				B1000052000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		F1000002000000000000000F /* Build configuration list for PBXProject "Sci" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F1000100000000000000000F /* Debug */,
+				F1000101000000000000000F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F1000001000000000000000F /* Project object */;
+}

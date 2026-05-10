@@ -1,0 +1,47 @@
+[package]
+name         = "sci-handlers"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Provider request handlers (Anthropic / OpenAI / Google). Mirrors @sci/proxy/handlers."
+
+# SCI-126: provider-aware request/response handlers. Anthropic ships with
+# streaming SSE deanonymization in this ticket; OpenAI + Google are
+# stubbed and will land in follow-up tickets (SCI-132/133) — same shape,
+# just mechanical ports.
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+once_cell  = { workspace = true }
+regex      = { workspace = true }
+
+# `tracing` for the inspector-style request/response dumps gated behind
+# `RUST_LOG=…,sci_handlers::anthropic::inspect=debug`. Stays at INFO+
+# silent in production; visible during dogfood/CI debugging.
+tracing    = "0.1"
+
+sci-anonymizer = { path = "../sci-anonymizer" }
+sci-memory     = { path = "../sci-memory"     }
+sci-oauth      = { path = "../sci-oauth"      }
+
+# Async machinery. Tokio is the runtime everyone in the ecosystem
+# defaults to; reqwest+rustls is the cross-platform HTTP client; futures
+# gives us StreamExt + the `Stream` trait we use for SSE bodies.
+tokio    = { version = "1", features = ["rt", "macros", "sync"] }
+futures  = "0.3"
+async-trait = "0.1"
+async-stream = "0.3"
+bytes    = "1"
+
+# `rustls-tls` so we don't pull in OpenSSL on every developer's machine.
+# `stream` flag enables `Response::bytes_stream()` for the SSE path.
+reqwest  = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "http2"] }
+
+[dev-dependencies]
+tokio    = { version = "1", features = ["rt", "macros", "rt-multi-thread", "test-util", "io-util"] }
+tempfile = "3"
+# Tests mutate `SCI_OAUTH_CACHE_PATH`; same env-var-race story as
+# `sci-oauth` itself.
+serial_test = "3"
