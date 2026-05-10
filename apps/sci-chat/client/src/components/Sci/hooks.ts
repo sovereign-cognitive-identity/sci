@@ -34,22 +34,27 @@ const QK_TURN     = (id: string) => ['sci', 'audit_turn', id] as const;
 /**
  * SCI-157 dogfood found a stuck-loading bug when `useAuditTurns` was
  * implemented via React Query: the queryFn ran and resolved with data,
- * but the resulting state never reached the component (no re-render,
- * isLoading stayed true forever). LibreChat is on @tanstack/react-query
- * v4 and there's evidently a subtle interaction with our setup that
- * keeps the query orphaned. Switched to a plain useEffect + useState +
- * manual refresh ref pattern. We lose React Query's caching for this
- * query specifically (it's a single-tab single-user surface — no
- * sharing across components), but everything else (the recall preview,
- * profiles, status) keeps using React Query happily.
+ * but the resulting state never reached the component. LibreChat is on
+ * @tanstack/react-query v4 and there's evidently a subtle interaction
+ * with our setup that keeps the larger queries orphaned. Switched to
+ * a plain useEffect + useState + monotonic refetch-id pattern. We lose
+ * React Query's caching for this query specifically (single-tab
+ * single-user surface — no cross-component sharing benefit anyway).
+ *
+ * Profile filtering: when `profile` is provided, only audit turns for
+ * that profile are returned. Strict isolation by default — switching
+ * profile in the inspector header re-fetches the list scoped to that
+ * profile so work-conversations don't leak into the personal view
+ * and vice versa.
  *
  * Reload semantics:
  *   - Initial mount: fetches once.
+ *   - `profile` changes: re-fetches scoped to the new profile.
  *   - Returned `refetch` function fires a fresh load (used by the
  *     SSE flow_completed event listener to live-update the panel).
- *   - Component unmount cancels the in-flight request via AbortSignal.
+ *   - In-flight stale completions are dropped via the monotonic id.
  */
-export function useAuditTurns(limit = 50) {
+export function useAuditTurns(limit = 50, profile?: string) {
   const [data, setData]           = useState<AuditTurn[] | null>(null);
   const [error, setError]         = useState<Error | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -59,7 +64,7 @@ export function useAuditTurns(limit = 50) {
     reloadIdRef.current += 1;
     const id = reloadIdRef.current;
     setIsLoading(true);
-    listAuditTurns(limit)
+    listAuditTurns(limit, profile)
       .then((rows) => {
         if (id !== reloadIdRef.current) return; // superseded by a newer reload
         setData(rows);
@@ -71,7 +76,7 @@ export function useAuditTurns(limit = 50) {
         setError(err as Error);
         setIsLoading(false);
       });
-  }, [limit]);
+  }, [limit, profile]);
 
   useEffect(() => {
     refetch();

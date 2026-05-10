@@ -11,7 +11,7 @@ import { useEffect, useState } from 'react';
 
 import ProfileSelector from './ProfileSelector';
 import RecallPreview from './RecallPreview';
-import { useAuditEvents, useAuditTurns, useHelperStatus } from './hooks';
+import { useActiveProfile, useAuditEvents, useAuditTurns, useHelperStatus } from './hooks';
 import TurnCard from './TurnCard';
 
 const LS_OPEN_KEY  = 'sci.inspector.open';
@@ -54,8 +54,15 @@ export default function InspectorPanel() {
 
   // Only fetch + subscribe while the drawer is open. Closes the SSE
   // connection on collapse so we don't hold an open EventSource per tab.
-  const turns  = useAuditTurns(50);
-  const status = useHelperStatus(open);
+  //
+  // Strict profile isolation: audit_turns list filters by the active
+  // profile, so switching to "personal" hides the work history and
+  // vice versa. Helper-side enforces the same scoping for storage +
+  // recall, so the UI faithfully reflects the data flow.
+  const active   = useActiveProfile(open);
+  const profile  = active.data?.name;
+  const turns    = useAuditTurns(50, profile);
+  const status   = useHelperStatus(open);
   useAuditEvents(open, turns.refetch);
 
   return (
@@ -89,7 +96,9 @@ export default function InspectorPanel() {
               )}
               {turns.data && turns.data.length === 0 && (
                 <p className="text-sm text-text-secondary">
-                  No turns yet. Send a chat to start the flight recorder.
+                  No turns yet for profile{' '}
+                  <span className="font-mono">{profile ?? 'work'}</span>.
+                  {' '}Send a chat to start the flight recorder.
                 </p>
               )}
               {turns.data?.map((t) => (
