@@ -32,6 +32,30 @@
 
 const path = require('path');
 
+/**
+ * Provider env vars that .env in this app must own authoritatively.
+ * Casey's shell may have inherited `ANTHROPIC_API_KEY=""` (or stale
+ * `sci_t_*` values) from prior `sci-local` / `sci-vps` toggles, which
+ * dotenv.config() refuses to overwrite — leaving the api server with
+ * empty-string keys and silently disabling Anthropic.
+ *
+ * We unset them here BEFORE require()ing the server so dotenv's later
+ * call lands the .env values.
+ */
+const PROVIDER_ENV_TO_RESET = [
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'GOOGLE_KEY',
+  'OPENROUTER_KEY',
+  'ANTHROPIC_BASE_URL',  // Casey's old WireGuard-mesh proxy URL — must not leak
+  'OPENAI_BASE_URL',
+];
+for (const key of PROVIDER_ENV_TO_RESET) {
+  if (process.env[key] !== undefined) {
+    delete process.env[key];
+  }
+}
+
 (async () => {
   console.log('[sci-bootstrap] starting…');
 
