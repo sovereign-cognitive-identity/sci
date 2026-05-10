@@ -17,6 +17,7 @@
 //! See `flow.rs` for the SCI-134 protocol details. Phase 1 was a bare
 //! PING/PONG smoke loop; phase 2 (this) wires the real engine.
 
+mod admin;
 mod credentials;
 mod events;
 mod flow;
@@ -62,29 +63,39 @@ fn default_socket_path() -> PathBuf {
 /// SCI-148: parse the optional `--proxy <port>` CLI arg, falling back
 /// to `SCI_HELPER_PROXY_PORT`. Returns `Some(port)` if either is set.
 /// We keep the arg parsing inline (no `clap` dependency) — the helper
-/// has exactly two flags and pulling clap in for that bloats the
+/// has a small fixed flag set and pulling clap in for that bloats the
 /// release binary.
 fn parse_proxy_port() -> Option<u16> {
+    parse_port_flag("--proxy", "SCI_HELPER_PROXY_PORT")
+}
+
+/// SCI-152: parse `--admin <port>` (or `SCI_HELPER_ADMIN_PORT`). Default
+/// port `3002` is intentionally distinct from the proxy's `3001` so
+/// both surfaces can coexist on a single launchd instance and so
+/// firewall rules / port maps can target them independently.
+fn parse_admin_port() -> u16 {
+    parse_port_flag("--admin", "SCI_HELPER_ADMIN_PORT").unwrap_or(3002)
+}
+
+/// Shared `--<flag> <port>` parser. Matches both `--flag <n>` and
+/// `--flag=<n>`. Falls back to the named env var.
+fn parse_port_flag(flag: &str, env_var: &str) -> Option<u16> {
+    let prefix = format!("{flag}=");
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
-        match a.as_str() {
-            "--proxy" => {
-                if let Some(p) = args.next()
-                    && let Ok(n) = p.parse::<u16>() {
-                    return Some(n);
-                }
+        if a == flag {
+            if let Some(p) = args.next()
+                && let Ok(n) = p.parse::<u16>()
+            {
+                return Some(n);
             }
-            s if s.starts_with("--proxy=") => {
-                if let Ok(n) = s["--proxy=".len()..].parse::<u16>() {
-                    return Some(n);
-                }
-            }
-            _ => {}
+        } else if let Some(rest) = a.strip_prefix(&prefix)
+            && let Ok(n) = rest.parse::<u16>()
+        {
+            return Some(n);
         }
     }
-    std::env::var("SCI_HELPER_PROXY_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
+    std::env::var(env_var).ok().and_then(|s| s.parse().ok())
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -218,6 +229,33 @@ async fn main() -> Result<()> {
                 tracing::error!(error = %e, "dev-proxy listener exited");
             }
         });
+    }
+
+    // ── 4c. (SCI-152) Admin HTTP API + SSE event stream ───────────────────
+    // Localhost-only HTTP surface for sci-chat (and future Sci clients)
+    // to read flight-recorder data and subscribe to live turn events
+    // without touching the SQLite file directly. Default port 3002.
+    {
+        let admin_port = parse_admin_port();
+        let admin_addr = format!("127.0.0.1:{admin_port}");
+        match tokio::net::TcpListener::bind(&admin_addr).await {
+            Ok(listener) => {
+                let admin_state = admin::AdminState {
+                    handler_state: shared.handler_state.clone(),
+                    events:        shared.events.clone(),
+                    version:       sci_core::VERSION,
+                    started_at:    std::time::Instant::now(),
+                };
+                tokio::spawn(async move {
+                    if let Err(e) = admin::serve_admin(listener, admin_state).await {
+                        tracing::error!(error = %e, "admin API listener exited");
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::error!(addr = %admin_addr, error = %e, "admin API bind failed");
+            }
+        }
     }
 
     // ── 5. Accept loop until SIGTERM/SIGINT ───────────────────────────────

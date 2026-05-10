@@ -434,11 +434,12 @@ impl LocalAdapter {
             Ok(self.conn.query_row(sql, [], |r| r.get(0))?)
         };
         Ok(StorageStats {
-            episodic:   count("SELECT COUNT(*) FROM episodic_memories")?,
-            semantic:   count("SELECT COUNT(*) FROM semantic_nodes")?,
-            identity:   count("SELECT COUNT(*) FROM identity_facts")?,
-            embeddings: count("SELECT COUNT(*) FROM embeddings")?,
-            backend:    self.backend.clone(),
+            episodic:    count("SELECT COUNT(*) FROM episodic_memories")?,
+            semantic:    count("SELECT COUNT(*) FROM semantic_nodes")?,
+            identity:    count("SELECT COUNT(*) FROM identity_facts")?,
+            embeddings:  count("SELECT COUNT(*) FROM embeddings")?,
+            audit_turns: count("SELECT COUNT(*) FROM audit_turns")?,
+            backend:     self.backend.clone(),
         })
     }
 }

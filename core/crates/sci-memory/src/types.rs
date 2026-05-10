@@ -94,11 +94,16 @@ pub struct RecallResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageStats {
-    pub episodic:   i64,
-    pub semantic:   i64,
-    pub identity:   i64,
-    pub embeddings: i64,
-    pub backend:    String,
+    pub episodic:     i64,
+    pub semantic:     i64,
+    pub identity:     i64,
+    pub embeddings:   i64,
+    /// SCI-152: flight-recorder turn count. Surfaced by the helper's
+    /// `/sci/status` admin endpoint so the sci-chat UI can show "Sci
+    /// has captured N turns" without a separate query round-trip.
+    #[serde(rename = "auditTurns")]
+    pub audit_turns:  i64,
+    pub backend:      String,
 }
 
 // ── Inputs for store_* ─────────────────────────────────────────────────────

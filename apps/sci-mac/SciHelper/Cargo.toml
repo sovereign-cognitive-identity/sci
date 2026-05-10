@@ -63,8 +63,28 @@ arc-swap     = "1"
 # Stdlib has no timezone DB; chrono is the standard dep for this.
 chrono       = "0.4"
 
+# SCI-152: admin HTTP API + SSE event stream for sci-chat (and future
+# clients) to read flight-recorder data without touching the SQLite
+# file directly. axum gives us routing, JSON, SSE, and CORS in ~120 KB
+# of release-binary growth — the cost of hand-rolling all that
+# (alongside the existing proxy.rs raw-HTTP parsing) is more code, more
+# surface area, and worse type safety.
+#
+# Localhost-only binding makes CORS permissive safe; only same-machine
+# callers (sci-chat backend/frontend, sci-tail variants) can reach it.
+axum         = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query", "matched-path"] }
+tower-http   = { version = "0.6", features = ["cors"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
 [dev-dependencies]
 tempfile = "3"
+# SCI-152: integration tests for the admin API hit the in-process
+# axum server over real HTTP. reqwest is already a production dep via
+# the upstream client, but its default features pull in the rustls
+# stack — for tests we just need plain HTTP since the admin API is
+# unencrypted localhost.
+reqwest  = { version = "0.12", default-features = false, features = ["json", "stream"] }
+tokio    = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "net", "sync"] }
 
 [[bin]]
 name = "sci-helper"
