@@ -7,8 +7,10 @@
  * - `useAuditEvents`    — SSE subscription, fires callback per event
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+
+import type { AuditTurn } from './types';
 
 import {
   createProfile,
@@ -29,13 +31,53 @@ const QK_PROFILES = ['sci', 'profiles'] as const;
 const QK_ACTIVE   = ['sci', 'active_profile'] as const;
 const QK_TURN     = (id: string) => ['sci', 'audit_turn', id] as const;
 
+/**
+ * SCI-157 dogfood found a stuck-loading bug when `useAuditTurns` was
+ * implemented via React Query: the queryFn ran and resolved with data,
+ * but the resulting state never reached the component (no re-render,
+ * isLoading stayed true forever). LibreChat is on @tanstack/react-query
+ * v4 and there's evidently a subtle interaction with our setup that
+ * keeps the query orphaned. Switched to a plain useEffect + useState +
+ * manual refresh ref pattern. We lose React Query's caching for this
+ * query specifically (it's a single-tab single-user surface — no
+ * sharing across components), but everything else (the recall preview,
+ * profiles, status) keeps using React Query happily.
+ *
+ * Reload semantics:
+ *   - Initial mount: fetches once.
+ *   - Returned `refetch` function fires a fresh load (used by the
+ *     SSE flow_completed event listener to live-update the panel).
+ *   - Component unmount cancels the in-flight request via AbortSignal.
+ */
 export function useAuditTurns(limit = 50) {
-  return useQuery({
-    queryKey: [...QK_TURNS, limit],
-    queryFn:  () => listAuditTurns(limit),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
+  const [data, setData]           = useState<AuditTurn[] | null>(null);
+  const [error, setError]         = useState<Error | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const reloadIdRef               = useRef(0);
+
+  const refetch = useCallback(() => {
+    reloadIdRef.current += 1;
+    const id = reloadIdRef.current;
+    setIsLoading(true);
+    listAuditTurns(limit)
+      .then((rows) => {
+        if (id !== reloadIdRef.current) return; // superseded by a newer reload
+        setData(rows);
+        setError(null);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (id !== reloadIdRef.current) return;
+        setError(err as Error);
+        setIsLoading(false);
+      });
+  }, [limit]);
+
+  useEffect(() => {
+    refetch();
+  }, [refetch]);
+
+  return { data, error, isLoading, refetch };
 }
 
 export function useAuditTurn(id: string | null) {
@@ -172,11 +214,13 @@ export function useHelperStatus(enabled = true) {
  */
 export function useAuditEvents(
   enabled: boolean,
+  onFlowCompleted?: () => void,
   onEvent?: (event: HelperEvent) => void,
 ) {
-  const queryClient = useQueryClient();
-  const onEventRef  = useRef(onEvent);
+  const onEventRef     = useRef(onEvent);
+  const onCompletedRef = useRef(onFlowCompleted);
   useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
+  useEffect(() => { onCompletedRef.current = onFlowCompleted; }, [onFlowCompleted]);
 
   useEffect(() => {
     if (!enabled) {
@@ -188,17 +232,16 @@ export function useAuditEvents(
         const event = JSON.parse(msg.data) as HelperEvent;
         onEventRef.current?.(event);
         if (event.type === 'flow_completed') {
-          queryClient.invalidateQueries({ queryKey: QK_TURNS });
+          onCompletedRef.current?.();
         }
       } catch {
-        // Ignore unparseable events. Helper guarantees JSON but a
-        // future helper version may add a non-JSON keep-alive line.
+        // Ignore unparseable events.
       }
     };
     src.onerror = () => {
-      // EventSource auto-reconnects; we just log for diagnosability.
-      // Don't toast — a transient blip during helper restart is normal.
+      // EventSource auto-reconnects; transient blips during helper
+      // restart are normal and not surfaced to the user.
     };
     return () => src.close();
-  }, [enabled, queryClient]);
+  }, [enabled]);
 }

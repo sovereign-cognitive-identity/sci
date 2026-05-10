@@ -56,7 +56,7 @@ export default function InspectorPanel() {
   // connection on collapse so we don't hold an open EventSource per tab.
   const turns  = useAuditTurns(50);
   const status = useHelperStatus(open);
-  useAuditEvents(open);
+  useAuditEvents(open, turns.refetch);
 
   return (
     <>
