@@ -33,8 +33,9 @@ use crate::error::{MemoryError, Result};
 use crate::recall::{embedding_to_bytes, recall};
 use crate::schema::{EMBEDDING_DIM, SCHEMA, SEED_PROFILES};
 use crate::types::{
-    IdentityFact, Metadata, Profile, RecallQuery, RecallResult, StorageStats, StoreEpisodicInput,
-    StoreIdentityInput, StoreSemanticInput,
+    AuditTurn, IdentityFact, Metadata, Profile, RecallQuery, RecallResult, StorageStats,
+    StoreAuditTurnInput, StoreEpisodicInput, StoreIdentityInput, StoreSemanticInput, TokenDirection,
+    TokenMapping,
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -266,6 +267,168 @@ impl LocalAdapter {
         Ok(rows)
     }
 
+    // ── Flight recorder ────────────────────────────────────────────────────
+    //
+    // `store_audit_turn` is the single write path for the flight
+    // recorder. It persists the audit row + all associated token
+    // mappings in one transaction so a partial write can never leave
+    // the audit row claiming "0 entities" when the mappings table
+    // has rows referring to a turn that doesn't exist.
+    //
+    // Read paths (`list_audit_turns`, `get_audit_turn`,
+    // `count_token_original`) are designed to be cheap so the
+    // LibreChat inspector panel + audit search can call them
+    // freely without paginating.
+
+    pub fn store_audit_turn(&self, input: &StoreAuditTurnInput<'_>) -> Result<String> {
+        let id = Uuid::new_v4().to_string();
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO audit_turns (
+               id, profile_id, host, endpoint, model, oauth_active,
+               user_text, assistant_text, request_body, response_raw,
+               recall_injected, masked_count, status, latency_ms, error
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                     ?7, ?8, ?9, ?10,
+                     ?11, ?12, ?13, ?14, ?15)",
+            params![
+                id,
+                input.profile_id,
+                input.host,
+                input.endpoint,
+                input.model,
+                input.oauth_active as i64,
+                input.user_text,
+                input.assistant_text,
+                input.request_body,
+                input.response_raw,
+                input.recall_injected,
+                input.masked_count as i64,
+                input.status.map(|s| s as i64),
+                input.latency_ms.map(|s| s as i64),
+                input.error,
+            ],
+        )?;
+
+        // Token mappings — one INSERT per row. Per-turn count is
+        // typically <50, so loop overhead is negligible vs. the gain
+        // in clarity over a multi-VALUES batch insert.
+        if !input.token_mappings.is_empty() {
+            let mut stmt = tx.prepare(
+                "INSERT INTO token_mappings (
+                   turn_id, profile_id, token, original, entity_kind, direction
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )?;
+            for m in &input.token_mappings {
+                stmt.execute(params![
+                    id,
+                    input.profile_id,
+                    m.token,
+                    m.original,
+                    m.entity_kind,
+                    m.direction.as_str(),
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// List audit turns newest-first. `profile_id == None` means all
+    /// profiles (cross-cutting view for the inspector). Limit caps the
+    /// scan; UI defaults to 50.
+    pub fn list_audit_turns(
+        &self,
+        profile_id: Option<&str>,
+        limit:      usize,
+    ) -> Result<Vec<AuditTurn>> {
+        let limit = limit as i64;
+        let mut stmt;
+        let rows = if let Some(pid) = profile_id {
+            stmt = self.conn.prepare(
+                "SELECT id, profile_id, created_at, host, endpoint, model,
+                        oauth_active, user_text, assistant_text, request_body,
+                        response_raw, recall_injected, masked_count,
+                        status, latency_ms, error
+                   FROM audit_turns
+                  WHERE profile_id = ?1
+                  ORDER BY created_at DESC
+                  LIMIT ?2",
+            )?;
+            stmt.query_map(params![pid, limit], row_to_audit_turn)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt = self.conn.prepare(
+                "SELECT id, profile_id, created_at, host, endpoint, model,
+                        oauth_active, user_text, assistant_text, request_body,
+                        response_raw, recall_injected, masked_count,
+                        status, latency_ms, error
+                   FROM audit_turns
+                  ORDER BY created_at DESC
+                  LIMIT ?1",
+            )?;
+            stmt.query_map(params![limit], row_to_audit_turn)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
+    }
+
+    /// Fetch a single audit turn by id, plus all its token mappings.
+    /// Returns `None` if the turn doesn't exist.
+    pub fn get_audit_turn(&self, id: &str) -> Result<Option<(AuditTurn, Vec<TokenMapping>)>> {
+        let turn = self.conn
+            .query_row(
+                "SELECT id, profile_id, created_at, host, endpoint, model,
+                        oauth_active, user_text, assistant_text, request_body,
+                        response_raw, recall_injected, masked_count,
+                        status, latency_ms, error
+                   FROM audit_turns
+                  WHERE id = ?1",
+                params![id],
+                row_to_audit_turn,
+            )
+            .optional()?;
+        let Some(turn) = turn else { return Ok(None); };
+
+        let mut stmt = self.conn.prepare(
+            "SELECT id, turn_id, profile_id, token, original, entity_kind,
+                    direction, created_at
+               FROM token_mappings
+              WHERE turn_id = ?1
+              ORDER BY id",
+        )?;
+        let mappings = stmt.query_map(params![id], row_to_token_mapping)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Some((turn, mappings)))
+    }
+
+    /// Count of times an original entity has been masked across all
+    /// turns. Powers "you've mentioned Casey 47 times" surfaces.
+    /// `profile_id == None` counts across all profiles.
+    pub fn count_token_original(
+        &self,
+        original:   &str,
+        profile_id: Option<&str>,
+    ) -> Result<u64> {
+        let count: i64 = if let Some(pid) = profile_id {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM token_mappings
+                  WHERE original = ?1 AND profile_id = ?2",
+                params![original, pid],
+                |r| r.get(0),
+            )?
+        } else {
+            self.conn.query_row(
+                "SELECT COUNT(*) FROM token_mappings WHERE original = ?1",
+                params![original],
+                |r| r.get(0),
+            )?
+        };
+        Ok(count as u64)
+    }
+
     pub fn get_stats(&self) -> Result<StorageStats> {
         let count = |sql: &str| -> Result<i64> {
             Ok(self.conn.query_row(sql, [], |r| r.get(0))?)
@@ -308,6 +471,71 @@ fn row_to_identity_fact(row: &rusqlite::Row<'_>) -> rusqlite::Result<IdentityFac
         confidence,
         created_at: parse_datetime(&created_at).unwrap_or_else(Utc::now),
         metadata,
+    })
+}
+
+fn row_to_audit_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditTurn> {
+    let id:              String         = row.get(0)?;
+    let profile_id:      Option<String> = row.get(1)?;
+    let created_at:      String         = row.get(2)?;
+    let host:            String         = row.get(3)?;
+    let endpoint:        String         = row.get(4)?;
+    let model:           Option<String> = row.get(5)?;
+    let oauth_active:    i64            = row.get(6)?;
+    let user_text:       Option<String> = row.get(7)?;
+    let assistant_text:  Option<String> = row.get(8)?;
+    let request_body:    Option<String> = row.get(9)?;
+    let response_raw:    Option<String> = row.get(10)?;
+    let recall_injected: Option<String> = row.get(11)?;
+    let masked_count:    i64            = row.get(12)?;
+    let status:          Option<i64>    = row.get(13)?;
+    let latency_ms:      Option<i64>    = row.get(14)?;
+    let error:           Option<String> = row.get(15)?;
+    Ok(AuditTurn {
+        id,
+        profile_id,
+        created_at: parse_datetime(&created_at).unwrap_or_else(Utc::now),
+        host,
+        endpoint,
+        model,
+        oauth_active: oauth_active != 0,
+        user_text,
+        assistant_text,
+        request_body,
+        response_raw,
+        recall_injected,
+        masked_count: masked_count as u32,
+        status:       status.map(|s| s as u16),
+        latency_ms:   latency_ms.map(|s| s as u64),
+        error,
+    })
+}
+
+fn row_to_token_mapping(row: &rusqlite::Row<'_>) -> rusqlite::Result<TokenMapping> {
+    let id:          i64            = row.get(0)?;
+    let turn_id:     String         = row.get(1)?;
+    let profile_id:  Option<String> = row.get(2)?;
+    let token:       String         = row.get(3)?;
+    let original:    String         = row.get(4)?;
+    let entity_kind: String         = row.get(5)?;
+    let direction:   String         = row.get(6)?;
+    let created_at:  String         = row.get(7)?;
+    Ok(TokenMapping {
+        id,
+        turn_id,
+        profile_id,
+        token,
+        original,
+        entity_kind,
+        direction: match direction.as_str() {
+            "outbound" => TokenDirection::Outbound,
+            "inbound"  => TokenDirection::Inbound,
+            // The CHECK constraint guarantees only those two values
+            // can land in the column; if a future migration loosens
+            // it, default to outbound rather than panic.
+            _          => TokenDirection::Outbound,
+        },
+        created_at: parse_datetime(&created_at).unwrap_or_else(Utc::now),
     })
 }
 

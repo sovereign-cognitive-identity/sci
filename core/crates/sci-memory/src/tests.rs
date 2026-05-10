@@ -371,3 +371,174 @@ fn opens_persistent_db_and_reopens_with_state() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].content, "persists across reopens");
 }
+
+// ── Flight recorder ────────────────────────────────────────────────────────
+
+#[test]
+fn store_audit_turn_persists_row_with_no_token_mappings() {
+    // Smallest case: error response with no token mappings (e.g.
+    // upstream returned 4xx before we masked anything). The audit
+    // row still lands so the inspector panel shows the failed turn.
+    let a = open();
+    let work = a.get_profile("work").unwrap().unwrap();
+    let id = a.store_audit_turn(&StoreAuditTurnInput {
+        profile_id:   Some(&work.id),
+        host:         "api.anthropic.com",
+        endpoint:     "/v1/messages",
+        oauth_active: false,
+        masked_count: 0,
+        status:       Some(429),
+        error:        Some("rate_limit_error"),
+        ..Default::default()
+    })
+    .expect("store_audit_turn");
+
+    let (turn, mappings) = a.get_audit_turn(&id).unwrap().expect("turn exists");
+    assert_eq!(turn.host,         "api.anthropic.com");
+    assert_eq!(turn.endpoint,     "/v1/messages");
+    assert_eq!(turn.status,       Some(429));
+    assert_eq!(turn.error.as_deref(), Some("rate_limit_error"));
+    assert_eq!(turn.masked_count, 0);
+    assert!(mappings.is_empty());
+}
+
+#[test]
+fn store_audit_turn_persists_token_mappings_in_one_transaction() {
+    // The promise of the API: turn + mappings land atomically. Read
+    // back via get_audit_turn and confirm the mappings are present
+    // and joined to the turn.
+    let a = open();
+    let work = a.get_profile("work").unwrap().unwrap();
+    let mappings = vec![
+        TokenMappingInput {
+            token: "[PERSON_1]", original: "Casey", entity_kind: "PERSON",
+            direction: TokenDirection::Outbound,
+        },
+        TokenMappingInput {
+            token: "[URL_1]",    original: "openclaw.dev", entity_kind: "URL",
+            direction: TokenDirection::Outbound,
+        },
+        TokenMappingInput {
+            token: "[PERSON_1]", original: "Casey", entity_kind: "PERSON",
+            direction: TokenDirection::Inbound,
+        },
+    ];
+    let id = a.store_audit_turn(&StoreAuditTurnInput {
+        profile_id:     Some(&work.id),
+        host:           "api.anthropic.com",
+        endpoint:       "/v1/messages",
+        model:          Some("claude-haiku-4-5"),
+        oauth_active:   true,
+        user_text:      Some("Hi I'm Casey from openclaw.dev"),
+        assistant_text: Some("Hi Casey, openclaw.dev sounds great"),
+        masked_count:   2,
+        status:         Some(200),
+        latency_ms:     Some(842),
+        token_mappings: mappings,
+        ..Default::default()
+    })
+    .expect("store_audit_turn");
+
+    let (turn, got_mappings) = a.get_audit_turn(&id).unwrap().expect("turn exists");
+    assert!(turn.oauth_active);
+    assert_eq!(turn.model.as_deref(), Some("claude-haiku-4-5"));
+    assert_eq!(turn.masked_count,     2);
+    assert_eq!(got_mappings.len(),    3);
+
+    // Outbound entries first (insert order preserved by the index PK).
+    assert_eq!(got_mappings[0].original, "Casey");
+    assert_eq!(got_mappings[0].direction, TokenDirection::Outbound);
+    assert_eq!(got_mappings[2].direction, TokenDirection::Inbound);
+}
+
+#[test]
+fn list_audit_turns_returns_newest_first() {
+    let a = open();
+    let work = a.get_profile("work").unwrap().unwrap();
+    for host in ["host-a", "host-b", "host-c"] {
+        a.store_audit_turn(&StoreAuditTurnInput {
+            profile_id: Some(&work.id),
+            host,
+            endpoint:   "/v1/messages",
+            ..Default::default()
+        })
+        .unwrap();
+        // SQLite's `datetime('now')` is second-resolution — pause so
+        // the rows land in distinct buckets and order is testable.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+    }
+
+    let turns = a.list_audit_turns(Some(&work.id), 10).unwrap();
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].host, "host-c");
+    assert_eq!(turns[2].host, "host-a");
+}
+
+#[test]
+fn count_token_original_aggregates_across_turns() {
+    // Casey shows up in multiple turns; the count powers
+    // "you've mentioned Casey N times" surfaces.
+    let a = open();
+    let work = a.get_profile("work").unwrap().unwrap();
+    for _ in 0..3 {
+        a.store_audit_turn(&StoreAuditTurnInput {
+            profile_id:     Some(&work.id),
+            host:           "api.anthropic.com",
+            endpoint:       "/v1/messages",
+            token_mappings: vec![
+                TokenMappingInput {
+                    token: "[PERSON_1]", original: "Casey",
+                    entity_kind: "PERSON", direction: TokenDirection::Outbound,
+                },
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    a.store_audit_turn(&StoreAuditTurnInput {
+        profile_id:     Some(&work.id),
+        host:           "api.anthropic.com",
+        endpoint:       "/v1/messages",
+        token_mappings: vec![
+            TokenMappingInput {
+                token: "[PERSON_2]", original: "Alice",
+                entity_kind: "PERSON", direction: TokenDirection::Outbound,
+            },
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert_eq!(a.count_token_original("Casey", Some(&work.id)).unwrap(), 3);
+    assert_eq!(a.count_token_original("Alice", Some(&work.id)).unwrap(), 1);
+    assert_eq!(a.count_token_original("Eve",   Some(&work.id)).unwrap(), 0);
+    // Cross-profile aggregation: profile_id == None.
+    assert_eq!(a.count_token_original("Casey", None).unwrap(), 3);
+}
+
+#[test]
+fn token_mapping_direction_round_trips() {
+    // Both directions persist + read back to the same enum variant.
+    let a = open();
+    let work = a.get_profile("work").unwrap().unwrap();
+    let id = a.store_audit_turn(&StoreAuditTurnInput {
+        profile_id:     Some(&work.id),
+        host:           "api.anthropic.com",
+        endpoint:       "/v1/messages",
+        token_mappings: vec![
+            TokenMappingInput {
+                token: "[X]", original: "x", entity_kind: "PERSON",
+                direction: TokenDirection::Outbound,
+            },
+            TokenMappingInput {
+                token: "[Y]", original: "y", entity_kind: "URL",
+                direction: TokenDirection::Inbound,
+            },
+        ],
+        ..Default::default()
+    })
+    .unwrap();
+    let (_, mappings) = a.get_audit_turn(&id).unwrap().unwrap();
+    let directions: Vec<_> = mappings.iter().map(|m| m.direction).collect();
+    assert_eq!(directions, vec![TokenDirection::Outbound, TokenDirection::Inbound]);
+}

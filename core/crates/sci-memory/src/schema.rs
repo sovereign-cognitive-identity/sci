@@ -128,6 +128,78 @@ CREATE INDEX IF NOT EXISTS idx_semantic_profile_decay
     ON semantic_nodes(profile_id, decay_score DESC, confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_identity_category
     ON identity_facts(category, confidence DESC);
+
+-- ─── Flight recorder ────────────────────────────────────────────────────────
+--
+-- One row per model turn that flowed through Sci. Wide on purpose: the
+-- table isn't on the recall hot path, it's the raw material for
+-- tuning the anonymization / deanonymization pipeline and rendering
+-- the inspector panel. Six artifacts captured per turn:
+--
+--   user_text       : original (pre-anonymization) prompt as the user typed it
+--   request_body    : full anonymized JSON sent to the upstream
+--   response_raw    : upstream's raw bytes back (SSE concat or JSON), before deanon
+--   assistant_text  : deanonymized response text, what the user actually read
+--   recall_injected : memory text injected into the system prompt, for tuning
+--   masked_count    : entity count, for sanity-checking the algorithm
+--
+-- `oauth_active` records whether the request used the Claude Pro/Max
+-- bearer path (which is shape-gated and prefix-stamped — turns there
+-- need different debugging assumptions than BYO-key turns).
+CREATE TABLE IF NOT EXISTS audit_turns (
+    id              TEXT PRIMARY KEY,
+    profile_id      TEXT REFERENCES profiles(id),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    host            TEXT NOT NULL,
+    endpoint        TEXT NOT NULL,
+    model           TEXT,
+    oauth_active    INTEGER NOT NULL DEFAULT 0,
+    user_text       TEXT,
+    assistant_text  TEXT,
+    request_body    TEXT,
+    response_raw    TEXT,
+    recall_injected TEXT,
+    masked_count    INTEGER NOT NULL DEFAULT 0,
+    status          INTEGER,
+    latency_ms      INTEGER,
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_turns_created
+    ON audit_turns(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_turns_profile_created
+    ON audit_turns(profile_id, created_at DESC);
+
+-- One row per anonymized entity per turn. Three first-class queries:
+--
+--   1. "every entity ever masked about Casey" →
+--        SELECT * FROM token_mappings WHERE original = ?
+--   2. "every entity from this specific turn" →
+--        SELECT * FROM token_mappings WHERE turn_id = ?
+--   3. "how often has 'OpenClaw' been masked across all turns" →
+--        SELECT COUNT(*) FROM token_mappings WHERE original = 'OpenClaw'
+--
+-- direction is 'outbound' (entity in the user's prompt that we masked
+-- before sending upstream) or 'inbound' (rare: a token in the model's
+-- response that we deanonymized). Outbound is the common case;
+-- inbound exists because the model sometimes reuses our mask tokens
+-- when echoing back, and we want a record of the round-trip.
+CREATE TABLE IF NOT EXISTS token_mappings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    turn_id       TEXT NOT NULL REFERENCES audit_turns(id) ON DELETE CASCADE,
+    profile_id    TEXT REFERENCES profiles(id),
+    token         TEXT NOT NULL,
+    original      TEXT NOT NULL,
+    entity_kind   TEXT NOT NULL,
+    direction     TEXT NOT NULL
+                    CHECK (direction IN ('outbound','inbound')),
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_token_mappings_turn
+    ON token_mappings(turn_id);
+CREATE INDEX IF NOT EXISTS idx_token_mappings_original
+    ON token_mappings(original);
+CREATE INDEX IF NOT EXISTS idx_token_mappings_token_profile
+    ON token_mappings(token, profile_id);
 "#;
 
 /// Profile seeds — `'work'` is what `injectMemoryContext` looks up by

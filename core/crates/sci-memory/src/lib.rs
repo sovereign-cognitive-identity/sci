@@ -29,8 +29,9 @@ pub use adapter::LocalAdapter;
 pub use error::{MemoryError, Result};
 pub use schema::EMBEDDING_DIM;
 pub use types::{
-    EpisodicMemory, IdentityFact, Metadata, Profile, RecallQuery, RecallResult, RecallType,
-    SemanticNode, StorageStats, StoreEpisodicInput, StoreIdentityInput, StoreSemanticInput,
+    AuditTurn, EpisodicMemory, IdentityFact, Metadata, Profile, RecallQuery, RecallResult,
+    RecallType, SemanticNode, StorageStats, StoreAuditTurnInput, StoreEpisodicInput,
+    StoreIdentityInput, StoreSemanticInput, TokenDirection, TokenMapping, TokenMappingInput,
 };
 
 #[cfg(test)]
