@@ -47,6 +47,20 @@ export interface Profile {
   createdAt: string;
 }
 
+/**
+ * Recall hit shape from `LocalAdapter::recall`. Field names match
+ * the helper's serde rename pattern; `kind` is the discriminator
+ * across episodic / semantic / identity memory classes.
+ */
+export interface RecallResult {
+  id: string;
+  type: 'episodic' | 'semantic' | 'identity';
+  content: string;
+  score: number;
+  metadata: Record<string, unknown>;
+  occurredAt: string | null;
+}
+
 export interface StorageStats {
   episodic: number;
   semantic: number;

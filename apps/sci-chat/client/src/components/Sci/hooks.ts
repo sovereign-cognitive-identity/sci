@@ -7,7 +7,7 @@
  * - `useAuditEvents`    — SSE subscription, fires callback per event
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -18,6 +18,7 @@ import {
   getStatus,
   listAuditTurns,
   listProfiles,
+  previewRecall,
   setActiveProfile,
 } from './api';
 import type { HelperEvent } from './types';
@@ -86,6 +87,68 @@ export function useCreateProfile() {
   return useMutation({
     mutationFn: (name: string) => createProfile(name),
     onSuccess:  () => qc.invalidateQueries({ queryKey: QK_PROFILES }),
+  });
+}
+
+/**
+ * SCI-157: track the live value of the chat input textarea via
+ * document-level event delegation. This avoids modifying upstream
+ * LibreChat input components — a global listener picks up any
+ * textarea's input event and reports its value (debounced).
+ *
+ * Returns the debounced value of whichever textarea most recently
+ * received input. Empty string on mount or after the textarea is
+ * cleared.
+ *
+ * Caveat: assumes there's a single user-typed textarea on the page
+ * at a time (LibreChat's chat input). If multiple textareas exist
+ * (settings forms, modal dialogs), the most-recently-typed one
+ * wins. Acceptable for v1 — recall preview is harmless on form
+ * input.
+ */
+export function useDraftText(enabled: boolean, debounceMs = 300): string {
+  const [value, setValue] = useState('');
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      setValue('');
+      return;
+    }
+    const onInput = (ev: Event) => {
+      const target = ev.target as HTMLElement | null;
+      if (!target || target.tagName !== 'TEXTAREA') return;
+      const v = (target as HTMLTextAreaElement).value;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setValue(v), debounceMs);
+    };
+    document.addEventListener('input', onInput, true);
+    return () => {
+      document.removeEventListener('input', onInput, true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [enabled, debounceMs]);
+
+  return value;
+}
+
+/**
+ * SCI-157: preview what memory recall would surface for the current
+ * draft message. Disabled when query is too short to be meaningful
+ * (matches the helper's STORE_MIN_CHARS floor) so we don't fire a
+ * recall for every keystroke.
+ *
+ * staleTime is generous (60s) so as the user keeps typing the same
+ * thought, we don't re-embed + re-recall on every fresh debounce.
+ */
+export function useRecallPreview(query: string, profile: string, enabled = true) {
+  const trimmed = query.trim();
+  return useQuery({
+    queryKey: ['sci', 'recall_preview', profile, trimmed],
+    queryFn:  () => previewRecall(trimmed, profile, 5),
+    enabled:  enabled && trimmed.length >= 5 && !!profile,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
   });
 }
 

@@ -12,6 +12,7 @@ import type {
   AuditTurnDetail,
   HelperStatus,
   Profile,
+  RecallResult,
 } from './types';
 
 const HELPER_BASE: string =
@@ -45,6 +46,26 @@ export function getStatus(): Promise<HelperStatus> {
 
 export function listProfiles(): Promise<Profile[]> {
   return getJson<Profile[]>('/sci/profiles');
+}
+
+/**
+ * SCI-157: preview what `inject_memory_context` would surface for a
+ * given query string under the requested profile. Read-only — does
+ * NOT write to memory or affect future turns. Backed by the helper's
+ * `LocalAdapter::recall` which already runs the same scoring as the
+ * production injection path.
+ */
+export function previewRecall(
+  query: string,
+  profile: string,
+  limit = 5,
+): Promise<RecallResult[]> {
+  const params = new URLSearchParams({
+    query,
+    profile,
+    limit: String(limit),
+  });
+  return getJson<RecallResult[]>(`/sci/recall?${params}`);
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {

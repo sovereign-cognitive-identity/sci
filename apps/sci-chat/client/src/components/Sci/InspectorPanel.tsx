@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react';
 
 import ProfileSelector from './ProfileSelector';
+import RecallPreview from './RecallPreview';
 import { useAuditEvents, useAuditTurns, useHelperStatus } from './hooks';
 import TurnCard from './TurnCard';
 
@@ -76,6 +77,7 @@ export default function InspectorPanel() {
           <div className="flex h-full flex-1 flex-col">
             <Header status={status.data} onClose={() => setOpen(false)} enabled={open} />
             <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
+              <RecallPreview enabled={open} />
               {turns.isLoading && (
                 <p className="text-sm text-text-secondary">Loading turns…</p>
               )}
