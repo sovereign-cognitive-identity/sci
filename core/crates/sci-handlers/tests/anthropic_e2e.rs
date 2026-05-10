@@ -417,3 +417,101 @@ async fn missing_credential_errors_cleanly() -> Result<()> {
     assert!(matches!(err, HandlerError::MissingCredential { .. }));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn round_trip_writes_audit_turn_with_token_mappings() {
+    // Flight-recorder regression: every successful turn lands one
+    // audit_turns row plus one token_mappings row per masked entity.
+    // The row carries enough context (host, endpoint, model, masked
+    // count, latency, request body, status) for the inspector panel
+    // to render the turn without joining anything else.
+    let storage  = Arc::new(Mutex::new(LocalAdapter::open_in_memory().unwrap()));
+    let embedder: Arc<dyn Embedder> = Arc::new(NoopEmbedder);
+    let upstream = MockUpstream::new();
+    let state    = Arc::new(HandlerState::new(
+        storage.clone(),
+        embedder,
+        upstream.clone() as Arc<dyn UpstreamClient>,
+    ));
+
+    let user_text = "Hi I'm Casey from openclaw.dev — what's up?";
+    let body = serde_json::json!({
+        "model":      "claude-haiku-4-5",
+        "max_tokens": 50,
+        "messages":   [{ "role": "user", "content": user_text }],
+    });
+    let preview = sci_anonymizer::anonymize(user_text, None);
+    let url_token = preview.token_map.forward.get("openclaw.dev").unwrap().clone();
+    let canned_sse = format!(
+        "event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":0,\
+         \"delta\":{{\"type\":\"text_delta\",\"text\":\"hey from {url_token}\"}}}}\n\n\
+         event: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+    );
+    upstream.set_response(canned_sse.as_bytes());
+
+    let mut headers = HashMap::new();
+    headers.insert("x-api-key".into(), "sk-ant-fake".into());
+    let req = HandlerRequest {
+        method:   "POST".into(),
+        url:      "/v1/messages".into(),
+        headers,
+        body:     serde_json::to_vec(&body).unwrap().into(),
+        hostname: "api.anthropic.com".into(),
+    };
+
+    let resp = handle_anthropic_messages(req, state).await.expect("handler ok");
+    let mut downstream = resp.body;
+    while let Some(chunk) = downstream.next().await { let _ = chunk.unwrap(); }
+
+    // Wait for the spawned audit-write task. We poll the table count
+    // rather than sleep blindly so the test races correctly under load.
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let s = storage.lock().unwrap();
+        if !s.list_audit_turns(None, 10).unwrap().is_empty() {
+            break;
+        }
+    }
+
+    let s = storage.lock().unwrap();
+    let turns = s.list_audit_turns(None, 10).unwrap();
+    assert_eq!(turns.len(), 1, "expected exactly one audit_turn row");
+
+    let turn = &turns[0];
+    assert_eq!(turn.host,                    "api.anthropic.com");
+    assert_eq!(turn.endpoint,                "/v1/messages");
+    assert_eq!(turn.model.as_deref(),        Some("claude-haiku-4-5"));
+    assert_eq!(turn.status,                  Some(200));
+    assert!(turn.latency_ms.is_some(),       "latency should be recorded");
+    assert!(turn.user_text.is_some());
+    assert!(turn.assistant_text.is_some(),   "deanon assistant text should be on the row");
+    assert!(turn.request_body.is_some());
+    // Anonymizer detects at minimum the URL; CamelCase project names
+    // (Casey here) may or may not be picked up depending on the
+    // entity classifier. Assert a positive count + the URL mapping.
+    assert!(turn.masked_count >= 1, "masked_count should be ≥ 1");
+
+    // Token mappings: at least one for openclaw.dev (URL kind).
+    let (_, mappings) = s.get_audit_turn(&turn.id).unwrap().expect("turn re-fetch");
+    assert!(
+        mappings.iter().any(|m| m.original == "openclaw.dev"),
+        "expected an openclaw.dev mapping, got: {mappings:?}",
+    );
+
+    // The audit row's user_text must be the ORIGINAL (un-anonymized)
+    // text — same contract as episodic memory storage.
+    assert_eq!(turn.user_text.as_deref(), Some(user_text));
+    // The audit row's assistant_text must be the DEANONYMIZED text —
+    // tokens swapped back so the flight recorder shows what the user
+    // saw, not what the upstream emitted.
+    assert!(
+        turn.assistant_text.as_deref().unwrap().contains("openclaw.dev"),
+        "assistant_text should be deanonymized, got: {:?}",
+        turn.assistant_text,
+    );
+
+    // count_token_original surfaces "how many times" — used by the
+    // upcoming UI's "you've mentioned openclaw.dev N times" hint.
+    assert_eq!(s.count_token_original("openclaw.dev", None).unwrap(), 1);
+}

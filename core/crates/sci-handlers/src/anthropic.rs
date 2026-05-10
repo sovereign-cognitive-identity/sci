@@ -37,6 +37,10 @@ pub async fn handle_anthropic_messages(
     req:   HandlerRequest,
     state: Arc<HandlerState>,
 ) -> Result<HandlerResponse> {
+    // Wall-clock start for audit_turn.latency_ms. Captured first so it
+    // covers parse + anonymize + recall + upstream + deanon.
+    let started_at = std::time::Instant::now();
+
     // ── 1. Parse + anonymize ───────────────────────────────────────────────
     let mut body: Value = serde_json::from_slice(&req.body)
         .map_err(|e| HandlerError::Malformed(format!("body JSON: {e}")))?;
@@ -48,6 +52,15 @@ pub async fn handle_anthropic_messages(
     // affects what leaves the machine. Mirroring that contract is what
     // makes "your memory follows you across devices" actually work.
     let original_user_text = extract_user_text(&body);
+
+    // Model name for the audit_turn row (not PII, lives in the body
+    // pre-anon — anonymization wouldn't touch it anyway since model
+    // names are not entities, but capturing here keeps the read path
+    // close to where the source-of-truth body lives).
+    let model_name = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
 
     let mut session_map = TokenMap::default();
     let entities        = anonymize_messages_body(&mut body, &mut session_map)?;
@@ -160,30 +173,60 @@ pub async fn handle_anthropic_messages(
     let is_sse = resp_content_type.starts_with("text/event-stream");
 
     // SCI-130 / flight-recorder storage hook. Both the streaming and
-    // non-streaming paths feed the same `spawn_store_turn` once the
+    // non-streaming paths feed the same `spawn_record_turn` once the
     // assistant's text is in hand:
     //
     //   - SSE: register a finalize callback on `DeanonymizingStream`
     //     that fires after the upstream stream ends. The callback
     //     receives the fully deanonymized assistant text already
-    //     accumulated by the deanonymizer.
+    //     accumulated by the deanonymizer, plus an optional raw-
+    //     bytes snapshot the deanonymizer captured for response_raw.
     //   - JSON: `deanonymize_json_body` extracts the assistant text
-    //     synchronously after deanon completes and we hand both
-    //     (user, assistant) directly to the spawn.
+    //     synchronously after deanon completes and we hand all the
+    //     artifacts to spawn_record_turn directly.
     //
-    // `spawn_store_turn` mirrors the previous `spawn_store_interaction`
-    // contract (filter-then-fire-and-forget) and stores BOTH the user
-    // prompt and the assistant response so future recall surfaces the
-    // assistant's stable claims ("My name is Casey") not just the
-    // user's questions. See SCI-150 / flight-recorder design.
+    // `spawn_record_turn` writes two artifacts on every successful
+    // turn: (1) episodic memory rows for both halves of the turn so
+    // recall surfaces stable assistant claims, and (2) a single
+    // audit_turns row + token_mappings for the flight recorder.
+    //
+    // Snapshot the bits we need from session_map BEFORE moving it into
+    // the deanonymizer. Token-mapping records are derived from the
+    // `entities` list paired with the session_map.forward lookup at
+    // this exact point; once the map moves, both go with it.
+    let token_mapping_snapshot = build_token_mapping_snapshot(&entities, &session_map);
+    let request_body_snapshot  = String::from_utf8_lossy(
+        inspect_request.as_deref().unwrap_or(&[]),
+    ).into_owned();
+
     let (body_stream, inspect_upstream_raw): (BodyStream, Option<bytes::Bytes>) = if is_sse {
         let state_for_finalize = state.clone();
         let user_text_for_finalize = original_user_text.clone();
+        let model_for_finalize = model_name.clone();
+        let host_for_finalize = req.hostname.clone();
+        let endpoint_for_finalize = req.url.clone();
+        let token_mapping_for_finalize = token_mapping_snapshot.clone();
+        let request_body_for_finalize = request_body_snapshot.clone();
+        let upstream_status = upstream_resp.status;
         let stream = DeanonymizingStream::new().wrap_with_finalize(
             upstream_resp.body,
             session_map,
             move |assistant_text| {
-                spawn_store_turn(state_for_finalize, user_text_for_finalize, assistant_text);
+                spawn_record_turn(RecordTurnInput {
+                    state:           state_for_finalize,
+                    user_text:       user_text_for_finalize,
+                    assistant_text,
+                    model:           model_for_finalize,
+                    host:            host_for_finalize,
+                    endpoint:        endpoint_for_finalize,
+                    oauth_active,
+                    masked_count,
+                    request_body:    request_body_for_finalize,
+                    response_raw:    None, // SSE path doesn't buffer; future enhancement
+                    status:          upstream_status,
+                    latency_ms:      started_at.elapsed().as_millis() as u64,
+                    token_mappings:  token_mapping_for_finalize,
+                });
             },
         );
         (stream, None)
@@ -195,7 +238,21 @@ pub async fn handle_anthropic_messages(
         // flight recorder.
         let (stream, raw, assistant_text) =
             deanonymize_json_body(upstream_resp.body, session_map).await?;
-        spawn_store_turn(state.clone(), original_user_text.clone(), assistant_text);
+        spawn_record_turn(RecordTurnInput {
+            state:           state.clone(),
+            user_text:       original_user_text.clone(),
+            assistant_text,
+            model:           model_name.clone(),
+            host:            req.hostname.clone(),
+            endpoint:        req.url.clone(),
+            oauth_active,
+            masked_count,
+            request_body:    request_body_snapshot,
+            response_raw:    Some(String::from_utf8_lossy(&raw).into_owned()),
+            status:          upstream_resp.status,
+            latency_ms:      started_at.elapsed().as_millis() as u64,
+            token_mappings:  token_mapping_snapshot,
+        });
         (stream, Some(raw))
     };
 
@@ -365,48 +422,106 @@ fn looks_like_slash_command_output(s: &str) -> bool {
         && !trimmed.contains(' ')
 }
 
-/// Spawn a background task that embeds + persists both halves of a
-/// completed turn — the (pre-anon) user prompt and the deanonymized
-/// assistant response. Non-blocking: if the embedder is slow or the DB
-/// stalls, the user's response stream is unaffected. All errors are
-/// swallowed (logged at debug only) — failing to remember an
-/// interaction is a soft failure, not worth surfacing to the model
-/// client.
-///
-/// The user-text gating (`is_agent_automation_prompt`,
-/// `looks_like_slash_command_output`, length floor) decides whether
-/// the WHOLE turn is recorded. If the user prompt is junk (Claude
-/// Code's internal title-generation calls, slash-command pings), we
-/// skip the assistant half too — that response was about junk too.
-///
-/// Assistant text is stored only if non-trivial (length floor) and
-/// gets a `role: assistant` metadata field so recall + future
-/// audit_turns reconstruction can distinguish the two sides.
-fn spawn_store_turn(
-    state:           Arc<HandlerState>,
-    user_text:       String,
-    assistant_text:  String,
-) {
-    let user_trimmed = user_text.trim();
-    if user_trimmed.chars().count() < STORE_MIN_CHARS {
-        return;
-    }
-    if is_agent_automation_prompt(user_trimmed) {
-        tracing::debug!(
-            preview = &user_trimmed[..user_trimmed.len().min(60)],
-            "skipping memory write: looks like agent automation prompt",
-        );
-        return;
-    }
-    if looks_like_slash_command_output(user_trimmed) {
-        tracing::debug!(
-            preview = user_trimmed,
-            "skipping memory write: looks like slash-command output",
-        );
-        return;
-    }
+/// Snapshot of the (token, original, kind) tuples for one request,
+/// derived at the point where both `entities` and `session_map` are
+/// still owned by the handler. Owned strings (not borrows) so the
+/// snapshot can survive being moved into the post-stream finalize
+/// callback or a tokio::spawn.
+#[derive(Clone, Debug)]
+struct TokenMappingSnap {
+    pub token:       String,
+    pub original:    String,
+    pub entity_kind: String,
+}
 
+/// Build the per-request token-mapping snapshot for audit_turns. Walks
+/// the detected entities, looks up each one's assigned token in the
+/// forward map, and emits a (token, original, kind) tuple. De-dupes
+/// by (token, original) — a single entity that appears in both `system`
+/// and `messages[*]` should only show up once in token_mappings.
+fn build_token_mapping_snapshot(
+    entities:    &[Entity],
+    session_map: &TokenMap,
+) -> Vec<TokenMappingSnap> {
+    let mut seen: std::collections::HashSet<(String, String)> = Default::default();
+    let mut out  = Vec::with_capacity(entities.len());
+    for e in entities {
+        let Some(token) = session_map.forward.get(&e.text) else {
+            // Anonymizer found an entity but no mapping landed —
+            // shouldn't happen with current implementation, but skip
+            // rather than panic if it ever does.
+            continue;
+        };
+        let key = (token.clone(), e.text.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        out.push(TokenMappingSnap {
+            token:       token.clone(),
+            original:    e.text.clone(),
+            entity_kind: e.entity_type.token_prefix().to_owned(),
+        });
+    }
+    out
+}
+
+/// Inputs to `spawn_record_turn`. Grouped into a struct so the call
+/// site (which hits this from two places) doesn't drift on positional
+/// arguments — and so future fields (recall_injected, error string,
+/// profile_id) can land without ripple.
+struct RecordTurnInput {
+    state:          Arc<HandlerState>,
+    user_text:      String,
+    assistant_text: String,
+    model:          Option<String>,
+    host:           String,
+    endpoint:       String,
+    oauth_active:   bool,
+    masked_count:   u32,
+    request_body:   String,
+    response_raw:   Option<String>,
+    status:         u16,
+    latency_ms:     u64,
+    token_mappings: Vec<TokenMappingSnap>,
+}
+
+/// Spawn a background task that does two writes for every successful
+/// turn:
+///
+///   1. **Episodic memory rows** — both halves of the turn (user
+///      prompt + assistant response) get embedded + stored so future
+///      recall surfaces stable assistant claims, not just user
+///      questions.
+///   2. **Audit turn row + token mappings** — flight-recorder log
+///      capturing the full request/response artifacts, masked count,
+///      latency, OAuth-path flag, and per-entity token mappings.
+///
+/// Non-blocking: errors are swallowed at debug level. Failing to
+/// remember an interaction is a soft failure, not worth surfacing to
+/// the model client. The user-text gating
+/// (`is_agent_automation_prompt`, `looks_like_slash_command_output`,
+/// length floor) decides whether to record the EPISODIC memory; the
+/// audit_turn always lands so the inspector panel shows even
+/// internal-title-generation traffic — that's exactly the kind of
+/// thing we want visible in the flight recorder.
+fn spawn_record_turn(input: RecordTurnInput) {
     tokio::spawn(async move {
+        let RecordTurnInput {
+            state,
+            user_text,
+            assistant_text,
+            model,
+            host,
+            endpoint,
+            oauth_active,
+            masked_count,
+            request_body,
+            response_raw,
+            status,
+            latency_ms,
+            token_mappings,
+        } = input;
+
         // Group both sides under one timestamp so a future audit_turns
         // join can pair them via metadata.turn_group. Cheap.
         let turn_group = std::time::SystemTime::now()
@@ -415,17 +530,110 @@ fn spawn_store_turn(
             .unwrap_or(0)
             .to_string();
 
-        if let Err(e) = store_interaction(&state, &user_text, "user", &turn_group).await {
-            tracing::debug!(error = %e, role = "user", "memory write failed (non-fatal)");
+        // ── Episodic memory writes (filtered) ─────────────────────────────
+        let user_trimmed = user_text.trim();
+        let store_user = user_trimmed.chars().count() >= STORE_MIN_CHARS
+            && !is_agent_automation_prompt(user_trimmed)
+            && !looks_like_slash_command_output(user_trimmed);
+        if store_user {
+            if let Err(e) = store_interaction(&state, &user_text, "user", &turn_group).await {
+                tracing::debug!(error = %e, role = "user", "memory write failed (non-fatal)");
+            }
+            let asst_trimmed = assistant_text.trim();
+            if asst_trimmed.chars().count() >= STORE_MIN_CHARS
+                && let Err(e) = store_interaction(&state, &assistant_text, "assistant", &turn_group).await
+            {
+                tracing::debug!(error = %e, role = "assistant", "memory write failed (non-fatal)");
+            }
+        } else if user_trimmed.chars().count() >= STORE_MIN_CHARS {
+            // Skipped because of the agent-automation / slash-command
+            // filter — log so the audit_turn dashboard can pair "I see
+            // a turn but no episodic memory for it" with a reason.
+            tracing::debug!(
+                preview = &user_trimmed[..user_trimmed.len().min(60)],
+                "skipping memory write: looks like agent automation or slash command",
+            );
         }
 
-        let asst_trimmed = assistant_text.trim();
-        if asst_trimmed.chars().count() >= STORE_MIN_CHARS
-            && let Err(e) = store_interaction(&state, &assistant_text, "assistant", &turn_group).await
-        {
-            tracing::debug!(error = %e, role = "assistant", "memory write failed (non-fatal)");
+        // ── Audit turn row (always lands) ─────────────────────────────────
+        if let Err(e) = record_audit_turn(
+            &state,
+            &user_text,
+            &assistant_text,
+            model.as_deref(),
+            &host,
+            &endpoint,
+            oauth_active,
+            masked_count,
+            &request_body,
+            response_raw.as_deref(),
+            status,
+            latency_ms,
+            &token_mappings,
+        ).await {
+            tracing::debug!(error = %e, "audit_turn write failed (non-fatal)");
         }
     });
+}
+
+/// Resolve the default profile + persist one audit_turns row plus all
+/// associated token_mappings. Called fire-and-forget from
+/// `spawn_record_turn`. Async only because we want to drop the storage
+/// lock before any potential await; the actual SQLite write is sync.
+async fn record_audit_turn(
+    state:          &Arc<HandlerState>,
+    user_text:      &str,
+    assistant_text: &str,
+    model:          Option<&str>,
+    host:           &str,
+    endpoint:       &str,
+    oauth_active:   bool,
+    masked_count:   u32,
+    request_body:   &str,
+    response_raw:   Option<&str>,
+    status:         u16,
+    latency_ms:     u64,
+    token_mappings: &[TokenMappingSnap],
+) -> Result<()> {
+    let profile_id = {
+        let storage = state.storage.lock()
+            .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
+        storage.get_profile(DEFAULT_STORE_PROFILE)?.map(|p| p.id)
+    };
+
+    let mappings: Vec<sci_memory::TokenMappingInput<'_>> = token_mappings
+        .iter()
+        .map(|m| sci_memory::TokenMappingInput {
+            token:       &m.token,
+            original:    &m.original,
+            entity_kind: &m.entity_kind,
+            direction:   sci_memory::TokenDirection::Outbound,
+        })
+        .collect();
+
+    let user_text_opt      = (!user_text.is_empty()).then_some(user_text);
+    let assistant_text_opt = (!assistant_text.is_empty()).then_some(assistant_text);
+
+    let storage = state.storage.lock()
+        .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
+    storage.store_audit_turn(&sci_memory::StoreAuditTurnInput {
+        profile_id:      profile_id.as_deref(),
+        host,
+        endpoint,
+        model,
+        oauth_active,
+        user_text:       user_text_opt,
+        assistant_text:  assistant_text_opt,
+        request_body:    Some(request_body),
+        response_raw,
+        recall_injected: None,
+        masked_count,
+        status:          Some(status),
+        latency_ms:      Some(latency_ms),
+        error:           None,
+        token_mappings:  mappings,
+    })?;
+    Ok(())
 }
 
 /// Above this character count, content is chunked at paragraph
