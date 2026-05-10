@@ -60,18 +60,37 @@ for (const key of PROVIDER_ENV_TO_RESET) {
   console.log('[sci-bootstrap] starting…');
 
   // ── 1. Boot in-process MongoDB ───────────────────────────────────────
+  //
+  // SCI-151: persistent storage. mongodb-memory-server's default
+  // storage engine is `ephemeralForTest` — fast, but discards all
+  // data on shutdown. For daily-driver use, conversations must
+  // survive restarts, so we point it at a stable on-disk path and
+  // switch to wiredTiger.
+  //
+  //   dbPath:        apps/sci-chat/data/mongo/  (gitignored)
+  //   storageEngine: wiredTiger                 (real persistence)
+  //
+  // To wipe state: delete apps/sci-chat/data/mongo/ and reboot.
   let mongoUri;
   if (process.env.MONGO_URI && process.env.MONGO_URI !== '__set_by_sci_bootstrap__') {
     mongoUri = process.env.MONGO_URI;
     console.log(`[sci-bootstrap] using MONGO_URI from env: ${mongoUri}`);
   } else {
+    const fs = require('fs');
+    const dbPath = path.join(__dirname, 'data/mongo');
+    fs.mkdirSync(dbPath, { recursive: true });
+
     const { MongoMemoryServer } = require('mongodb-memory-server');
     const mongo = await MongoMemoryServer.create({
-      instance: { dbName: 'sci-chat' },
+      instance: {
+        dbName:        'sci-chat',
+        dbPath,
+        storageEngine: 'wiredTiger',
+      },
     });
     mongoUri = mongo.getUri();
     process.env.MONGO_URI = mongoUri;
-    console.log(`[sci-bootstrap] in-process Mongo at ${mongoUri}`);
+    console.log(`[sci-bootstrap] persistent Mongo at ${mongoUri} (dbPath: ${dbPath})`);
     // Keep a reference so it doesn't get GC'd while the server runs.
     globalThis.__sciMongoMemoryServer = mongo;
   }

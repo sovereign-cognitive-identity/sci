@@ -110,6 +110,7 @@ the first boot. The seed runs once per fresh DB.)
 | `apps/sci-chat/UPSTREAM_COMMIT` | Records LibreChat upstream sha | – |
 | `apps/sci-chat/client/dist/` | Built once for boot smoke test (gitignored) | Will rebuild on first `npm run build` |
 | `apps/sci-chat/.cache/mongodb-binaries/` | mongodb-memory-server's cached MongoDB 8.2.6 binary, ~80 MB | Leave; speeds up subsequent boots |
+| `apps/sci-chat/data/mongo/` | SCI-151 persistent Mongo data (wiredTiger). Gitignored. Conversations + users + auth live here. | To wipe state: delete this dir and reboot. |
 | `/tmp/sci-chat-{boot,backend,frontend,dev}.log` | Iteration logs | Cleanup whenever |
 
 ### What I'd file as tickets
