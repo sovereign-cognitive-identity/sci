@@ -205,6 +205,15 @@ static UNMAPPED_PLACEHOLDER_RE: once_cell::sync::Lazy<regex::Regex> =
         regex::Regex::new(r"\[([A-Z]+)_(\d+)\]").unwrap()
     });
 
+static POISONED_ORIGINAL_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        // SCI-195: matches anonymizer placeholder shapes appearing
+        // INSIDE a `reverse` map's `original` string — the smoking
+        // gun of a poisoned row. We refuse to substitute these so
+        // historical poison can't continue corrupting output.
+        regex::Regex::new(r"\[[A-Z]+_\d+\]?").unwrap()
+    });
+
 pub fn deanonymize(text: &str, token_map: &TokenMap) -> String {
     // Sort tokens by length descending — same reason as apply: longer
     // tokens like `[PERSON_10]` need to swap before `[PERSON_1]` so the
@@ -213,8 +222,25 @@ pub fn deanonymize(text: &str, token_map: &TokenMap) -> String {
     tokens.sort_by_key(|t| std::cmp::Reverse(t.len()));
 
     let mut result = text.to_string();
+    let mut poisoned_skipped: HashSet<String> = HashSet::new();
     for token in tokens {
         if let Some(entity) = token_map.reverse.get(token) {
+            // SCI-195 defense: if the mapped `original` contains a
+            // placeholder-shaped substring, it's a poisoned row —
+            // substituting it would land literal `[TYPE_N]` text in
+            // the deanonymized output. Skip + WARN.
+            if POISONED_ORIGINAL_RE.is_match(entity) {
+                if poisoned_skipped.insert(token.clone()) {
+                    let preview: String = entity.chars().take(60).collect();
+                    tracing::warn!(
+                        target  = "sci_anonymizer::deanonymize",
+                        token   = token.as_str(),
+                        original_preview = preview.as_str(),
+                        "deanonymize: skipping poisoned reverse-map entry (original contains placeholder syntax); SCI-195"
+                    );
+                }
+                continue;
+            }
             result = result.replace(token.as_str(), entity);
         }
     }
