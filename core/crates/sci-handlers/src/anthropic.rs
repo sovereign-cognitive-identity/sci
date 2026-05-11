@@ -66,6 +66,28 @@ pub async fn handle_anthropic_messages(
     let entities        = anonymize_messages_body(&mut body, &mut session_map)?;
     let masked_count    = entities.len() as u32;
 
+    // SCI-200: orphan `tool_use` guard. Upstream chat harnesses
+    // (LibreChat agents, openclaw, custom Langchain clients) sometimes
+    // persist an assistant `tool_use` whose matching `tool_result` was
+    // never written — agent died mid-call, streaming corruption ate the
+    // tool_result, anonymizer truncation, whatever. Anthropic's
+    // /v1/messages then 400's the whole request with
+    // `tool_use ids were found without tool_result blocks immediately
+    // after`. The conversation becomes permanently stuck because every
+    // resend re-submits the same broken history.
+    //
+    // Repair-on-the-wire: scan messages, inject a synthetic
+    // `is_error: true` tool_result for each orphan so Anthropic accepts
+    // the request. Each repair is logged so we can spot upstream bugs.
+    let orphan_repaired = repair_orphan_tool_uses(&mut body);
+    if orphan_repaired > 0 {
+        tracing::warn!(
+            target: "sci_handlers::anthropic",
+            repaired = orphan_repaired,
+            "SCI-200 auto-repaired {orphan_repaired} orphan tool_use block(s) in outbound request"
+        );
+    }
+
     // ── 2. Memory recall + injection ───────────────────────────────────────
     //
     // Pull the user's most recent text out of `messages[].content` and
@@ -276,6 +298,127 @@ pub async fn handle_anthropic_messages(
         inspect_request,
         inspect_upstream_raw,
     })
+}
+
+/// SCI-200: outbound-request guard against orphan `tool_use` blocks.
+///
+/// Anthropic's `/v1/messages` rejects (400 `invalid_request_error`) any
+/// request where an assistant message contains a `tool_use` content
+/// block whose `id` has no matching `tool_result` block in the very next
+/// user message. Upstream chat harnesses produce orphans when an agent
+/// run truncates mid-tool-call: the assistant turn persists a `tool_use`
+/// to history, then the harness dies before the matching result lands.
+/// Every subsequent send re-submits the orphaned history and 400's
+/// forever — the conversation becomes permanently un-stuck without
+/// surgery on the upstream message store.
+///
+/// This pass scans the outbound `messages` array and injects a synthetic
+/// `tool_result` with `is_error: true` for each orphan, so Anthropic
+/// accepts the request. The synthetic body says explicitly that the
+/// tool call was interrupted, giving the model a chance to recover the
+/// conversation gracefully instead of pretending the call succeeded.
+///
+/// Returns the count of synthetic results injected. `0` in the happy
+/// path (every `tool_use` already has a matching `tool_result`).
+fn repair_orphan_tool_uses(body: &mut Value) -> u32 {
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return 0;
+    };
+
+    // First pass (read-only): collect orphan ids per assistant message.
+    // We can't mutate while iterating, so we record (target_index,
+    // orphan_ids, needs_new_user_message) and apply in reverse-index
+    // order below.
+    let mut planned: Vec<(usize, Vec<String>, bool)> = Vec::new();
+
+    for i in 0..messages.len() {
+        let role = messages[i].get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "assistant" { continue; }
+        let Some(content) = messages[i].get("content").and_then(|v| v.as_array()) else {
+            // `content` is a plain string (text-only assistant turn) — no
+            // tool_use blocks possible, skip.
+            continue;
+        };
+
+        let tool_use_ids: Vec<String> = content.iter()
+            .filter(|c| c.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+            .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+        if tool_use_ids.is_empty() { continue; }
+
+        let next_idx = i + 1;
+        let next_is_user = next_idx < messages.len()
+            && messages[next_idx].get("role").and_then(|v| v.as_str()) == Some("user");
+
+        let existing_result_ids: std::collections::HashSet<String> = if next_is_user {
+            messages[next_idx].get("content").and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter(|c| c.get("type").and_then(|v| v.as_str()) == Some("tool_result"))
+                    .filter_map(|c| c.get("tool_use_id").and_then(|v| v.as_str()).map(String::from))
+                    .collect())
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        let orphans: Vec<String> = tool_use_ids.into_iter()
+            .filter(|id| !existing_result_ids.contains(id))
+            .collect();
+        if orphans.is_empty() { continue; }
+
+        // target_idx for application: existing user message → its index;
+        // missing user message → the assistant's own index (we'll insert
+        // a new user message at assistant_idx + 1).
+        let target_idx = if next_is_user { next_idx } else { i };
+        planned.push((target_idx, orphans, !next_is_user));
+    }
+
+    let total_injected: u32 = planned.iter().map(|(_, ids, _)| ids.len() as u32).sum();
+    if total_injected == 0 { return 0; }
+
+    // Apply in reverse so insertions of new messages don't shift the
+    // indices of earlier-recorded targets.
+    planned.sort_by(|a, b| b.0.cmp(&a.0));
+    for (target_idx, orphan_ids, needs_new_message) in planned {
+        for id in &orphan_ids {
+            tracing::warn!(
+                target: "sci_handlers::anthropic",
+                tool_use_id = id.as_str(),
+                "orphan tool_use auto-repaired (SCI-200): upstream sent assistant tool_use without matching tool_result; injecting synthetic is_error tool_result so /v1/messages does not 400"
+            );
+        }
+        let synthetic_blocks: Vec<Value> = orphan_ids.iter().map(|id| {
+            serde_json::json!({
+                "type":         "tool_result",
+                "tool_use_id":  id,
+                "content":      "[orphan tool_use auto-repaired by sci-helper (SCI-200): no tool_result was persisted upstream; treat as a non-event and continue]",
+                "is_error":     true,
+            })
+        }).collect();
+
+        if needs_new_message {
+            // No user message follows the assistant — insert one.
+            let new_msg = serde_json::json!({
+                "role":    "user",
+                "content": synthetic_blocks,
+            });
+            messages.insert(target_idx + 1, new_msg);
+        } else {
+            // Prepend synthetic results into the existing user message's
+            // content array. Order doesn't matter for the API, but
+            // grouping tool_results at the start mirrors what well-formed
+            // clients do and keeps the array shape predictable.
+            let content = messages[target_idx].get_mut("content")
+                .expect("checked above")
+                .as_array_mut()
+                .expect("checked above");
+            for block in synthetic_blocks.into_iter().rev() {
+                content.insert(0, block);
+            }
+        }
+    }
+
+    total_injected
 }
 
 /// Pull the most recent user message text out of the (still-original)
@@ -2090,5 +2233,157 @@ mod tests {
         // Real user messages with similar shape stay through
         assert!(!is_agent_automation_prompt("Provide me feedback on this code"));
         assert!(!is_agent_automation_prompt("Recap what I just said"));  // user might say this
+    }
+
+    // ── SCI-200 orphan tool_use guard ─────────────────────────────────
+
+    #[test]
+    fn orphan_repair_happy_path_is_noop() {
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "user",      "content": [{ "type": "text", "text": "ping" }] },
+                { "role": "assistant", "content": [
+                    { "type": "text",     "text": "ok" },
+                    { "type": "tool_use", "id":   "toolu_A", "name": "x", "input": {} },
+                ]},
+                { "role": "user",      "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_A", "content": "done" },
+                ]},
+            ]
+        });
+        let n = repair_orphan_tool_uses(&mut body);
+        assert_eq!(n, 0, "well-formed conversations must not be touched");
+        assert_eq!(body["messages"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn orphan_repair_injects_synthetic_into_existing_user_message() {
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "user",      "content": [{ "type": "text", "text": "ping" }] },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_orphan", "name": "write", "input": {} },
+                    { "type": "tool_use", "id": "toolu_ok",     "name": "shell", "input": {} },
+                ]},
+                { "role": "user",      "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_ok", "content": "done" },
+                ]},
+            ]
+        });
+        let n = repair_orphan_tool_uses(&mut body);
+        assert_eq!(n, 1, "expected exactly one synthetic result for the orphan");
+
+        let content = body["messages"][2]["content"].as_array().unwrap();
+        assert!(
+            content.iter().any(|c|
+                c["type"] == "tool_result"
+                && c["tool_use_id"] == "toolu_orphan"
+                && c["is_error"] == true
+            ),
+            "synthetic tool_result for orphan not found: {content:?}"
+        );
+        assert!(
+            content.iter().any(|c|
+                c["type"] == "tool_result"
+                && c["tool_use_id"] == "toolu_ok"
+            ),
+            "healthy tool_result must remain in place: {content:?}"
+        );
+    }
+
+    #[test]
+    fn orphan_repair_creates_new_user_message_when_assistant_is_last() {
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "user",      "content": [{ "type": "text", "text": "ping" }] },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_orphan", "name": "x", "input": {} },
+                ]},
+            ]
+        });
+        let n = repair_orphan_tool_uses(&mut body);
+        assert_eq!(n, 1);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3, "must append a new user message for the synthetic result");
+        assert_eq!(messages[2]["role"], "user");
+        let content = messages[2]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"],        "tool_result");
+        assert_eq!(content[0]["tool_use_id"], "toolu_orphan");
+        assert_eq!(content[0]["is_error"],    true);
+    }
+
+    #[test]
+    fn orphan_repair_handles_multiple_orphans_in_single_assistant_message() {
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_a", "name": "x", "input": {} },
+                    { "type": "tool_use", "id": "toolu_b", "name": "y", "input": {} },
+                    { "type": "tool_use", "id": "toolu_c", "name": "z", "input": {} },
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_b", "content": "ok" },
+                ]},
+            ]
+        });
+        let n = repair_orphan_tool_uses(&mut body);
+        assert_eq!(n, 2, "two of three tool_uses are orphans");
+
+        let content = body["messages"][1]["content"].as_array().unwrap();
+        let ids: std::collections::HashSet<&str> = content
+            .iter()
+            .filter_map(|c| c["tool_use_id"].as_str())
+            .collect();
+        for expected in ["toolu_a", "toolu_b", "toolu_c"] {
+            assert!(ids.contains(expected), "missing tool_result for {expected}: {content:?}");
+        }
+    }
+
+    #[test]
+    fn orphan_repair_skips_when_messages_missing_or_string_content() {
+        let mut body = serde_json::json!({});
+        assert_eq!(repair_orphan_tool_uses(&mut body), 0);
+
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "assistant", "content": "plain string — no tool_use blocks possible" },
+            ]
+        });
+        assert_eq!(repair_orphan_tool_uses(&mut body), 0);
+    }
+
+    #[test]
+    fn orphan_repair_handles_orphans_across_multiple_assistant_messages() {
+        // Two separate assistant→user pairs, each with an orphan. The
+        // repair pass must handle both without index-shift confusion.
+        let mut body = serde_json::json!({
+            "messages": [
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_x1", "name": "x", "input": {} },
+                ]},
+                { "role": "user", "content": [
+                    { "type": "text", "text": "follow-up question" },
+                ]},
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_x2", "name": "y", "input": {} },
+                ]},
+                { "role": "user", "content": [
+                    { "type": "text", "text": "another question" },
+                ]},
+            ]
+        });
+        let n = repair_orphan_tool_uses(&mut body);
+        assert_eq!(n, 2, "both assistant turns have orphans");
+
+        // Each follow-up user message must now contain its synthetic result.
+        for (user_idx, expected_id) in [(1, "toolu_x1"), (3, "toolu_x2")] {
+            let content = body["messages"][user_idx]["content"].as_array().unwrap();
+            assert!(
+                content.iter().any(|c|
+                    c["type"] == "tool_result" && c["tool_use_id"] == expected_id
+                ),
+                "expected synthetic result for {expected_id} at messages[{user_idx}]: {content:?}",
+            );
+        }
     }
 }
