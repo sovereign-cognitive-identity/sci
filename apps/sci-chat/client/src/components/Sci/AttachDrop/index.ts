@@ -8,6 +8,8 @@
  */
 
 export { default as AttachDropMount } from './mount';
+export { default as FolderPicker } from './FolderPicker';
+export { default as TreeNode } from './TreeNode';
 export * from './types';
 export {
   buildIgnore,
@@ -35,3 +37,10 @@ export {
 export type { SizeVerdict } from './limits';
 export { readBatch, readOne } from './reader';
 export { attachedFilesAtom, pinnedAtom } from './store';
+export {
+  walkFolder,
+  flattenFiles,
+  MAX_DEPTH,
+  MAX_NODES,
+} from './tree';
+export type { WalkResult } from './tree';

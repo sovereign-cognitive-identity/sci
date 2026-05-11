@@ -47,6 +47,7 @@ import { useToastContext } from '@librechat/client';
 
 import ChipRow from './ChipRow';
 import DropOverlay from './DropOverlay';
+import FolderPicker from './FolderPicker';
 import { composeMessage } from './format';
 import { readBatch } from './reader';
 import { attachedFilesAtom, pinnedAtom } from './store';
@@ -120,6 +121,7 @@ export default function AttachDropMount() {
   const [pinned,  setPinned]   = useRecoilState(pinnedAtom);
   const clearAll               = useResetRecoilState(attachedFilesAtom);
   const [dragActive, setDragActive] = useState(false);
+  const [pickerEntry, setPickerEntry] = useState<FileSystemDirectoryEntry | null>(null);
   const { showToast }          = useToastContext();
 
   const caption = useMemo(() => {
@@ -210,12 +212,47 @@ export default function AttachDropMount() {
       ev.stopPropagation();
       setDragActive(false);
 
-      const dropped: File[] = ev.dataTransfer?.files
-        ? Array.from(ev.dataTransfer.files)
+      // SCI-166c — inspect dataTransfer.items via webkitGetAsEntry()
+      // to detect folder drops. Folder → open picker modal.
+      // All-files → batch-read as before. Mixed → batch-read the
+      // files now and queue the first folder for the picker after
+      // (single-folder-at-a-time UX simplifies the modal lifecycle).
+      const items: DataTransferItem[] = ev.dataTransfer?.items
+        ? Array.from(ev.dataTransfer.items)
         : [];
-      if (dropped.length === 0) return;
+      const entries = items
+        .map((it) => (typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null))
+        .filter((e): e is FileSystemEntry => e != null);
 
-      void acceptFiles(dropped);
+      const folder = entries.find((e): e is FileSystemDirectoryEntry => e.isDirectory);
+      const fileEntries = entries.filter(
+        (e): e is FileSystemFileEntry => e.isFile,
+      );
+
+      // Read any plain-file siblings immediately. Use the original
+      // File handles from dataTransfer.files for the ones that have
+      // them — entry.file() works too but the direct File handle
+      // avoids an extra async hop.
+      if (fileEntries.length > 0 || (!folder && ev.dataTransfer?.files?.length)) {
+        const directFiles: File[] = ev.dataTransfer?.files
+          ? Array.from(ev.dataTransfer.files).filter((f) => {
+              // Crude: dataTransfer.files for a folder drop on macOS
+              // Chrome contains a stub File for the folder with size 0
+              // and no type. The webkitGetAsEntry path is authoritative;
+              // we use it to filter out those stubs.
+              return entries.some(
+                (e) => e.isFile && e.name === f.name,
+              );
+            })
+          : [];
+        if (directFiles.length > 0) {
+          void acceptFiles(directFiles);
+        }
+      }
+
+      if (folder) {
+        setPickerEntry(folder);
+      }
     };
 
     document.addEventListener('dragover',  onDragOver,  true);
@@ -291,6 +328,12 @@ export default function AttachDropMount() {
         onTogglePinned={onTogglePinned}
         onClearAll={clearAll}
       />
+      {pickerEntry && (
+        <FolderPicker
+          rootEntry={pickerEntry}
+          onClose={() => setPickerEntry(null)}
+        />
+      )}
     </>
   );
 }

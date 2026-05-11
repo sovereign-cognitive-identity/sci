@@ -101,7 +101,7 @@ export interface ReadBatchResult {
 
 /**
  * Picker tree node — used by the folder picker modal. Built by
- * walking `[OBJECT_1]Entry` recursively and tagging each
+ * walking `FileSystemDirectoryEntry` recursively and tagging each
  * leaf with its `.gitignore` verdict.
  */
 export interface PickerNode {
