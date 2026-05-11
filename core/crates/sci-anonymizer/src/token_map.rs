@@ -196,6 +196,15 @@ pub fn apply_token_map(text: &str, token_map: &TokenMap) -> String {
 
 // ── Deanonymize ────────────────────────────────────────────────────────────
 
+static UNMAPPED_PLACEHOLDER_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        // Bracketed uppercase prefix + underscore + digits. Same
+        // shape the build pass emits. Not anchored to a known
+        // type-prefix list so new entity kinds don't slip past
+        // the diagnostic.
+        regex::Regex::new(r"\[([A-Z]+)_(\d+)\]").unwrap()
+    });
+
 pub fn deanonymize(text: &str, token_map: &TokenMap) -> String {
     // Sort tokens by length descending — same reason as apply: longer
     // tokens like `[PERSON_10]` need to swap before `[PERSON_1]` so the
@@ -209,6 +218,27 @@ pub fn deanonymize(text: &str, token_map: &TokenMap) -> String {
             result = result.replace(token.as_str(), entity);
         }
     }
+
+    // SCI-197 diagnostic: any [TYPE_N]-shaped placeholder still in
+    // the output is either (a) a model-emitted token that wasn't in
+    // this turn's map (the corruption-of-code failure mode that
+    // SCI-197 tracks), or (b) the user talking about the anonymizer
+    // itself. Either way we leave it verbatim — silently rewriting
+    // unmapped tokens would be worse — but we log a WARN per
+    // distinct token so the audit + tail tools surface the signal.
+    let mut warned: HashSet<String> = HashSet::new();
+    for cap in UNMAPPED_PLACEHOLDER_RE.captures_iter(&result) {
+        let token = cap.get(0).unwrap().as_str();
+        if warned.insert(token.to_string()) {
+            tracing::warn!(
+                target = "sci_anonymizer::deanonymize",
+                token  = token,
+                prefix = &cap[1],
+                "deanonymize: model emitted unmapped placeholder token; leaving verbatim (SCI-197 if seen in generated code)"
+            );
+        }
+    }
+
     result
 }
 
