@@ -190,7 +190,6 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
             // Greedy: consume capitalized tokens following the honorific.
             // Cap at 3 to avoid runaway matches.
             let j = i + 1;
-            let start_surface = toks[j].surface;
             let mut end_idx = j;
             while end_idx < toks.len()
                 && end_idx < j + 3
@@ -198,7 +197,7 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
             {
                 end_idx += 1;
             }
-            let span = surface_span(text, start_surface, &toks[end_idx - 1]);
+            let span = surface_span(text, &toks[j], &toks[end_idx - 1]);
             push(&mut out, &mut seen, span, EntityType::Person);
             i = end_idx;
             continue;
@@ -222,7 +221,7 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
                 let extends = !ORG_SUFFIXES.contains(next_norm_clean)
                     && !PLACES_UNIGRAM.contains(toks[i + 1].norm.as_str());
                 if extends {
-                    let span = surface_span(text, t.surface, &toks[i + 1]);
+                    let span = surface_span(text, t, &toks[i + 1]);
                     push(&mut out, &mut seen, span, EntityType::Person);
                     i += 2;
                     continue;
@@ -239,7 +238,7 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         if i + 1 < toks.len() && toks[i + 1].is_cap {
             let bigram = format!("{} {}", t.norm, toks[i + 1].norm);
             if PLACES_BIGRAM.contains(bigram.as_str()) {
-                let span = surface_span(text, t.surface, &toks[i + 1]);
+                let span = surface_span(text, t, &toks[i + 1]);
                 push(&mut out, &mut seen, span, EntityType::Place);
                 i += 2;
                 continue;
@@ -275,7 +274,7 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         if i + 1 < toks.len() {
             let next_norm = toks[i + 1].norm.trim_end_matches('.');
             if ORG_SUFFIXES.contains(next_norm) {
-                let span = surface_span(text, t.surface, &toks[i + 1]);
+                let span = surface_span(text, t, &toks[i + 1]);
                 push(&mut out, &mut seen, span, EntityType::Org);
                 i += 2;
                 continue;
@@ -295,14 +294,65 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
 ///
 /// Falls back to `start_surface + " " + end_surface` if locating
 /// either fails — matches the user's intent even if the slicing fails.
-fn surface_span(text: &str, start_surface: &str, end_token: &Token<'_>) -> String {
-    if let Some(start_idx) = text.find(start_surface)
-        && let Some(end_offset) = text[start_idx..].find(end_token.surface)
-    {
-        let end_idx = start_idx + end_offset + end_token.surface.len();
-        return text[start_idx..end_idx].to_string();
+/// Byte offset of `slice` within its parent `text`, or `None` if
+/// `slice` is not actually a sub-slice of `text`'s allocation.
+///
+/// Casting `&str::as_ptr()` to `usize` is SAFE — no `unsafe` block
+/// needed because we never dereference the raw pointer; we just
+/// compare addresses as integers. The result is only meaningful when
+/// `slice` was produced by an operation that returns a sub-slice of
+/// `text` (e.g. `text.split_whitespace()`, `&text[a..b]`). The
+/// bounds check below catches the case where the slice came from a
+/// different allocation entirely.
+fn offset_in(text: &str, slice: &str) -> Option<usize> {
+    let text_start  = text.as_ptr() as usize;
+    let text_end    = text_start + text.len();
+    let slice_start = slice.as_ptr() as usize;
+    let slice_end   = slice_start + slice.len();
+    (slice_start >= text_start && slice_end <= text_end)
+        .then_some(slice_start - text_start)
+}
+
+/// Capture the slice of `text` spanning from `start_token` through
+/// `end_token`, trimmed of surrounding punctuation.
+///
+/// SCI-194 fix: previously this used `text.find(start.surface)`, which
+/// returns the FIRST occurrence in the entire text. When the same
+/// surface appeared multiple times (e.g. "Casey" early + "Casey
+/// Zandbergen" later in the same input), the function paired the
+/// earlier "Casey" with the later capitalized token and slurped
+/// everything between them into the entity's `original`. That
+/// polluted `token_mappings.original` with multi-sentence chunks that
+/// included bracketed tokens from prior anonymization passes,
+/// producing cascading nested-token garbage in model output.
+///
+/// `Token::raw` is always a sub-slice of the input `text` (built by
+/// `tokenize` via `text.split_whitespace()`), so pointer arithmetic
+/// gives the true byte position of each token without ambiguity.
+fn surface_span(text: &str, start_token: &Token<'_>, end_token: &Token<'_>) -> String {
+    let (Some(s), Some(e_start)) =
+        (offset_in(text, start_token.raw), offset_in(text, end_token.raw))
+    else {
+        // Tokens not from this `text` — should be impossible for
+        // in-crate callers (all four call sites pass tokens from the
+        // same `toks` vector built by `tokenize(text)`), but synthesize
+        // defensively rather than return a wrong-span string.
+        return format!("{} {}", start_token.surface, end_token.surface);
+    };
+    let e = e_start + end_token.raw.len();
+    debug_assert!(
+        s <= e && e <= text.len(),
+        "surface_span: range [{s}..{e}] escapes text (len {})",
+        text.len(),
+    );
+    // Promote the debug-assert to a release-safe fallback so we never
+    // panic in production on a corrupted Token.
+    if s > e || e > text.len() {
+        return format!("{} {}", start_token.surface, end_token.surface);
     }
-    format!("{} {}", start_surface, end_token.surface)
+    text[s..e]
+        .trim_matches(|c: char| c.is_ascii_punctuation() && c != '\'' && c != '"')
+        .to_string()
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -416,5 +466,99 @@ mod tests {
             .collect();
         // "Casey Zandbergen" once + plain "Casey" once = 2 distinct entries.
         assert_eq!(casey_entries.len(), 2, "got: {:?}", casey_entries);
+    }
+
+    // ── SCI-194 regression tests ──────────────────────────────────────────
+    //
+    // Pre-fix, `surface_span` used `text.find(start_surface)` which
+    // returns the FIRST byte offset of the surface in the full input.
+    // Repeated surfaces would alias to an earlier occurrence and the
+    // returned span would cover everything between that earlier hit
+    // and the current end-token — producing multi-sentence "originals"
+    // that polluted the token_mappings table.
+
+    #[test]
+    fn repeated_surface_does_not_grab_intervening_text() {
+        // "Casey" appears early; compound rule fires on the LATER
+        // "Casey Zandbergen". The bug paired the early Casey with the
+        // late Zandbergen and captured everything between.
+        let text = "Hey Casey, before we discussed that, \
+                    we talked about Casey Zandbergen yesterday.";
+        let persons: Vec<String> = extract_nlp_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .map(|e| e.text)
+            .collect();
+        assert!(
+            persons.contains(&"Casey".to_string()),
+            "missing standalone Casey; got {persons:?}",
+        );
+        assert!(
+            persons.contains(&"Casey Zandbergen".to_string()),
+            "missing compound Casey Zandbergen; got {persons:?}",
+        );
+        for p in &persons {
+            assert!(
+                !p.contains("discussed") && !p.contains("before") && !p.contains(","),
+                "entity text grabbed intervening prose: {p:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn triple_repeat_surface_stays_local() {
+        // Three "Casey"s across three sentences. None of the entity
+        // texts should span sentence boundaries.
+        let text = "Casey said hi. Then Casey said goodbye. \
+                    Finally Casey Zandbergen arrived.";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains('.'),
+                "entity text spans a sentence boundary: {:?}", e.text,
+            );
+            assert!(
+                e.text.len() <= 30,
+                "entity text suspiciously long: {:?} ({} chars)",
+                e.text, e.text.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn bracketed_tokens_not_absorbed_into_entity_text() {
+        // Mimics text from recall injection: prior anonymization
+        // produced `[PLACE_2]` embedded in the prose. The new pass
+        // should NOT slurp the bracketed token into the original of a
+        // new entity span.
+        let text = "Casey moved to [PLACE_2] and then Casey Zandbergen followed.";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_") && !e.text.contains("[PERSON_"),
+                "entity text absorbed a bracketed token: {:?}", e.text,
+            );
+        }
+    }
+
+    #[test]
+    fn org_repeated_surface_stays_local() {
+        // Same bug class applied to the ORG-suffix rule. "Anthropic"
+        // appears twice. The compound match should stay local to the
+        // second occurrence + "Inc".
+        let text = "Anthropic is great. Later, Anthropic Inc shipped Claude.";
+        let orgs: Vec<String> = extract_nlp_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == EntityType::Org)
+            .map(|e| e.text)
+            .collect();
+        assert!(
+            orgs.contains(&"Anthropic Inc".to_string()),
+            "missing Anthropic Inc; got {orgs:?}",
+        );
+        for o in &orgs {
+            assert!(
+                !o.contains("great") && !o.contains("Later"),
+                "ORG text grabbed intervening prose: {o:?}",
+            );
+        }
     }
 }
