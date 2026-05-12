@@ -1051,12 +1051,14 @@ fn deanonymize_messages_response(value: &mut Value, session_map: &TokenMap) {
 fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<Entity>> {
     let mut all_entities = Vec::new();
 
-    // Top-level `system` (string) — Anthropic also accepts an array
-    // of system blocks; both shapes anonymize the same way. String
-    // is the common case.
-    if let Some(system) = body.get_mut("system") {
-        anonymize_in_place(system, map, &mut all_entities);
-    }
+    // SCI-201: do NOT anonymize the top-level `system` field.
+    // The system prompt is LibreChat / Claude Code boilerplate containing
+    // CamelCase identifiers (LineChart, DayPicker, AlertDialog, etc.) that
+    // the CamelCase pass was tokenizing as PROJECT entities. Those tokens
+    // entered token_mappings, then on subsequent turns the placeholder-
+    // annotated system prompt re-entered the context and was injected as
+    // visible user-turn text in the UI. The system prompt is not user PII;
+    // skipping it breaks the injection loop with zero privacy tradeoff.
 
     // `messages[*].content` is either a string or an array of typed
     // content blocks. We only touch `text` blocks.
@@ -1658,7 +1660,12 @@ mod tests {
     }
 
     #[test]
-    fn anonymize_top_level_system() {
+    fn system_field_is_not_anonymized() {
+        // SCI-201: system prompt is intentionally skipped by
+        // anonymize_messages_body. Previously this caused CamelCase
+        // identifiers in LibreChat / Claude Code boilerplate to mint
+        // PROJECT tokens that re-entered context as visible placeholders
+        // on the next turn.
         let mut body: Value = serde_json::from_str(
             r#"{"system":"the user works on openclaw.dev","messages":[]}"#,
         )
@@ -1666,7 +1673,9 @@ mod tests {
         let mut map = TokenMap::default();
         let _ = anonymize_messages_body(&mut body, &mut map).unwrap();
         let s = body["system"].as_str().unwrap();
-        assert!(s.contains("[URL_"));
+        // System field must be unchanged — no token substitution.
+        assert_eq!(s, "the user works on openclaw.dev");
+        assert!(map.forward.is_empty(), "no tokens should be minted from system prompt");
     }
 
     // ── Recall-merge tests: the SCI-150 fix that keeps the canonical
