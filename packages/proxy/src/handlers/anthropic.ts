@@ -53,6 +53,66 @@ function extractText(content: AnthropicMessage['content']): string {
     .join('')
 }
 
+/**
+ * Anonymize a user message's content without destroying structured blocks.
+ *
+ * When content is a plain string, behaves identically to calling anonymize()
+ * directly. When content is an array (tool_result, image, text blocks, etc.),
+ * only the text blocks are anonymized — all other block types are preserved
+ * verbatim. This prevents stripping tool_result blocks out of conversation
+ * history, which would cause Anthropic's API to reject the request with
+ * "tool_use ids were found without tool_result blocks" (same class of error
+ * as the SCI-200 orphan repair on the Rust side).
+ *
+ * Returns the (possibly mutated) content plus the AnonymizeResult from the
+ * text portions and the updated tokenMap for threading to the next message.
+ */
+function anonymizeContent(
+  content: AnthropicMessage['content'],
+  tokenMap: { forward: Map<string, string>; reverse: Map<string, string> }
+): {
+  content: AnthropicMessage['content']
+  extractedText: string
+  maskedText: string
+  result: AnonymizeResult
+  tokenMap: { forward: Map<string, string>; reverse: Map<string, string> }
+} {
+  if (typeof content === 'string') {
+    const result = anonymize(content, tokenMap)
+    return { content: result.text, extractedText: content, maskedText: result.text, result, tokenMap: result.tokenMap }
+  }
+
+  const rawParts: string[] = []
+  const maskedParts: string[] = []
+  const allDetected: AnonymizeResult['detected'] = []
+  let currentMap = tokenMap
+
+  const anonymizedBlocks = content.map(block => {
+    if (block.type !== 'text' || !block.text) return block  // preserve non-text blocks
+    rawParts.push(block.text)
+    const r = anonymize(block.text, currentMap)
+    currentMap = r.tokenMap
+    maskedParts.push(r.text)
+    allDetected.push(...r.detected)
+    return { ...block, text: r.text }
+  })
+
+  const combinedResult: AnonymizeResult = {
+    text: maskedParts.join(''),
+    tokenMap: currentMap,
+    entityCount: allDetected.length,
+    detected: allDetected,
+  }
+
+  return {
+    content: anonymizedBlocks,
+    extractedText: rawParts.join(''),
+    maskedText: maskedParts.join(''),
+    result: combinedResult,
+    tokenMap: currentMap,
+  }
+}
+
 function toOpenRouterMessages(
   messages: AnthropicMessage[],
   system?: string
@@ -97,15 +157,15 @@ export async function handleAnthropicMessages(
 
   const anonymizedMessages: AnthropicMessage[] = body.messages.map((m, idx) => {
     if (m.role !== 'user') return m
-    const text = extractText(m.content)
-    const result = anonymize(text, sessionTokenMap)
-    sessionTokenMap = result.tokenMap
+    const { content: anonContent, extractedText, maskedText, result, tokenMap: nextMap } =
+      anonymizeContent(m.content, sessionTokenMap)
+    sessionTokenMap = nextMap
     if (idx === lastUserIdx) {
       lastUserResult = result
-      lastUserOriginal = text
-      lastUserMaskedText = result.text
+      lastUserOriginal = extractedText
+      lastUserMaskedText = maskedText
     }
-    return { ...m, content: result.text }
+    return { ...m, content: anonContent }
   })
 
   // Log what got masked

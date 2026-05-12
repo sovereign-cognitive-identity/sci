@@ -150,10 +150,46 @@ pub fn apply_token_map(text: &str, token_map: &TokenMap) -> String {
     // so longer names ("Casey Zandbergen") replace before shorter ones
     // ("Casey") and we don't end up with "[PERSON_2] Zandbergen".
     let mut entries: Vec<(&String, &String)> = token_map.forward.iter().collect();
-    // Descending length: longer entities replace first so "Casey Zandbergen"
-    // becomes [PERSON_1] before "Casey" gets a shot.
     entries.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
 
+    // SCI-198: locate markdown code regions in the original text and
+    // process only the non-code segments. Code regions (triple-backtick
+    // fences, triple-tilde fences, inline backticks) are passed through
+    // verbatim so CamelCase project names, NER hits, and regex patterns
+    // inside code snippets are never substituted. The code_regions pass
+    // runs on the original `text` (before any substitutions), so its
+    // byte ranges stay valid for the segment-slicing below.
+    let code_regions = crate::code_regions::extract_code_regions(text);
+
+    if code_regions.is_empty() {
+        return _apply_entries_to_slice(text, &entries);
+    }
+
+    // Interleave non-code (substituted) and code (verbatim) segments.
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut pos = 0usize;
+
+    for region in &code_regions {
+        if pos < region.start {
+            out.push_str(&_apply_entries_to_slice(&text[pos..region.start], &entries));
+        }
+        // Code region — pass through unchanged.
+        out.push_str(&text[region.start..region.end]);
+        pos = region.end;
+    }
+    // Trailing non-code segment (after the last code region).
+    if pos < text.len() {
+        out.push_str(&_apply_entries_to_slice(&text[pos..], &entries));
+    }
+    out
+}
+
+/// Apply all forward-map substitutions to a single text slice that is
+/// guaranteed to contain no code regions (the caller has already split
+/// the input at code-region boundaries). This is the core replacement
+/// loop extracted from the original `apply_token_map` so both the fast
+/// path (no code regions) and the segmented path share identical logic.
+fn _apply_entries_to_slice(text: &str, entries: &[(&String, &String)]) -> String {
     let mut result = text.to_string();
     for (entity, token) in entries {
         let escaped = regex::escape(entity);
@@ -163,7 +199,7 @@ pub fn apply_token_map(text: &str, token_map: &TokenMap) -> String {
         let pat = format!(r"(?i){escaped}\b");
         let re = match regex::Regex::new(&pat) {
             Ok(r) => r,
-            Err(_) => continue, // pathologically bad entity names — skip
+            Err(_) => continue,
         };
 
         // Walk the matches manually so we can inspect the byte before
@@ -540,5 +576,73 @@ mod tests {
         );
         assert!(r.text.contains("[URL_1]"), "URL_1 missing in: {:?}", r.text);
         assert!(r.text.contains("[PERSON_1]"), "PERSON_1 missing in: {:?}", r.text);
+    }
+
+    // ── SCI-198 code-region protection ────────────────────────────────────
+
+    #[test]
+    fn camelcase_inside_triple_backtick_fence_not_masked() {
+        // OpenClaw inside a fenced code block must survive intact.
+        let r = anonymize(
+            "Use it like so:\n```\nOpenClaw.init()\n```\nOutside is fine.",
+            None,
+        );
+        assert!(
+            r.text.contains("OpenClaw"),
+            "OpenClaw inside fence should not be masked; got: {:?}",
+            r.text,
+        );
+    }
+
+    #[test]
+    fn camelcase_outside_fence_still_masked() {
+        // The same entity name outside the fence SHOULD be masked, even
+        // when a code block is present.
+        let r = anonymize(
+            "OpenClaw is great.\n```\nsome_code()\n```\nUse OpenClaw today.",
+            None,
+        );
+        // Both occurrences outside the fence should be replaced.
+        assert!(
+            r.text.contains("[PROJECT_"),
+            "OpenClaw outside fence should be masked; got: {:?}",
+            r.text,
+        );
+        assert!(
+            !r.text.contains("OpenClaw"),
+            "real text should not survive outside fence; got: {:?}",
+            r.text,
+        );
+    }
+
+    #[test]
+    fn camelcase_inside_inline_backtick_not_masked() {
+        // `OpenClaw` in an inline span should not get a token.
+        let r = anonymize("run `OpenClaw --help` to get started", None);
+        assert!(
+            r.text.contains("OpenClaw"),
+            "OpenClaw inside inline backtick should not be masked; got: {:?}",
+            r.text,
+        );
+    }
+
+    #[test]
+    fn entity_inside_fence_outside_fence_split_correctly() {
+        // "CrossTimbersFarm" appears both in a code block and in prose.
+        // Only the prose occurrence should be masked.
+        let input = "Visit CrossTimbersFarm soon.\n```python\nclass CrossTimbersFarm:\n    pass\n```\nGo to CrossTimbersFarm.";
+        let r = anonymize(input, None);
+        // At least one [PROJECT_] token must appear (the prose occurrences).
+        assert!(
+            r.text.contains("[PROJECT_"),
+            "prose occurrence must be masked; got: {:?}",
+            r.text,
+        );
+        // The code block body must be untouched.
+        assert!(
+            r.text.contains("class CrossTimbersFarm:"),
+            "code block must not be anonymized; got: {:?}",
+            r.text,
+        );
     }
 }
