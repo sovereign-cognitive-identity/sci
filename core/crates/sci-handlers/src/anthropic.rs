@@ -1064,6 +1064,17 @@ fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<E
         return Ok(all_entities);
     };
     for message in messages {
+        // SCI-199: skip assistant-role messages. The assistant's prior
+        // turns are already deanonymized plain-English when LibreChat
+        // stores them; re-anonymizing creates a vocab-feedback loop
+        // where the model sees its own placeholder-form prose and
+        // learns that [PLACE_N] IS the English word. User and system
+        // messages get anonymized normally; tool_result blocks (which
+        // appear in user-role messages) also get anonymized through
+        // the normal path since they're part of user-role content.
+        if message.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+            continue;
+        }
         let Some(content) = message.get_mut("content") else { continue; };
         match content {
             Value::String(_) => anonymize_in_place(content, map, &mut all_entities),

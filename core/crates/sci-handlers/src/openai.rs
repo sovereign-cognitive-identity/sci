@@ -111,16 +111,13 @@ fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<E
         return Ok(all_entities);
     };
     for message in messages {
-        let role = message
-            .get("role")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
-
-        // Anonymize all roles (system/user/assistant). System messages
-        // can leak PII via the user's own prompts; mask consistently.
-        // Assistant messages get masked too because in multi-turn
-        // chats the user's earlier PII gets echoed back.
-        let _ = role;
+        // SCI-199: skip assistant-role messages. Assistant prior turns
+        // are already deanonymized plain-English in history; re-anonymizing
+        // creates a vocab-feedback loop where the model learns that
+        // [PLACE_N] is an English word. User + system messages anonymize normally.
+        if message.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+            continue;
+        }
         let Some(content) = message.get_mut("content") else { continue; };
         match content {
             Value::String(_) => anonymize_in_place(content, map, &mut all_entities),
@@ -335,11 +332,8 @@ mod tests {
     }
 
     #[test]
-    fn anonymize_assistant_role() {
-        // Multi-turn: an earlier assistant reply that echoed PII gets
-        // masked too. (Real example: Claude saying "Hi Casey" after
-        // user introduces themselves; the next turn carries Casey
-        // into the conversation history.)
+    fn assistant_role_not_anonymized_sci199() {
+        // SCI-199: assistant prior turns must NOT be re-anonymized.
         let mut body: Value = serde_json::from_str(
             r#"{"messages":[
                 {"role":"user","content":"hi I'm Casey from openclaw.dev"},
@@ -350,12 +344,17 @@ mod tests {
         .unwrap();
         let mut map = TokenMap::default();
         let _ = anonymize_messages_body(&mut body, &mut map).unwrap();
+        // Assistant message must be byte-identical to input.
         let assistant = body["messages"][1]["content"].as_str().unwrap();
-        // The `Casey` token from the user message is reused on the
-        // assistant message — same TokenMap means the same number.
+        assert_eq!(
+            assistant, "Hi Casey! What can I help with?",
+            "assistant content must pass through unchanged (SCI-199): {assistant}",
+        );
+        // User messages still anonymized normally.
+        let user = body["messages"][0]["content"].as_str().unwrap();
         assert!(
-            assistant.contains("[PERSON_") || assistant.contains("[URL_"),
-            "expected the assistant content to be masked too: {assistant}",
+            user.contains("[PERSON_") || user.contains("[URL_"),
+            "user content must still be anonymized: {user}",
         );
     }
 
