@@ -121,6 +121,12 @@ struct Token<'a> {
     surface: &'a str,
     /// Was the original (untrimmed) token capitalized?
     is_cap:  bool,
+    /// SCI-196: true if the raw token looks like an already-
+    /// anonymized placeholder (e.g. `Casey`, `In,`). We
+    /// set this at tokenization time so every compound-extension
+    /// rule has a single uniform gate to consult, rather than each
+    /// site needing to redo the regex check.
+    looks_like_placeholder: bool,
 }
 
 fn tokenize(text: &str) -> Vec<Token<'_>> {
@@ -136,14 +142,60 @@ fn tokenize(text: &str) -> Vec<Token<'_>> {
             continue;
         }
         let is_cap = surface.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+        let looks_like_placeholder = is_bracketed_placeholder(raw);
         out.push(Token {
             raw,
             norm: surface.to_lowercase(),
             surface,
             is_cap,
+            looks_like_placeholder,
         });
     }
     out
+}
+
+
+/// SCI-196: detect already-anonymized placeholder tokens so the
+/// compound-extension rules don't absorb them. Matches the shape
+/// `[<UPPER>+_<DIGIT>+]` with optional trailing punctuation
+/// (comma, period, quote, etc.) tolerated. Conservative — false
+/// negatives are acceptable (rule extends and we get noisy span),
+/// false positives drop tokens that look exactly like the
+/// anonymizer's own output (acceptable; the user almost never
+/// writes `[FOO_3]` literally).
+///
+/// Note we scan the *raw* token slice (which still has surrounding
+/// punctuation) rather than the trimmed `surface`, because the
+/// trimmer strips leading `[` — so by the time we look at `surface`,
+/// `Casey` has become `PERSON_1` with no bracket signal left.
+fn is_bracketed_placeholder(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    if bytes.len() < 4 || bytes[0] != b'[' {
+        return false;
+    }
+    let mut i = 1usize;
+    // One or more uppercase ASCII letters.
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_uppercase() {
+        i += 1;
+    }
+    if i == start { return false; }
+    // Underscore.
+    if i >= bytes.len() || bytes[i] != b'_' { return false; }
+    i += 1;
+    // One or more digits.
+    let digit_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digit_start { return false; }
+    // Closing bracket — required. We accept either `]` followed by
+    // anything (punctuation, EOF) or no closing bracket at all when
+    // it's the tail of a token that the tokenizer truncated. Be
+    // strict: require the `]` for a positive match; truncated cases
+    // are an SCI-194-class bug and shouldn't recur post-fix.
+    if i >= bytes.len() || bytes[i] != b']' { return false; }
+    true
 }
 
 // ── Public entry ──────────────────────────────────────────────────────────
@@ -186,14 +238,20 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         // "Dr. Casey", "Mrs. Smith Jones". Strip trailing period from
         // the honorific token for lexicon match.
         let honorific_norm = t.norm.trim_end_matches('.');
-        if HONORIFICS.contains(honorific_norm) && i + 1 < toks.len() && toks[i + 1].is_cap {
+        if HONORIFICS.contains(honorific_norm)
+            && i + 1 < toks.len()
+            && toks[i + 1].is_cap
+            && !toks[i + 1].looks_like_placeholder
+        {
             // Greedy: consume capitalized tokens following the honorific.
-            // Cap at 3 to avoid runaway matches.
+            // Cap at 3 to avoid runaway matches. SCI-196: also stop
+            // at any already-anonymized placeholder.
             let j = i + 1;
             let mut end_idx = j;
             while end_idx < toks.len()
                 && end_idx < j + 3
                 && toks[end_idx].is_cap
+                && !toks[end_idx].looks_like_placeholder
             {
                 end_idx += 1;
             }
@@ -214,7 +272,12 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         // "Casey said …", "Casey Zandbergen visited …".
         if FIRST_NAMES.contains(t.norm.as_str()) && !is_allowlisted(t.surface) {
             // Compound: if next token is also capitalized, take both.
-            if i + 1 < toks.len() && toks[i + 1].is_cap && !is_allowlisted(toks[i + 1].surface) {
+            // SCI-196: refuse to extend into a placeholder-shaped token.
+            if i + 1 < toks.len()
+                && toks[i + 1].is_cap
+                && !toks[i + 1].looks_like_placeholder
+                && !is_allowlisted(toks[i + 1].surface)
+            {
                 // Don't extend if the next token is itself an org
                 // suffix or place — those have their own rules below.
                 let next_norm_clean = toks[i + 1].norm.trim_end_matches('.');
@@ -235,7 +298,11 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         // ── 3. Bigram place ─────────────────────────────────────────────
         // "New York", "San Francisco". Two consecutive cap-cap tokens
         // whose lowercase concatenation is in `PLACES_BIGRAM`.
-        if i + 1 < toks.len() && toks[i + 1].is_cap {
+        // SCI-196: refuse to extend into a placeholder-shaped token.
+        if i + 1 < toks.len()
+            && toks[i + 1].is_cap
+            && !toks[i + 1].looks_like_placeholder
+        {
             let bigram = format!("{} {}", t.norm, toks[i + 1].norm);
             if PLACES_BIGRAM.contains(bigram.as_str()) {
                 let span = surface_span(text, t, &toks[i + 1]);
@@ -270,8 +337,9 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         // ── 5. ORG via suffix ────────────────────────────────────────────
         // "Anthropic Inc", "OpenAI Corp" — capitalized chunk followed by
         // an org suffix. Walk back a bit to capture multi-word org
-        // names like "Sci Cognitive Inc".
-        if i + 1 < toks.len() {
+        // names like "Sci Cognitive Inc". SCI-196: refuse when the
+        // preceding chunk is itself a placeholder.
+        if i + 1 < toks.len() && !t.looks_like_placeholder {
             let next_norm = toks[i + 1].norm.trim_end_matches('.');
             if ORG_SUFFIXES.contains(next_norm) {
                 let span = surface_span(text, t, &toks[i + 1]);

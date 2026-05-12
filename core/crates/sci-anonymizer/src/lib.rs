@@ -43,12 +43,14 @@
 #![warn(clippy::all)]
 
 mod allowlist;
+mod code_regions;
 mod custom_entities;
 mod ner;
 mod regex_extract;
 mod token_map;
 
 pub use allowlist::{TECH_ALLOWLIST, is_allowlisted};
+pub use code_regions::{extract_code_regions, is_in_code_region};
 pub use custom_entities::{Fact, extract_entities_from_facts};
 pub use ner::extract_nlp_entities;
 pub use regex_extract::{extract_camelcase_entities, extract_regex_entities};
