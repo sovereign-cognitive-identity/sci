@@ -95,6 +95,16 @@ function DiffText({ text, mappings }: { text: string; mappings: TokenMapping[] }
   );
 }
 
+// ── Pretty-print JSON ───────────────────────────────────────────────────────────
+
+function prettyJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 // ── JSON export ───────────────────────────────────────────────────────────────
 
 function exportTurnJson(detail: AuditTurnDetail) {
@@ -240,14 +250,14 @@ export default function TurnCard({ turn, searchQuery }: Props) {
 
               <CollapsibleSection title="Anonymized request (sent upstream)">
                 <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all">
-                  {detail.data.turn.requestBody || '—'}
+                  {detail.data.turn.requestBody ? prettyJson(detail.data.turn.requestBody) : '—'}
                 </pre>
               </CollapsibleSection>
 
               {detail.data.turn.responseRaw && (
                 <CollapsibleSection title="Raw upstream response (pre-deanon)">
                   <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all">
-                    {detail.data.turn.responseRaw}
+                    {prettyJson(detail.data.turn.responseRaw)}
                   </pre>
                 </CollapsibleSection>
               )}
