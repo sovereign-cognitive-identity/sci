@@ -1564,7 +1564,13 @@ async fn build_upstream_headers(req: &HandlerRequest) -> Result<UpstreamHeaderPl
         (Some(a), _) if a.starts_with("Bearer ") => {
             out.insert("authorization".into(), a.into());
         }
-        (_, Some(k)) if !k.is_empty() => {
+        // BYO key — pass through UNLESS it's the local placeholder that
+        // LibreChat uses when no real key is configured. A placeholder
+        // arriving here means the request came from the agents/LangChain
+        // path (which reads ANTHROPIC_API_KEY from the environment) rather
+        // than from a user who deliberately configured a BYO key. Fall
+        // through to the OAuth cache so sci-helper can inject real creds.
+        (_, Some(k)) if !k.is_empty() && !k.starts_with("sci_t_") => {
             out.insert("x-api-key".into(), k.into());
         }
         (Some(a), _) if !a.is_empty() => {
