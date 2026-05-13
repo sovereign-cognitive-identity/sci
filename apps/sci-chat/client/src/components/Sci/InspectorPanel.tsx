@@ -5,15 +5,19 @@
  * Persists open/closed + drawer width in localStorage. Subscribes to
  * `/sci/events` while open; invalidates the audit_turns query on
  * `flow_completed` so new turns appear live.
+ *
+ * SCI-54: search/filter bar over turn list; "Export all" JSON button.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import ProfileSelector from './ProfileSelector';
 import ProjectSelector from './ProjectSelector';
 import RecallPreview from './RecallPreview';
 import { useActiveProfile, useAuditEvents, useAuditTurns, useHelperStatus } from './hooks';
 import TurnCard from './TurnCard';
+import type { AuditTurn, AuditTurnDetail } from './types';
+import { getAuditTurn } from './api';
 
 const LS_OPEN_KEY  = 'sci.inspector.open';
 const LS_WIDTH_KEY = 'sci.inspector.width';
@@ -39,9 +43,29 @@ function readNumberLs(key: string, fallback: number): number {
   return fallback;
 }
 
+// ── Export all turns as JSON ──────────────────────────────────────────────────
+
+async function exportAllTurns(turns: AuditTurn[]) {
+  const details: AuditTurnDetail[] = await Promise.all(
+    turns.map((t) => getAuditTurn(t.id)),
+  );
+  const blob = new Blob([JSON.stringify(details, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `sci-turns-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
 export default function InspectorPanel() {
   const [open,  setOpen]  = useState(() => readBoolLs(LS_OPEN_KEY, false));
   const [width, setWidth] = useState(() => readNumberLs(LS_WIDTH_KEY, DEFAULT_WIDTH));
+  const [search, setSearch] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     try { localStorage.setItem(LS_OPEN_KEY, open ? '1' : '0'); }
@@ -53,18 +77,38 @@ export default function InspectorPanel() {
     catch { /* ignore */ }
   }, [width]);
 
-  // Only fetch + subscribe while the drawer is open. Closes the SSE
-  // connection on collapse so we don't hold an open EventSource per tab.
-  //
-  // Strict profile isolation: audit_turns list filters by the active
-  // profile, so switching to "personal" hides the work history and
-  // vice versa. Helper-side enforces the same scoping for storage +
-  // recall, so the UI faithfully reflects the data flow.
+  // Clear search when closing so it doesn't linger on reopen.
+  useEffect(() => {
+    if (!open) setSearch('');
+  }, [open]);
+
   const active   = useActiveProfile(open);
   const profile  = active.data?.name;
   const turns    = useAuditTurns(50, profile);
   const status   = useHelperStatus(open);
   useAuditEvents(open, turns.refetch);
+
+  // Derive visible count for the search summary badge.
+  const visibleCount = useMemo(() => {
+    if (!turns.data || !search) return turns.data?.length ?? 0;
+    const q = search.toLowerCase();
+    return turns.data.filter((t) =>
+      t.host.toLowerCase().includes(q) ||
+      (t.model?.toLowerCase().includes(q) ?? false) ||
+      (t.userText?.toLowerCase().includes(q) ?? false) ||
+      (t.assistantText?.toLowerCase().includes(q) ?? false),
+    ).length;
+  }, [turns.data, search]);
+
+  const handleExportAll = async () => {
+    if (!turns.data || turns.data.length === 0) return;
+    setExporting(true);
+    try {
+      await exportAllTurns(turns.data);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <>
@@ -82,8 +126,59 @@ export default function InspectorPanel() {
           <Resizer onResize={(delta) => {
             setWidth((w) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w - delta)));
           }} />
-          <div className="flex h-full flex-1 flex-col">
-            <Header status={status.data} onClose={() => setOpen(false)} enabled={open} />
+          <div className="flex h-full flex-1 flex-col overflow-hidden">
+            <Header
+              status={status.data}
+              onClose={() => setOpen(false)}
+              enabled={open}
+              turnCount={turns.data?.length ?? 0}
+              onExportAll={handleExportAll}
+              exporting={exporting}
+            />
+
+            {/* Search bar */}
+            <div className="border-b border-border-medium px-3 py-2">
+              <div className="relative">
+                <span
+                  aria-hidden
+                  className="absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary select-none"
+                >
+                  🔍
+                </span>
+                <input
+                  ref={searchRef}
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Filter by host, model, or text…"
+                  aria-label="Filter turns"
+                  className="
+                    w-full rounded-md border border-border-medium bg-surface-secondary
+                    py-1 pl-7 pr-3 text-xs text-text-primary placeholder-text-secondary
+                    focus:outline-none focus:ring-1 focus:ring-blue-500
+                  "
+                />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch('')}
+                    aria-label="Clear search"
+                    className="
+                      absolute right-2 top-1/2 -translate-y-1/2
+                      text-text-secondary hover:text-text-primary
+                    "
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              {search && turns.data && (
+                <p className="mt-1 text-[10px] text-text-secondary">
+                  {visibleCount} of {turns.data.length} turns match
+                </p>
+              )}
+            </div>
+
             <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
               <RecallPreview enabled={open} />
               {turns.isLoading && (
@@ -102,8 +197,13 @@ export default function InspectorPanel() {
                   {' '}Send a chat to start the flight recorder.
                 </p>
               )}
+              {turns.data && turns.data.length > 0 && search && visibleCount === 0 && (
+                <p className="text-sm text-text-secondary">
+                  No turns match <span className="font-mono">"{search}"</span>.
+                </p>
+              )}
               {turns.data?.map((t) => (
-                <TurnCard key={t.id} turn={t} />
+                <TurnCard key={t.id} turn={t} searchQuery={search} />
               ))}
             </div>
           </div>
@@ -138,10 +238,16 @@ function Header({
   status,
   onClose,
   enabled,
+  turnCount,
+  onExportAll,
+  exporting,
 }: {
   status: import('./types').HelperStatus | undefined;
   onClose: () => void;
   enabled: boolean;
+  turnCount: number;
+  onExportAll: () => void;
+  exporting: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-2 border-b border-border-medium px-3 py-2">
@@ -155,6 +261,22 @@ function Header({
         )}
       </div>
       <div className="flex items-center gap-2">
+        {turnCount > 0 && (
+          <button
+            type="button"
+            onClick={onExportAll}
+            disabled={exporting}
+            title="Export all visible turns as JSON"
+            className="
+              rounded border border-border-medium px-2 py-1
+              text-[10px] text-text-secondary
+              hover:bg-surface-secondary hover:text-text-primary
+              disabled:opacity-40
+            "
+          >
+            {exporting ? '…' : '↓ All'}
+          </button>
+        )}
         <ProjectSelector enabled={enabled} />
         <ProfileSelector enabled={enabled} />
         <button
