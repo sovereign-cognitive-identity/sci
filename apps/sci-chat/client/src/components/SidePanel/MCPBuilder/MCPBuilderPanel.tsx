@@ -2,7 +2,8 @@ import { useState, useRef, useMemo } from 'react';
 import { Plus } from 'lucide-react';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { Button, Spinner, FilterInput, OGDialogTrigger, TooltipAnchor } from '@librechat/client';
-import { useLocalize, useMCPServerManager, useHasAccess } from '~/hooks';
+import { useLocalize, useHasAccess } from '~/hooks';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import MCPAdminSettings from './MCPAdminSettings';
 import MCPServerDialog from './MCPServerDialog';
@@ -10,8 +11,7 @@ import MCPServerList from './MCPServerList';
 
 export default function MCPBuilderPanel() {
   const localize = useLocalize();
-  const { availableMCPServers, isLoading, getServerStatusIconProps, getConfigDialogProps } =
-    useMCPServerManager();
+  const { mcpServerManager: { availableMCPServers, isLoading, getServerStatusIconProps, getConfigDialogProps } } = useMCPServerManagerContext();
 
   const hasCreateAccess = useHasAccess({
     permissionType: PermissionTypes.MCP_SERVERS,

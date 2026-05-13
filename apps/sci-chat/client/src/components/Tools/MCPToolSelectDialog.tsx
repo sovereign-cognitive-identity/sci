@@ -9,10 +9,10 @@ import type { TError, AgentToolType } from 'librechat-data-provider';
 import type { AgentForm, ToolDialogProps } from '~/common';
 import {
   usePluginDialogHelpers,
-  useMCPServerManager,
   useRemoveMCPTool,
   useLocalize,
 } from '~/hooks';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import CustomUserVarsSection from '~/components/MCP/CustomUserVarsSection';
 import { PluginPagination } from '~/components/Plugins/Store';
 import { useAgentPanelContext } from '~/Providers';
@@ -31,7 +31,7 @@ function MCPToolSelectDialog({
 }) {
   const localize = useLocalize();
   const queryClient = useQueryClient();
-  const { initializeServer } = useMCPServerManager();
+  const { mcpServerManager: { initializeServer } } = useMCPServerManagerContext();
   const { getValues, setValue } = useFormContext<AgentForm>();
   const { removeTool } = useRemoveMCPTool({ showToast: false });
   const { mcpServersMap, availableMCPServersMap } = useAgentPanelContext();

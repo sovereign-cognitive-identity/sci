@@ -15,6 +15,7 @@ import ArtifactsSubMenu from '~/components/Chat/Input/ArtifactsSubMenu';
 import MCPSubMenu from '~/components/Chat/Input/MCPSubMenu';
 import { useGetStartupConfig } from '~/data-provider';
 import { useBadgeRowContext } from '~/Providers';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { cn } from '~/utils';
 
 interface ToolsDropdownProps {
@@ -61,10 +62,11 @@ const ToolsDropdown = ({ disabled }: ToolsDropdownProps) => {
     webSearch,
     artifacts,
     fileSearch,
-    mcpServerManager,
     codeInterpreter,
     searchApiKeyForm,
   } = context ?? {};
+
+  const { mcpServerManager } = useMCPServerManagerContext();
 
   const { setIsDialogOpen: setIsSearchDialogOpen, menuTriggerRef: searchMenuTriggerRef } =
     searchApiKeyForm ?? {};
@@ -304,8 +306,7 @@ const ToolsDropdown = ({ disabled }: ToolsDropdownProps) => {
     });
   }
 
-  const { availableMCPServers } = mcpServerManager ?? {};
-  if (canUseMcp && availableMCPServers && availableMCPServers.length > 0) {
+  if (canUseMcp && mcpServerManager.availableMCPServers && mcpServerManager.availableMCPServers.length > 0) {
     dropdownItems.push({
       hideOnClick: false,
       render: (props) => <MCPSubMenu {...props} placeholder={mcpPlaceholder} />,

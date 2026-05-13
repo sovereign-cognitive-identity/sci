@@ -12,8 +12,8 @@ import {
   useLocalize,
   useGetAgentsConfig,
   useMCPConnectionStatus,
-  useMCPServerManager,
 } from '~/hooks';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { Panel, isEphemeralAgent } from '~/common';
 
 const AgentPanelContext = createContext<AgentPanelContextType | undefined>(undefined);
@@ -34,7 +34,7 @@ export function AgentPanelProvider({ children }: { children: React.ReactNode }) 
   const [action, setAction] = useState<Action | undefined>(undefined);
   const [activePanel, setActivePanel] = useState<Panel>(Panel.builder);
   const [agent_id, setCurrentAgentId] = useState<string | undefined>(undefined);
-  const { availableMCPServers, isLoading, availableMCPServersMap } = useMCPServerManager();
+  const { mcpServerManager: { availableMCPServers, isLoading, availableMCPServersMap } } = useMCPServerManagerContext();
   const { data: startupConfig } = useGetStartupConfig();
   const { data: actions } = useGetActionsQuery(EModelEndpoint.agents, {
     enabled: !isEphemeralAgent(agent_id),

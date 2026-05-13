@@ -12,7 +12,7 @@ import type { PartWithIndex } from './ParallelContent';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { cn, getToolDisplayLabel } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
-import { useMCPIconMap } from '~/hooks/MCP';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { AttachmentGroup } from './Parts';
 import store from '~/store';
 
@@ -77,7 +77,7 @@ export default function ToolCallGroup({
   groupAttachments,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
-  const mcpIconMap = useMCPIconMap();
+  const { mcpIconMap } = useMCPServerManagerContext();
   const count = parts.length;
 
   const toolMetadata = useMemo(() => parts.map((p) => getToolMeta(p.part)), [parts]);

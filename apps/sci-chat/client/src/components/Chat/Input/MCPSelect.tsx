@@ -8,12 +8,14 @@ import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import StackedMCPIcons from '~/components/MCP/StackedMCPIcons';
 import { useHasAccess, useLocalize } from '~/hooks';
 import { useBadgeRowContext } from '~/Providers';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { cn } from '~/utils';
 
 function MCPSelectContent() {
   const localize = useLocalize();
   const context = useBadgeRowContext();
-  const { conversationId, storageContextKey, mcpServerManager: manager } = context ?? {};
+  const { conversationId, storageContextKey } = context ?? {};
+  const { mcpServerManager: manager } = useMCPServerManagerContext();
 
   const menuStore = Ariakit.useMenuStore({ focusLoop: true });
   const isOpen = menuStore.useState('open');
@@ -135,7 +137,7 @@ function MCPSelectContent() {
 
 function MCPSelect() {
   const context = useBadgeRowContext();
-  const { selectableServers } = context?.mcpServerManager ?? {};
+  const { mcpServerManager: { selectableServers } } = useMCPServerManagerContext();
   const canUseMcp = useHasAccess({
     permissionType: PermissionTypes.MCP_SERVERS,
     permission: Permissions.USE,

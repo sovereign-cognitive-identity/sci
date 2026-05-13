@@ -21,6 +21,7 @@ export * from './ToolCallsMapContext';
 export * from './SetConvoContext';
 export * from './SearchContext';
 export * from './BadgeRowContext';
+export * from './MCPServerManagerContext';
 export * from './DragDropContext';
 export * from './ArtifactsContext';
 export * from './PromptGroupsContext';

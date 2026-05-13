@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { Label, OGDialog, TrashIcon, OGDialogTrigger, OGDialogTemplate } from '@librechat/client';
 import type { MCPServerInfo } from '~/common';
-import { useLocalize, useMCPServerManager, useRemoveMCPTool } from '~/hooks';
+import { useLocalize, useRemoveMCPTool } from '~/hooks';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import MCPServerStatusIcon from '~/components/MCP/MCPServerStatusIcon';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import { cn } from '~/utils';
@@ -14,7 +15,7 @@ export default function UninitializedMCPTool({ serverInfo }: { serverInfo?: MCPS
   const [isHovering, setIsHovering] = useState(false);
 
   const { initializeServer, isInitializing, getServerStatusIconProps, getConfigDialogProps } =
-    useMCPServerManager();
+    useMCPServerManagerContext().mcpServerManager;
 
   if (!serverInfo) {
     return null;

@@ -5,6 +5,7 @@ import { MCPIcon, PinIcon } from '@librechat/client';
 import MCPServerMenuItem from '~/components/MCP/MCPServerMenuItem';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import { useBadgeRowContext } from '~/Providers';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -16,7 +17,8 @@ const MCPSubMenu = React.forwardRef<HTMLDivElement, MCPSubMenuProps>(
   ({ placeholder, ...props }, ref) => {
     const localize = useLocalize();
     const context = useBadgeRowContext();
-    const { storageContextKey, mcpServerManager } = context ?? {};
+    const { storageContextKey } = context ?? {};
+    const { mcpServerManager } = useMCPServerManagerContext();
 
     const menuStore = Ariakit.useMenuStore({
       focusLoop: true,

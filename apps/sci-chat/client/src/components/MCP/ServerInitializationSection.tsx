@@ -1,7 +1,8 @@
 import React from 'react';
 import { RefreshCw, Trash2 } from 'lucide-react';
 import { Button, Spinner } from '@librechat/client';
-import { useLocalize, useMCPServerManager, useMCPConnectionStatus } from '~/hooks';
+import { useLocalize, useMCPConnectionStatus } from '~/hooks';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 
 interface ServerInitializationSectionProps {
   sidePanel?: boolean;
@@ -30,7 +31,7 @@ export default function ServerInitializationSection({
     initializeServer,
     availableMCPServers,
     revokeOAuthForServer,
-  } = useMCPServerManager({ conversationId, storageContextKey });
+  } = useMCPServerManagerContext().mcpServerManager;
 
   const { connectionStatus } = useMCPConnectionStatus({
     enabled: !!availableMCPServers && availableMCPServers.length > 0,

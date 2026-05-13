@@ -11,7 +11,7 @@ import {
 import type { TAttachment } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, getToolIconType, isError } from './ToolOutput';
-import { useMCPIconMap } from '~/hooks/MCP';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
@@ -104,7 +104,7 @@ export default function ToolCall({
   }, [name, parsedAuthUrl]);
 
   const toolIconType = useMemo(() => getToolIconType(name), [name]);
-  const mcpIconMap = useMCPIconMap();
+  const { mcpIconMap } = useMCPServerManagerContext();
   const mcpIconUrl = isMCPToolCall ? mcpIconMap.get(mcpServerName) : undefined;
 
   const actionId = useMemo(() => {

@@ -16,14 +16,13 @@ import {
   OGDialogTemplate,
 } from '@librechat/client';
 import type { AgentForm, MCPServerInfo } from '~/common';
-import {
-  useAgentCapabilities,
-  useMCPServerManager,
+import { useAgentCapabilities,
   useGetAgentsConfig,
   useMCPToolOptions,
   useRemoveMCPTool,
   useLocalize,
 } from '~/hooks';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import MCPServerStatusIcon from '~/components/MCP/MCPServerStatusIcon';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import MCPToolItem from './MCPToolItem';
@@ -33,7 +32,7 @@ export default function MCPTool({ serverInfo }: { serverInfo?: MCPServerInfo }) 
   const localize = useLocalize();
   const { removeTool } = useRemoveMCPTool();
   const { getValues, setValue } = useFormContext<AgentForm>();
-  const { getServerStatusIconProps, getConfigDialogProps } = useMCPServerManager();
+  const { mcpServerManager: { getServerStatusIconProps, getConfigDialogProps } } = useMCPServerManagerContext();
   const { agentsConfig } = useGetAgentsConfig();
   const { deferredToolsEnabled, programmaticToolsEnabled } = useAgentCapabilities(
     agentsConfig?.capabilities,

@@ -6,6 +6,7 @@ import type { MCPServerDefinition } from '~/hooks';
 import MCPServerDialog from './MCPServerDialog';
 import { getStatusDotColor } from './MCPStatusBadge';
 import MCPCardActions from './MCPCardActions';
+import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import { useMCPServerManager, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -30,7 +31,7 @@ export default function MCPServerCard({
 }: MCPServerCardProps) {
   const localize = useLocalize();
   const triggerRef = useRef<HTMLDivElement>(null);
-  const { initializeServer, revokeOAuthForServer } = useMCPServerManager();
+  const { mcpServerManager: { initializeServer, revokeOAuthForServer } } = useMCPServerManagerContext();
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const statusIconProps = getServerStatusIconProps(server.serverName);

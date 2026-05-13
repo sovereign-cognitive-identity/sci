@@ -3,11 +3,12 @@ import { useSetRecoilState } from 'recoil';
 import { Tools, Constants, LocalStorageKeys, AgentCapabilities } from 'librechat-data-provider';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
 import {
-  useMCPServerManager,
   useSearchApiKeyForm,
   useGetAgentsConfig,
   useToolToggle,
 } from '~/hooks';
+import { useMCPServerManager } from '~/hooks/MCP/useMCPServerManager';
+import { MCPServerManagerProvider } from './MCPServerManagerContext';
 import { getTimestampedValue } from '~/utils/timestamps';
 import { useGetStartupConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';
@@ -22,7 +23,6 @@ interface BadgeRowContextType {
   fileSearch: ReturnType<typeof useToolToggle>;
   codeInterpreter: ReturnType<typeof useToolToggle>;
   searchApiKeyForm: ReturnType<typeof useSearchApiKeyForm>;
-  mcpServerManager: ReturnType<typeof useMCPServerManager>;
 }
 
 const BadgeRowContext = createContext<BadgeRowContextType | undefined>(undefined);
@@ -250,8 +250,6 @@ export default function BadgeRowProvider({
     isAuthenticated: true,
   });
 
-  const mcpServerManager = useMCPServerManager({ conversationId, storageContextKey });
-
   const value: BadgeRowContextType = {
     skills,
     webSearch,
@@ -262,8 +260,11 @@ export default function BadgeRowProvider({
     storageContextKey,
     codeInterpreter,
     searchApiKeyForm,
-    mcpServerManager,
   };
 
-  return <BadgeRowContext.Provider value={value}>{children}</BadgeRowContext.Provider>;
+  return (
+    <MCPServerManagerProvider conversationId={conversationId} storageContextKey={storageContextKey}>
+      <BadgeRowContext.Provider value={value}>{children}</BadgeRowContext.Provider>
+    </MCPServerManagerProvider>
+  );
 }

@@ -122,10 +122,6 @@ export default function InspectorPanel() {
               status={status.data}
               onClose={() => setOpen(false)}
               enabled={open}
-              tab={tab}
-              turnCount={turns.data?.length ?? 0}
-              onExportAll={handleExportAll}
-              exporting={exporting}
             />
 
             {/* Tab bar */}
@@ -151,39 +147,57 @@ export default function InspectorPanel() {
             {/* ── Turns tab ── */}
             {tab === 'turns' && (
               <>
-                {/* Search bar */}
+                {/* Search bar + export */}
                 <div className="flex-shrink-0 border-b border-border-medium px-3 py-2">
-                  <div className="relative">
-                    <span
-                      aria-hidden
-                      className="absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary select-none"
-                    >
-                      🔍
-                    </span>
-                    <input
-                      ref={searchRef}
-                      type="search"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Filter by host, model, or text…"
-                      aria-label="Filter turns"
-                      className="
-                        w-full rounded-md border border-border-medium bg-surface-secondary
-                        py-1 pl-7 pr-3 text-xs text-text-primary placeholder-text-secondary
-                        focus:outline-none focus:ring-1 focus:ring-blue-500
-                      "
-                    />
-                    {search && (
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <span
+                        aria-hidden
+                        className="absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary select-none"
+                      >
+                        🔍
+                      </span>
+                      <input
+                        ref={searchRef}
+                        type="search"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Filter by host, model, or text…"
+                        aria-label="Filter turns"
+                        className="
+                          w-full rounded-md border border-border-medium bg-surface-secondary
+                          py-1 pl-7 pr-3 text-xs text-text-primary placeholder-text-secondary
+                          focus:outline-none focus:ring-1 focus:ring-blue-500
+                        "
+                      />
+                      {search && (
+                        <button
+                          type="button"
+                          onClick={() => setSearch('')}
+                          aria-label="Clear search"
+                          className="
+                            absolute right-2 top-1/2 -translate-y-1/2
+                            text-text-secondary hover:text-text-primary
+                          "
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                    {turns.data && turns.data.length > 0 && (
                       <button
                         type="button"
-                        onClick={() => setSearch('')}
-                        aria-label="Clear search"
+                        onClick={handleExportAll}
+                        disabled={exporting}
+                        title="Export all visible turns as JSON"
                         className="
-                          absolute right-2 top-1/2 -translate-y-1/2
-                          text-text-secondary hover:text-text-primary
+                          flex-shrink-0 rounded border border-border-medium px-2 py-1
+                          text-[10px] text-text-secondary
+                          hover:bg-surface-secondary hover:text-text-primary
+                          disabled:opacity-40
                         "
                       >
-                        ✕
+                        {exporting ? '…' : '↓ All'}
                       </button>
                     )}
                   </div>
@@ -240,13 +254,14 @@ export default function InspectorPanel() {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function Toggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  if (open) return null;
   return (
     <button
       type="button"
       onClick={onToggle}
       aria-pressed={open}
-      aria-label={open ? 'Close Sci inspector' : 'Open Sci inspector'}
-      title={open ? 'Close Sci inspector' : 'Open Sci inspector'}
+      aria-label="Open Sci inspector"
+      title="Open Sci inspector"
       className="
         fixed right-3 top-3 z-50 flex h-9 items-center gap-1.5 rounded-full
         border border-border-medium bg-surface-primary px-3
@@ -264,58 +279,35 @@ function Header({
   status,
   onClose,
   enabled,
-  tab,
-  turnCount,
-  onExportAll,
-  exporting,
 }: {
-  status:      import('./types').HelperStatus | undefined;
-  onClose:     () => void;
-  enabled:     boolean;
-  tab:         Tab;
-  turnCount:   number;
-  onExportAll: () => void;
-  exporting:   boolean;
+  status:  import('./types').HelperStatus | undefined;
+  onClose: () => void;
+  enabled: boolean;
 }) {
   return (
-    <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-border-medium px-3 py-2">
-      <div className="flex min-w-0 flex-col">
-        <div className="text-sm font-semibold text-text-primary">Sci inspector</div>
-        {status && (
-          <div className="text-[11px] text-text-secondary">
-            v{status.version} · {status.stats.auditTurns} turns ·{' '}
-            {status.stats.episodic + status.stats.semantic + status.stats.identity} memories
-          </div>
-        )}
-      </div>
+    <div className="flex flex-shrink-0 flex-col border-b border-border-medium px-3 pt-2.5 pb-2 gap-0.5">
+      {/* Single row: title + selectors + close */}
       <div className="flex items-center gap-2">
-        {tab === 'turns' && turnCount > 0 && (
+        <span className="text-sm font-semibold text-text-primary">Sci Inspector</span>
+        <div className="flex flex-1 items-center justify-end gap-1.5">
+          <ProjectSelector enabled={enabled} />
+          <ProfileSelector enabled={enabled} />
           <button
             type="button"
-            onClick={onExportAll}
-            disabled={exporting}
-            title="Export all visible turns as JSON"
-            className="
-              rounded border border-border-medium px-2 py-1
-              text-[10px] text-text-secondary
-              hover:bg-surface-secondary hover:text-text-primary
-              disabled:opacity-40
-            "
+            onClick={onClose}
+            aria-label="Close inspector"
+            className="rounded p-1 text-text-secondary hover:bg-surface-secondary hover:text-text-primary"
           >
-            {exporting ? '…' : '↓ All'}
+            ✕
           </button>
-        )}
-        <ProjectSelector enabled={enabled} />
-        <ProfileSelector enabled={enabled} />
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close inspector"
-          className="rounded-md px-2 py-1 text-text-secondary hover:bg-surface-secondary hover:text-text-primary"
-        >
-          ✕
-        </button>
+        </div>
       </div>
+      {/* Stats subtitle */}
+      {status && (
+        <div className="text-[11px] text-text-secondary">
+          v{status.version} · {status.stats.auditTurns} turns · {status.stats.episodic + status.stats.semantic + status.stats.identity} memories
+        </div>
+      )}
     </div>
   );
 }
