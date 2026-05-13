@@ -8,6 +8,10 @@ import store from '~/store';
 
 const threshold = 0.85;
 const debounceRate = 150;
+/** Distance from bottom (px) at which we consider the user "at the bottom" */
+const NEAR_BOTTOM_PX = 80;
+/** How often (ms) we push the scroll position down during active streaming */
+const STREAM_SCROLL_INTERVAL_MS = 100;
 
 export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
   const autoScroll = useRecoilValue(store.autoScroll);
@@ -25,6 +29,13 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
     timeoutIdRef.current = setTimeout(() => {
       setShowScrollButton(value);
     }, debounceRate);
+  }, []);
+
+  /** Returns true when the scroll container is within NEAR_BOTTOM_PX of its bottom */
+  const isNearBottom = useCallback(() => {
+    const el = scrollableRef.current;
+    if (!el) return false;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
   }, []);
 
   useEffect(() => {
@@ -71,25 +82,61 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
     },
   });
 
+  /**
+   * Sticky-scroll during streaming.
+   *
+   * Runs an interval while `isSubmitting` is true. Each tick:
+   * - If the user is near the bottom → re-engage auto-scroll (reset abortScroll)
+   *   and push the view to the bottom.
+   * - If the user has scrolled up significantly → honour abortScroll and do nothing.
+   *
+   * This replaces the old `messagesTree`-dep effect which only fired when the
+   * tree reference changed (not when text content streamed into existing nodes).
+   */
   useEffect(() => {
-    if (!messagesTree || messagesTree.length === 0) {
+    if (!isSubmitting || !scrollToBottom) {
       return;
     }
 
-    if (!messagesEndRef.current || !scrollableRef.current) {
-      return;
-    }
+    const tick = () => {
+      if (isNearBottom()) {
+        // User is at (or very near) the bottom — keep following the stream.
+        setAbortScroll(false);
+        scrollToBottom();
+      }
+      // If the user has scrolled up, abortScroll is already true (set by
+      // useMessageHelpers/useMessageProcess handleScroll). We just don't
+      // force-scroll them back down.
+    };
 
-    if (isSubmitting && scrollToBottom && abortScroll !== true) {
+    // Immediate first tick so there's no visible delay when a response starts.
+    if (!abortScroll) {
       scrollToBottom();
     }
 
-    return () => {
-      if (abortScroll === true) {
-        scrollToBottom && scrollToBottom.cancel();
+    const id = setInterval(tick, STREAM_SCROLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [isSubmitting, scrollToBottom, setAbortScroll, isNearBottom, abortScroll]);
+
+  /**
+   * Re-engage auto-scroll when the user scrolls back to the bottom mid-stream.
+   * The existing handleScroll in useMessageHelpers sets abortScroll=true when
+   * scrolling up; here we flip it back to false when they return to the bottom.
+   */
+  useEffect(() => {
+    if (!isSubmitting) return;
+    const el = scrollableRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      if (isNearBottom()) {
+        setAbortScroll(false);
       }
     };
-  }, [isSubmitting, messagesTree, scrollToBottom, abortScroll]);
+
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [isSubmitting, isNearBottom, setAbortScroll]);
 
   useEffect(() => {
     if (!messagesEndRef.current || !scrollableRef.current) {

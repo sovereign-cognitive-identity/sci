@@ -285,29 +285,36 @@ function Header({
   enabled: boolean;
 }) {
   return (
-    <div className="flex flex-shrink-0 flex-col border-b border-border-medium px-3 pt-2.5 pb-2 gap-0.5">
-      {/* Single row: title + selectors + close */}
-      <div className="flex items-center gap-2">
+    <div className="flex flex-shrink-0 flex-col border-b border-border-medium">
+      {/* Row 1: title + close */}
+      <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
         <span className="text-sm font-semibold text-text-primary">Sci Inspector</span>
-        <div className="flex flex-1 items-center justify-end gap-1.5">
-          <ProjectSelector enabled={enabled} />
-          <ProfileSelector enabled={enabled} />
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close inspector"
-            className="rounded p-1 text-text-secondary hover:bg-surface-secondary hover:text-text-primary"
-          >
-            ✕
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close inspector"
+          className="rounded p-1 text-text-secondary hover:bg-surface-secondary hover:text-text-primary"
+        >
+          ✕
+        </button>
       </div>
-      {/* Stats subtitle */}
-      {status && (
-        <div className="text-[11px] text-text-secondary">
-          v{status.version} · {status.stats.auditTurns} turns · {status.stats.episodic + status.stats.semantic + status.stats.identity} memories
-        </div>
-      )}
+
+      {/* Row 2: stats */}
+      <div className="px-3 pb-2">
+        <span className="text-[11px] text-text-secondary tabular-nums">
+          {status
+            ? `v${status.version} · ${status.stats.auditTurns} turns · ${status.stats.episodic + status.stats.semantic + status.stats.identity} memories`
+            : 'Connecting…'
+          }
+        </span>
+      </div>
+
+      {/* Row 3: context controls toolbar */}
+      <div className="flex items-center gap-2 border-t border-border-medium bg-surface-secondary/40 px-3 py-1.5">
+        <ProjectSelector enabled={enabled} />
+        <div className="flex-1" />
+        <ProfileSelector enabled={enabled} />
+      </div>
     </div>
   );
 }
