@@ -84,7 +84,7 @@ function DiffText({ text, mappings }: { text: string; mappings: TokenMapping[] }
             title={`masked as ${run.token}`}
             className="inline-flex flex-wrap items-baseline gap-0.5"
           >
-            <span className="line-through text-red-400 opacity-70">{run.original}</span>
+            <span className="rounded bg-red-500/15 px-0.5 text-red-400">{run.original}</span>
             <span className="rounded bg-green-500/15 px-0.5 font-mono text-[10px] text-green-400">
               {run.token}
             </span>
