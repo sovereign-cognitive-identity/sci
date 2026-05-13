@@ -313,13 +313,30 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         }
 
         // ── 4. Unigram place ─────────────────────────────────────────────
-        if PLACES_UNIGRAM.contains(t.norm.as_str()) && !is_allowlisted(t.surface) {
+        //
+        // SCI-203: places.txt stores US state abbreviations lowercase
+        // (`or`, `ok`, `in`, `oh`, `hi`, `me`, `id`). Because the
+        // lookup uses `t.norm` (always lowercased), the rule matches
+        // regardless of input case — so the sentence-initial conjunction
+        // "Or", the preposition "in", or the lowercase "or" all hit
+        // and get tagged as Oregon/Indiana. State abbreviations in real
+        // prose are ALWAYS all-caps ("Portland, OR", "Tulsa, OK"); full
+        // state names ("Oregon", "Indiana") are not common English
+        // words, so case can stay flexible for them. Gate short (≤3 char)
+        // matches behind an all-caps check.
+        if PLACES_UNIGRAM.contains(t.norm.as_str())
+            && !is_allowlisted(t.surface)
+            && short_place_passes_case_guard(t)
+        {
             push(&mut out, &mut seen, t.surface.to_string(), EntityType::Place);
             // Also catch "X, ST" — if next token (after stripping comma
             // from this one OR being a separate token) is a state abbr.
+            // Same case-guard applies to the second token, otherwise
+            // "Tulsa, Or" would still mis-tag the conjunction.
             if t.raw.ends_with(',')
                 && i + 1 < toks.len()
                 && PLACES_UNIGRAM.contains(toks[i + 1].norm.as_str())
+                && short_place_passes_case_guard(&toks[i + 1])
             {
                 push(
                     &mut out,
@@ -360,6 +377,24 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
 /// in the original text — preserves casing + punctuation between
 /// (e.g. "Casey Zandbergen" stays as the original two-word string).
 ///
+/// SCI-203: short (≤3 char) place candidates must be all-caps to
+/// match as state abbreviations. US state abbreviations in real prose
+/// are uniformly all-caps ("Portland, OR", "Tulsa, OK") — they're
+/// effectively a writing convention. The lowercase forms (`or`, `in`,
+/// `oh`, `ok`, `hi`, `me`, `id`) are common English words; the
+/// title-case forms (`Or`, `In`, `Oh`, `Hi`) are those words at
+/// sentence start. Only the all-caps form should ever resolve as a
+/// place. Full state names (≥4 chars: "Iowa", "Ohio" — wait, "Ohio"
+/// is 4 chars and unambiguous as a place name; this guard fires only
+/// at len ≤ 3 to keep "Ohio" / "Iowa" / "Utah" / etc. case-insensitive).
+fn short_place_passes_case_guard(t: &Token<'_>) -> bool {
+    if t.norm.len() > 3 {
+        return true;
+    }
+    !t.surface.is_empty()
+        && t.surface.chars().all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase())
+}
+
 /// Falls back to `start_surface + " " + end_surface` if locating
 /// either fails — matches the user's intent even if the slicing fails.
 /// Byte offset of `slice` within its parent `text`, or `None` if
@@ -628,5 +663,83 @@ mod tests {
                 "ORG text grabbed intervening prose: {o:?}",
             );
         }
+    }
+
+    // ── SCI-203 regression tests ──────────────────────────────────────────
+    //
+    // Short (≤3 char) place tokens must be all-caps to match. This stops
+    // common English words ("or", "in", "oh", "ok", "hi", "me", "id")
+    // from being mis-tagged as state abbreviations when they appear in
+    // their normal lowercase or sentence-initial title-case forms.
+
+    #[test]
+    fn lowercase_conjunction_not_tagged_as_oregon() {
+        let out = entities_of_kind("apples or oranges, please", EntityType::Place);
+        assert!(out.is_empty(), "tagged conjunction as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn sentence_initial_conjunction_not_tagged() {
+        let out = entities_of_kind("Or maybe we should reconsider.", EntityType::Place);
+        assert!(out.is_empty(), "tagged sentence-initial Or as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn allcaps_state_abbrev_still_tagged() {
+        // "Portland, OR is nice" — "OR" all-caps remains a valid match.
+        let out = entities_of_kind("Portland, OR is nice", EntityType::Place);
+        assert!(out.contains(&"OR".to_string()),
+            "expected OR to remain tagged as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn full_state_name_still_tags() {
+        // Full state names are longer than 3 chars so the case-guard
+        // doesn't apply. The broader non-cap skip at line 266 still
+        // requires capitalization — title-case "Oregon" should tag.
+        let out = entities_of_kind("Visit Oregon next week", EntityType::Place);
+        assert!(out.contains(&"Oregon".to_string()),
+            "expected Oregon to tag as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn preposition_in_not_tagged_as_indiana() {
+        let out = entities_of_kind("Files in the home directory", EntityType::Place);
+        assert!(out.is_empty(), "tagged preposition 'in' as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn sentence_initial_in_not_tagged() {
+        let out = entities_of_kind("In other news, hello.", EntityType::Place);
+        assert!(out.is_empty(), "tagged sentence-initial 'In' as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn lowercase_hi_not_tagged_as_hawaii() {
+        let out = entities_of_kind("hi everyone, welcome", EntityType::Place);
+        assert!(out.is_empty(), "tagged greeting 'hi' as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn comma_extension_also_case_guarded() {
+        // "Tulsa, Ok we'll see" — "Tulsa" tags as PLACE; the extension
+        // rule must NOT pick up sentence-initial "Ok" as Oklahoma.
+        let out = entities_of_kind("Tulsa, Ok we'll see", EntityType::Place);
+        assert!(out.contains(&"Tulsa".to_string()),
+            "expected Tulsa to be tagged; got {out:?}");
+        assert!(!out.contains(&"Ok".to_string()),
+            "title-case 'Ok' should not extend as Oklahoma; got {out:?}");
+    }
+
+    #[test]
+    fn mixed_real_and_fake_abbrevs() {
+        // "HI in CA, then or what" — HI and CA are real all-caps state
+        // refs and should tag. "in" preposition and "or" conjunction
+        // should NOT.
+        let out = entities_of_kind("HI in CA, then or what", EntityType::Place);
+        assert!(out.contains(&"HI".to_string()), "missing HI; got {out:?}");
+        assert!(out.contains(&"CA".to_string()), "missing CA; got {out:?}");
+        assert!(!out.contains(&"in".to_string()), "tagged 'in'; got {out:?}");
+        assert!(!out.contains(&"or".to_string()), "tagged 'or'; got {out:?}");
     }
 }
