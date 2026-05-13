@@ -11,6 +11,7 @@ import type {
   AuditTurn,
   AuditTurnDetail,
   HelperStatus,
+  MemoryGraphResponse,
   Profile,
   RecallResult,
 } from './types';
@@ -104,6 +105,12 @@ export function getActiveProject(): Promise<ActiveProject> {
 
 export function setActiveProject(path: string | null): Promise<ActiveProject> {
   return postJson<ActiveProject>('/sci/active_project', { path });
+}
+
+export function listMemories(profile?: string, limit = 200): Promise<MemoryGraphResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (profile) params.set('profile', profile);
+  return getJson<MemoryGraphResponse>(`/sci/memories?${params}`);
 }
 
 export function eventsUrl(): string {

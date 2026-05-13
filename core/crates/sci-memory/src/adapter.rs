@@ -237,6 +237,75 @@ impl LocalAdapter {
     /// ordered by cosine similarity instead of confidence — but for
     /// SCI-125 we only implement the confidence-ordered branch since
     /// the loader's only need is "give me everything tagged 'project'."
+    /// List episodic memories for a profile, newest-first. Used by the
+    /// memory graph admin endpoint.
+    pub fn list_episodic(
+        &self,
+        profile_id: Option<&str>,
+        limit:      usize,
+    ) -> Result<Vec<crate::types::EpisodicMemory>> {
+        let limit = limit as i64;
+        let mut stmt;
+        let rows = if let Some(pid) = profile_id {
+            stmt = self.conn.prepare(
+                "SELECT id, profile_id, content, source, agent_id,
+                        occurred_at, created_at, metadata
+                   FROM episodic_memories
+                  WHERE profile_id = ?1
+                  ORDER BY occurred_at DESC
+                  LIMIT ?2",
+            )?;
+            stmt.query_map(params![pid, limit], row_to_episodic)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt = self.conn.prepare(
+                "SELECT id, profile_id, content, source, agent_id,
+                        occurred_at, created_at, metadata
+                   FROM episodic_memories
+                  ORDER BY occurred_at DESC
+                  LIMIT ?1",
+            )?;
+            stmt.query_map(params![limit], row_to_episodic)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
+    }
+
+    /// List semantic nodes for a profile, highest-confidence-first.
+    pub fn list_semantic(
+        &self,
+        profile_id: Option<&str>,
+        limit:      usize,
+    ) -> Result<Vec<crate::types::SemanticNode>> {
+        let limit = limit as i64;
+        let mut stmt;
+        let rows = if let Some(pid) = profile_id {
+            stmt = self.conn.prepare(
+                "SELECT id, profile_id, content, category, confidence,
+                        decay_score, access_count, last_accessed_at,
+                        created_at, metadata
+                   FROM semantic_nodes
+                  WHERE profile_id = ?1
+                  ORDER BY confidence DESC, decay_score DESC
+                  LIMIT ?2",
+            )?;
+            stmt.query_map(params![pid, limit], row_to_semantic)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        } else {
+            stmt = self.conn.prepare(
+                "SELECT id, profile_id, content, category, confidence,
+                        decay_score, access_count, last_accessed_at,
+                        created_at, metadata
+                   FROM semantic_nodes
+                  ORDER BY confidence DESC, decay_score DESC
+                  LIMIT ?1",
+            )?;
+            stmt.query_map(params![limit], row_to_semantic)?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        Ok(rows)
+    }
+
     pub fn query_identity_facts(
         &self,
         category: Option<&str>,
@@ -509,6 +578,56 @@ fn row_to_audit_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditTurn> {
         status:       status.map(|s| s as u16),
         latency_ms:   latency_ms.map(|s| s as u64),
         error,
+    })
+}
+
+fn row_to_episodic(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::types::EpisodicMemory> {
+    let id:           String         = row.get(0)?;
+    let profile_id:   String         = row.get(1)?;
+    let content:      String         = row.get(2)?;
+    let source:       Option<String> = row.get(3)?;
+    let agent_id:     Option<String> = row.get(4)?;
+    let occurred_at:  String         = row.get(5)?;
+    let created_at:   String         = row.get(6)?;
+    let metadata_raw: String         = row.get(7)?;
+    let metadata: crate::types::Metadata =
+        serde_json::from_str(&metadata_raw).unwrap_or_default();
+    Ok(crate::types::EpisodicMemory {
+        id,
+        profile_id,
+        content,
+        source,
+        agent_id,
+        occurred_at: parse_datetime(&occurred_at).unwrap_or_else(Utc::now),
+        created_at:  parse_datetime(&created_at).unwrap_or_else(Utc::now),
+        metadata,
+    })
+}
+
+fn row_to_semantic(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::types::SemanticNode> {
+    let id:               String         = row.get(0)?;
+    let profile_id:       String         = row.get(1)?;
+    let content:          String         = row.get(2)?;
+    let category:         Option<String> = row.get(3)?;
+    let confidence:       f64            = row.get(4)?;
+    let decay_score:      f64            = row.get(5)?;
+    let access_count:     i64            = row.get(6)?;
+    let last_accessed_at: String         = row.get(7)?;
+    let created_at:       String         = row.get(8)?;
+    let metadata_raw:     String         = row.get(9)?;
+    let metadata: crate::types::Metadata =
+        serde_json::from_str(&metadata_raw).unwrap_or_default();
+    Ok(crate::types::SemanticNode {
+        id,
+        profile_id,
+        content,
+        category,
+        confidence,
+        decay_score,
+        access_count,
+        last_accessed_at: parse_datetime(&last_accessed_at).unwrap_or_else(Utc::now),
+        created_at:       parse_datetime(&created_at).unwrap_or_else(Utc::now),
+        metadata,
     })
 }
 

@@ -61,6 +61,24 @@ export interface RecallResult {
   occurredAt: string | null;
 }
 
+// ── Memory graph ─────────────────────────────────────────────────────────────
+
+export type MemoryNodeType = 'episodic' | 'semantic' | 'identity';
+
+export interface MemoryNode {
+  id:          string;
+  type:        MemoryNodeType;
+  content:     string;
+  category:    string | null;
+  confidence:  number | null;
+  occurredAt:  string | null;
+  createdAt:   string;
+}
+
+export interface MemoryGraphResponse {
+  nodes: MemoryNode[];
+}
+
 export interface StorageStats {
   episodic: number;
   semantic: number;

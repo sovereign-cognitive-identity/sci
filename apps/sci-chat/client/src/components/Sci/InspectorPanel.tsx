@@ -7,10 +7,12 @@
  * `flow_completed` so new turns appear live.
  *
  * SCI-54: search/filter bar over turn list; "Export all" JSON button.
+ * Memory graph tab: force-directed graph of all memories.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import MemoryGraph from './MemoryGraph';
 import ProfileSelector from './ProfileSelector';
 import ProjectSelector from './ProjectSelector';
 import RecallPreview from './RecallPreview';
@@ -21,9 +23,11 @@ import { getAuditTurn } from './api';
 
 const LS_OPEN_KEY  = 'sci.inspector.open';
 const LS_WIDTH_KEY = 'sci.inspector.width';
-const DEFAULT_WIDTH  = 380;
-const MIN_WIDTH      = 280;
-const MAX_WIDTH      = 720;
+const DEFAULT_WIDTH = 420;
+const MIN_WIDTH     = 320;
+const MAX_WIDTH     = 800;
+
+type Tab = 'turns' | 'graph';
 
 function readBoolLs(key: string, fallback: boolean): boolean {
   try {
@@ -63,7 +67,8 @@ async function exportAllTurns(turns: AuditTurn[]) {
 export default function InspectorPanel() {
   const [open,  setOpen]  = useState(() => readBoolLs(LS_OPEN_KEY, false));
   const [width, setWidth] = useState(() => readNumberLs(LS_WIDTH_KEY, DEFAULT_WIDTH));
-  const [search, setSearch] = useState('');
+  const [tab,   setTab]   = useState<Tab>('turns');
+  const [search, setSearch]   = useState('');
   const [exporting, setExporting] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -77,18 +82,16 @@ export default function InspectorPanel() {
     catch { /* ignore */ }
   }, [width]);
 
-  // Clear search when closing so it doesn't linger on reopen.
   useEffect(() => {
     if (!open) setSearch('');
   }, [open]);
 
-  const active   = useActiveProfile(open);
-  const profile  = active.data?.name;
-  const turns    = useAuditTurns(50, profile);
-  const status   = useHelperStatus(open);
+  const active  = useActiveProfile(open);
+  const profile = active.data?.name;
+  const turns   = useAuditTurns(50, profile);
+  const status  = useHelperStatus(open);
   useAuditEvents(open, turns.refetch);
 
-  // Derive visible count for the search summary badge.
   const visibleCount = useMemo(() => {
     if (!turns.data || !search) return turns.data?.length ?? 0;
     const q = search.toLowerCase();
@@ -103,11 +106,8 @@ export default function InspectorPanel() {
   const handleExportAll = async () => {
     if (!turns.data || turns.data.length === 0) return;
     setExporting(true);
-    try {
-      await exportAllTurns(turns.data);
-    } finally {
-      setExporting(false);
-    }
+    try { await exportAllTurns(turns.data); }
+    finally { setExporting(false); }
   };
 
   return (
@@ -117,101 +117,137 @@ export default function InspectorPanel() {
         <aside
           className="
             fixed right-0 top-0 z-40 flex h-full
-            border-l border-border-medium bg-surface-primary
-            shadow-xl
+            border-l border-border-medium bg-surface-primary shadow-xl
           "
           style={{ width }}
-          aria-label="Sci flight recorder"
+          aria-label="Sci inspector"
         >
           <Resizer onResize={(delta) => {
             setWidth((w) => Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, w - delta)));
           }} />
+
           <div className="flex h-full flex-1 flex-col overflow-hidden">
+            {/* Header */}
             <Header
               status={status.data}
               onClose={() => setOpen(false)}
               enabled={open}
+              tab={tab}
               turnCount={turns.data?.length ?? 0}
               onExportAll={handleExportAll}
               exporting={exporting}
             />
 
-            {/* Search bar */}
-            <div className="border-b border-border-medium px-3 py-2">
-              <div className="relative">
-                <span
-                  aria-hidden
-                  className="absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary select-none"
+            {/* Tab bar */}
+            <div className="flex flex-shrink-0 border-b border-border-medium">
+              {(['turns', 'graph'] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTab(t)}
+                  className={`
+                    flex-1 py-1.5 text-xs font-medium transition-colors
+                    ${tab === t
+                      ? 'border-b-2 border-indigo-500 text-text-primary'
+                      : 'text-text-secondary hover:text-text-primary'
+                    }
+                  `}
                 >
-                  🔍
-                </span>
-                <input
-                  ref={searchRef}
-                  type="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Filter by host, model, or text…"
-                  aria-label="Filter turns"
-                  className="
-                    w-full rounded-md border border-border-medium bg-surface-secondary
-                    py-1 pl-7 pr-3 text-xs text-text-primary placeholder-text-secondary
-                    focus:outline-none focus:ring-1 focus:ring-blue-500
-                  "
-                />
-                {search && (
-                  <button
-                    type="button"
-                    onClick={() => setSearch('')}
-                    aria-label="Clear search"
-                    className="
-                      absolute right-2 top-1/2 -translate-y-1/2
-                      text-text-secondary hover:text-text-primary
-                    "
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-              {search && turns.data && (
-                <p className="mt-1 text-[10px] text-text-secondary">
-                  {visibleCount} of {turns.data.length} turns match
-                </p>
-              )}
-            </div>
-
-            <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
-              <RecallPreview enabled={open} />
-              {turns.isLoading && (
-                <p className="text-sm text-text-secondary">Loading turns…</p>
-              )}
-              {turns.error && (
-                <p className="text-sm text-red-500">
-                  Sci helper unreachable at <code>127.0.0.1:3002</code>.
-                  Is sci-helper running? ({String(turns.error)})
-                </p>
-              )}
-              {turns.data && turns.data.length === 0 && (
-                <p className="text-sm text-text-secondary">
-                  No turns yet for profile{' '}
-                  <span className="font-mono">{profile ?? 'work'}</span>.
-                  {' '}Send a chat to start the flight recorder.
-                </p>
-              )}
-              {turns.data && turns.data.length > 0 && search && visibleCount === 0 && (
-                <p className="text-sm text-text-secondary">
-                  No turns match <span className="font-mono">"{search}"</span>.
-                </p>
-              )}
-              {turns.data?.map((t) => (
-                <TurnCard key={t.id} turn={t} searchQuery={search} />
+                  {t === 'turns' ? '✈️ Turns' : '🧠 Memory'}
+                </button>
               ))}
             </div>
+
+            {/* ── Turns tab ── */}
+            {tab === 'turns' && (
+              <>
+                {/* Search bar */}
+                <div className="flex-shrink-0 border-b border-border-medium px-3 py-2">
+                  <div className="relative">
+                    <span
+                      aria-hidden
+                      className="absolute left-2 top-1/2 -translate-y-1/2 text-text-secondary select-none"
+                    >
+                      🔍
+                    </span>
+                    <input
+                      ref={searchRef}
+                      type="search"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Filter by host, model, or text…"
+                      aria-label="Filter turns"
+                      className="
+                        w-full rounded-md border border-border-medium bg-surface-secondary
+                        py-1 pl-7 pr-3 text-xs text-text-primary placeholder-text-secondary
+                        focus:outline-none focus:ring-1 focus:ring-blue-500
+                      "
+                    />
+                    {search && (
+                      <button
+                        type="button"
+                        onClick={() => setSearch('')}
+                        aria-label="Clear search"
+                        className="
+                          absolute right-2 top-1/2 -translate-y-1/2
+                          text-text-secondary hover:text-text-primary
+                        "
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  {search && turns.data && (
+                    <p className="mt-1 text-[10px] text-text-secondary">
+                      {visibleCount} of {turns.data.length} turns match
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
+                  <RecallPreview enabled={open} />
+                  {turns.isLoading && (
+                    <p className="text-sm text-text-secondary">Loading turns…</p>
+                  )}
+                  {turns.error && (
+                    <p className="text-sm text-red-500">
+                      Sci helper unreachable at{' '}
+                      <code>127.0.0.1:3002</code>.
+                      Is sci-helper running? ({String(turns.error)})
+                    </p>
+                  )}
+                  {turns.data && turns.data.length === 0 && (
+                    <p className="text-sm text-text-secondary">
+                      No turns yet for profile{' '}
+                      <span className="font-mono">{profile ?? 'work'}</span>.
+                      {' '}Send a chat to start the flight recorder.
+                    </p>
+                  )}
+                  {turns.data && turns.data.length > 0 && search && visibleCount === 0 && (
+                    <p className="text-sm text-text-secondary">
+                      No turns match{' '}
+                      <span className="font-mono">"{search}"</span>.
+                    </p>
+                  )}
+                  {turns.data?.map((t) => (
+                    <TurnCard key={t.id} turn={t} searchQuery={search} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {/* ── Memory graph tab ── */}
+            {tab === 'graph' && (
+              <MemoryGraph profile={profile} enabled={open && tab === 'graph'} />
+            )}
           </div>
         </aside>
       )}
     </>
   );
 }
+
+// ── Sub-components ────────────────────────────────────────────────────────────
 
 function Toggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
@@ -238,30 +274,32 @@ function Header({
   status,
   onClose,
   enabled,
+  tab,
   turnCount,
   onExportAll,
   exporting,
 }: {
-  status: import('./types').HelperStatus | undefined;
-  onClose: () => void;
-  enabled: boolean;
-  turnCount: number;
+  status:      import('./types').HelperStatus | undefined;
+  onClose:     () => void;
+  enabled:     boolean;
+  tab:         Tab;
+  turnCount:   number;
   onExportAll: () => void;
-  exporting: boolean;
+  exporting:   boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2 border-b border-border-medium px-3 py-2">
+    <div className="flex flex-shrink-0 items-center justify-between gap-2 border-b border-border-medium px-3 py-2">
       <div className="flex min-w-0 flex-col">
-        <div className="text-sm font-semibold text-text-primary">Sci flight recorder</div>
+        <div className="text-sm font-semibold text-text-primary">Sci inspector</div>
         {status && (
           <div className="text-[11px] text-text-secondary">
             v{status.version} · {status.stats.auditTurns} turns ·{' '}
-            {status.stats.episodic} memories
+            {status.stats.episodic + status.stats.semantic + status.stats.identity} memories
           </div>
         )}
       </div>
       <div className="flex items-center gap-2">
-        {turnCount > 0 && (
+        {tab === 'turns' && turnCount > 0 && (
           <button
             type="button"
             onClick={onExportAll}
@@ -283,10 +321,7 @@ function Header({
           type="button"
           onClick={onClose}
           aria-label="Close inspector"
-          className="
-            rounded-md px-2 py-1 text-text-secondary
-            hover:bg-surface-secondary hover:text-text-primary
-          "
+          className="rounded-md px-2 py-1 text-text-secondary hover:bg-surface-secondary hover:text-text-primary"
         >
           ✕
         </button>
@@ -299,26 +334,20 @@ function Resizer({ onResize }: { onResize: (deltaX: number) => void }) {
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     let lastX = e.clientX;
-    const onMove = (ev: MouseEvent) => {
-      onResize(ev.clientX - lastX);
-      lastX = ev.clientX;
-    };
-    const onUp = () => {
+    const onMove = (ev: MouseEvent) => { onResize(ev.clientX - lastX); lastX = ev.clientX; };
+    const onUp   = () => {
       window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('mouseup',   onUp);
     };
     window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    window.addEventListener('mouseup',   onUp);
   };
   return (
     <div
       role="separator"
       aria-orientation="vertical"
       onMouseDown={onMouseDown}
-      className="
-        absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize
-        bg-transparent hover:bg-border-medium
-      "
+      className="absolute left-0 top-0 z-10 h-full w-1 cursor-col-resize bg-transparent hover:bg-border-medium"
     />
   );
 }

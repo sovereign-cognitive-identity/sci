@@ -14,6 +14,7 @@
 //!   GET /sci/audit_turns/count?original=  — count_token_original
 //!   GET /sci/profiles                     — profile list
 //!   GET /sci/recall?query=&profile=&limit — recall preview (no store)
+//!   GET /sci/memories?profile=&limit=     — all memories for graph
 //!   GET /sci/events                       — SSE event stream
 //!
 //! Bind is hardcoded to `127.0.0.1` (never `0.0.0.0`); the localhost
@@ -75,6 +76,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/sci/active_profile",    get(get_active_profile).post(set_active_profile))
         .route("/sci/active_project",    get(get_active_project).post(set_active_project))
         .route("/sci/recall",            get(preview_recall))
+        .route("/sci/memories",           get(list_memories))
         .route("/sci/events",            get(events_stream))
         .layer(cors)
         .with_state(state)
@@ -292,6 +294,90 @@ async fn set_active_project(
         None    => tracing::info!("active project cleared"),
     }
     Ok(Json(ActiveProjectResponse { path: normalized }))
+}
+
+// ── /sci/memories ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ListMemoriesQuery {
+    profile: Option<String>,
+    /// Default 200, clamped to 500.
+    limit:   Option<usize>,
+}
+
+/// Wire shape returned for every node in the graph. Flattened to a single
+/// type so the frontend doesn't need to discriminate three separate arrays.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryNode {
+    id:         String,
+    #[serde(rename = "type")]
+    kind:       &'static str,
+    content:    String,
+    category:   Option<String>,
+    confidence: Option<f64>,
+    #[serde(rename = "occurredAt")]
+    occurred_at: Option<String>,
+    #[serde(rename = "createdAt")]
+    created_at:  String,
+}
+
+#[derive(Serialize)]
+struct MemoryGraphResponse {
+    nodes: Vec<MemoryNode>,
+}
+
+async fn list_memories(
+    State(s): State<AdminState>,
+    Query(q): Query<ListMemoriesQuery>,
+) -> Result<Json<MemoryGraphResponse>, AdminError> {
+    let limit = q.limit.unwrap_or(200).min(500);
+    let nodes = with_storage(&s, |a| {
+        let profile_id = resolve_profile_id(a, q.profile.as_deref())?;
+        let pid = profile_id.as_deref();
+
+        let mut nodes: Vec<MemoryNode> = Vec::new();
+
+        for e in a.list_episodic(pid, limit)? {
+            nodes.push(MemoryNode {
+                id:          e.id,
+                kind:        "episodic",
+                content:     e.content,
+                category:    None,
+                confidence:  None,
+                occurred_at: Some(e.occurred_at.to_rfc3339()),
+                created_at:  e.created_at.to_rfc3339(),
+            });
+        }
+
+        for s in a.list_semantic(pid, limit)? {
+            nodes.push(MemoryNode {
+                id:          s.id,
+                kind:        "semantic",
+                content:     s.content,
+                category:    s.category,
+                confidence:  Some(s.confidence),
+                occurred_at: None,
+                created_at:  s.created_at.to_rfc3339(),
+            });
+        }
+
+        for f in a.query_identity_facts(None, limit)? {
+            nodes.push(MemoryNode {
+                id:          f.id,
+                kind:        "identity",
+                content:     f.content,
+                category:    f.category,
+                confidence:  Some(f.confidence),
+                occurred_at: None,
+                created_at:  f.created_at.to_rfc3339(),
+            });
+        }
+
+        Ok(nodes)
+    })?;
+
+    Ok(Json(MemoryGraphResponse { nodes }))
 }
 
 // ── /sci/recall ────────────────────────────────────────────────────────────
