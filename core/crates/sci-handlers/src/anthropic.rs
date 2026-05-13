@@ -1432,6 +1432,46 @@ fn trim_context_window(body: &mut Value, raw_body_len: usize) {
     messages.drain(1..keep_from);
     messages[0] = head;
 
+    // After trimming, collect all tool_use IDs that are still present in
+    // the kept assistant messages. Any tool_result block in a kept user
+    // message whose tool_use_id is NOT in this set is an orphan — it
+    // references a tool call that was just dropped. Anthropic returns
+    // `400 unexpected tool_use_id in tool_result` for these.
+    let live_tool_use_ids: std::collections::HashSet<String> = messages
+        .iter()
+        .filter(|m| m.get("role").and_then(|v| v.as_str()) == Some("assistant"))
+        .filter_map(|m| m.get("content").and_then(|v| v.as_array()))
+        .flat_map(|blocks| blocks.iter())
+        .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+        .filter_map(|b| b.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    let mut orphaned = 0u32;
+    for msg in messages.iter_mut() {
+        if msg.get("role").and_then(|v| v.as_str()) != Some("user") { continue; }
+        let Some(content) = msg.get_mut("content").and_then(|v| v.as_array_mut()) else { continue; };
+        let before = content.len();
+        content.retain(|block| {
+            if block.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+                return true; // keep non-tool_result blocks
+            }
+            let Some(id) = block.get("tool_use_id").and_then(|v| v.as_str()) else {
+                return true; // no id → keep (let orphan_repair handle it)
+            };
+            live_tool_use_ids.contains(id) // keep only if tool_use still exists
+        });
+        orphaned += (before - content.len()) as u32;
+    }
+
+    if orphaned > 0 {
+        tracing::warn!(
+            target: "sci_handlers::context",
+            orphaned,
+            "removed {} orphan tool_result block(s) after trim (their tool_use was in the dropped range)",
+            orphaned,
+        );
+    }
+
     // Inject the summary as messages[1] — sits between the artifact
     // instructions and the retained conversation history. The anonymizer
     // processes it as a normal user message, masking any PII.
@@ -1449,9 +1489,11 @@ fn trim_context_window(body: &mut Value, raw_body_len: usize) {
         kept       = messages.len(),
         summarised = keep_from - 1,
         had_summary,
-        "context window trimmed: {} → {} messages ({} dropped{})",
+        orphaned_removed = orphaned,
+        "context window trimmed: {} → {} messages ({} dropped{}{})",
         total, messages.len(), keep_from - 1,
-        if had_summary { ", prior-context summary injected" } else { "" }
+        if had_summary { ", prior-context summary injected" } else { "" },
+        if orphaned > 0 { format!(", {} orphan tool_results removed", orphaned) } else { String::new() },
     );
 }
 
