@@ -42,6 +42,24 @@ use crate::token_map::{Entity, EntityType};
 use once_cell::sync::Lazy;
 use std::collections::HashSet;
 
+/// SCI-203b: state abbreviations that are ALSO common English words
+/// when written in ALL-CAPS. For these, all-caps alone is not sufficient
+/// to distinguish "Portland, OR" (Oregon) from "A OR B" (logical or).
+/// The unigram PLACE rule requires a preceding-comma context for tokens
+/// whose norm is in this set.
+static AMBIGUOUS_ABBREVS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    // norm (lowercase) of the ambiguous ones — common words in all-caps:
+    //   OR = conjunction/logical   IN = preposition
+    //   OK = agreement             OH = interjection
+    //   HI = greeting              ME = pronoun
+    //   ID = identification        LA = musical/exclamation
+    //   MA = informal "mom"        PA = informal "dad"
+    //   CO = company prefix        DC = Washington DC / direct current
+    ["or", "in", "ok", "oh", "hi", "me", "id",
+     "la", "ma", "pa", "co", "dc"]
+        .into_iter().collect()
+});
+
 // ── Lexicons ──────────────────────────────────────────────────────────────
 
 const FIRST_NAMES_RAW: &str = include_str!("data/first_names.txt");
@@ -323,20 +341,35 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         // lookup uses `t.norm` (always lowercased), the rule matches
         // regardless of input case — so the sentence-initial conjunction
         // "Or", the preposition "in", or the lowercase "or" all hit
-        // and get tagged as Oregon/Indiana. State abbreviations in real
-        // prose are ALWAYS all-caps ("Portland, OR", "Tulsa, OK"); full
-        // state names ("Oregon", "Indiana") are not common English
-        // words, so case can stay flexible for them. Gate short (≤3 char)
-        // matches behind an all-caps check.
+        // and get tagged as Oregon/Indiana.
+        //
+        // Two-tier guard for short (≤3 char) tokens:
+        //
+        //   Tier 1 — All-caps required (SCI-203):
+        //     Real state abbreviations in prose are uniformly all-caps
+        //     ("Portland, OR", "Tulsa, OK"). Lowercase forms (`or`, `in`)
+        //     and title-case forms (`Or`, `In`) are blocked.
+        //
+        //   Tier 2 — Comma-preceding required for AMBIGUOUS abbreviations:
+        //     A second set of abbreviations (`or`, `in`, `ok`, `oh`, `hi`,
+        //     `me`, `id`) are ALSO common English words when written in
+        //     ALL-CAPS (logical "OR", pronoun "ME", greeting "HI", etc.)
+        //     and appear frequently in tool descriptions, error messages,
+        //     and system prompt text. For these, require a comma before the
+        //     token ("Portland, OR") — the canonical address form — to
+        //     distinguish state abbreviations from operators/common words.
+        //     Unambiguous codes like CA, TX, NY don't need this extra gate.
         if PLACES_UNIGRAM.contains(t.norm.as_str())
             && !is_allowlisted(t.surface)
             && short_place_passes_case_guard(t)
+            && !ambiguous_abbrev_needs_comma(t, i, &toks)
         {
             push(&mut out, &mut seen, t.surface.to_string(), EntityType::Place);
-            // Also catch "X, ST" — if next token (after stripping comma
-            // from this one OR being a separate token) is a state abbr.
-            // Same case-guard applies to the second token, otherwise
-            // "Tulsa, Or" would still mis-tag the conjunction.
+            // "X, ST" — if this token ends with comma and the next is a
+            // state abbr, push the state too. Same two-tier guard on the
+            // next token: must pass case-guard, and if it's an ambiguous
+            // abbreviation, it must follow a comma (which it does — this
+            // exact path requires the current token to end with a comma).
             if t.raw.ends_with(',')
                 && i + 1 < toks.len()
                 && PLACES_UNIGRAM.contains(toks[i + 1].norm.as_str())
@@ -397,6 +430,22 @@ fn short_place_passes_case_guard(t: &Token<'_>) -> bool {
     }
     !t.surface.is_empty()
         && t.surface.chars().all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase())
+}
+
+/// Returns true when the token is an AMBIGUOUS abbreviation that needs a
+/// comma-preceding token to be treated as a state code.
+///
+/// Call site: unigram PLACE rule. If this returns true, skip the tag —
+/// the comma-extension path will handle "Portland, OR" correctly when it
+/// encounters "Portland," as the current token.
+fn ambiguous_abbrev_needs_comma(t: &Token<'_>, i: usize, toks: &[Token<'_>]) -> bool {
+    if !AMBIGUOUS_ABBREVS.contains(t.norm.as_str()) {
+        return false; // not ambiguous — normal all-caps check sufficient
+    }
+    // Ambiguous: require that the PRECEDING token ends with a comma
+    // (the "City, STATE" address pattern). If there's no prior token,
+    // or the prior token doesn't end with a comma, block this match.
+    i == 0 || !toks[i - 1].raw.ends_with(',')
 }
 
 /// Falls back to `start_surface + " " + end_surface` if locating
@@ -746,10 +795,40 @@ mod tests {
 
     #[test]
     fn allcaps_state_abbrev_still_tagged() {
-        // "Portland, OR is nice" — "OR" all-caps remains a valid match.
+        // "Portland, OR is nice" — "OR" after comma is a valid match.
         let out = entities_of_kind("Portland, OR is nice", EntityType::Place);
         assert!(out.contains(&"OR".to_string()),
-            "expected OR to remain tagged as PLACE; got {out:?}");
+            "expected OR after comma to remain tagged as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn allcaps_or_without_comma_not_tagged() {
+        // "A OR B" — all-caps OR without a preceding comma is a logical
+        // operator, not the Oregon state abbreviation.
+        let out = entities_of_kind("PACKAGES ARE INSTALLED OR ABLE TO BE IMPORTED", EntityType::Place);
+        assert!(!out.contains(&"OR".to_string()),
+            "all-caps OR without comma context tagged as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn librechat_artifact_or_not_tagged() {
+        // Reproduction of the production failure: LibreChat artifact
+        // instructions contain "OR" as a logical operator in all-caps.
+        let text = r#"imports like `import { useState } from 'react'` OR `import React from 'react'` are NOT needed"#;
+        let out = entities_of_kind(text, EntityType::Place);
+        assert!(!out.contains(&"OR".to_string()),
+            "logical OR in artifact instructions tagged as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn unambiguous_state_code_still_tagged() {
+        // CA and TX are unambiguous — all-caps alone should be sufficient.
+        let ca_out = entities_of_kind("Visiting CA next week", EntityType::Place);
+        assert!(ca_out.contains(&"CA".to_string()),
+            "CA not tagged; got {ca_out:?}");
+        let tx_out = entities_of_kind("Moving to TX in spring", EntityType::Place);
+        assert!(tx_out.contains(&"TX".to_string()),
+            "TX not tagged; got {tx_out:?}");
     }
 
     #[test]
@@ -793,13 +872,13 @@ mod tests {
 
     #[test]
     fn mixed_real_and_fake_abbrevs() {
-        // "HI in CA, then or what" — HI and CA are real all-caps state
-        // refs and should tag. "in" preposition and "or" conjunction
-        // should NOT.
+        // CA is unambiguous (not a common English word) and tags standalone.
+        // HI, OR, IN are ambiguous (greeting/logical-or/preposition) and
+        // require comma context — they should NOT tag standalone.
         let out = entities_of_kind("HI in CA, then or what", EntityType::Place);
-        assert!(out.contains(&"HI".to_string()), "missing HI; got {out:?}");
-        assert!(out.contains(&"CA".to_string()), "missing CA; got {out:?}");
-        assert!(!out.contains(&"in".to_string()), "tagged 'in'; got {out:?}");
-        assert!(!out.contains(&"or".to_string()), "tagged 'or'; got {out:?}");
+        assert!(out.contains(&"CA".to_string()), "CA should tag; got {out:?}");
+        assert!(!out.contains(&"HI".to_string()), "HI without comma should not tag; got {out:?}");
+        assert!(!out.contains(&"in".to_string()), "lowercase 'in' should not tag; got {out:?}");
+        assert!(!out.contains(&"or".to_string()), "lowercase 'or' should not tag; got {out:?}");
     }
 }
