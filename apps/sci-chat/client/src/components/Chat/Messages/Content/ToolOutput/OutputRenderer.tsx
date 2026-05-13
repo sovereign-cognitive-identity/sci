@@ -1,4 +1,6 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useContext } from 'react';
+import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
+import { ThemeContext, isDark } from '@librechat/client';
 import copy from 'copy-to-clipboard';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize } from '~/hooks';
@@ -27,6 +29,68 @@ export function isError(text: string): boolean {
 
 function isStructuredText(text: string): boolean {
   return text.includes('\n') || text.includes('{') || text.includes(':');
+}
+
+function isDiff(text: string): boolean {
+  const lines = text.split('\n').slice(0, 10);
+  const markers = lines.filter(
+    (l) =>
+      l.startsWith('---') ||
+      l.startsWith('+++') ||
+      l.startsWith('@@') ||
+      l.startsWith('diff '),
+  );
+  return markers.length >= 2;
+}
+
+/**
+ * Parses a unified diff string into { oldText, newText } suitable for react-diff-viewer-continued.
+ * Strips the --- / +++ header lines and reconstructs both sides from +/- lines.
+ */
+function parseUnifiedDiff(diff: string): { oldText: string; newText: string; filename: string } {
+  const lines = diff.split('\n');
+  const oldLines: string[] = [];
+  const newLines: string[] = [];
+  let filename = '';
+
+  for (const line of lines) {
+    if (line.startsWith('--- ')) {
+      // Extract filename from "--- a/path/to/file"
+      const match = line.match(/^---\s+(?:a\/)?(.+)/);
+      if (match && match[1] && match[1] !== '/dev/null') {
+        filename = match[1];
+      }
+      continue;
+    }
+    if (line.startsWith('+++ ')) {
+      if (!filename) {
+        const match = line.match(/^\+\+\+\s+(?:b\/)?(.+)/);
+        if (match && match[1] && match[1] !== '/dev/null') {
+          filename = match[1];
+        }
+      }
+      continue;
+    }
+    if (line.startsWith('@@')) {
+      // Keep hunk boundary as a context line on both sides so line numbers align
+      continue;
+    }
+    if (line.startsWith('diff ') || line.startsWith('index ')) {
+      continue;
+    }
+    if (line.startsWith('-')) {
+      oldLines.push(line.slice(1));
+    } else if (line.startsWith('+')) {
+      newLines.push(line.slice(1));
+    } else {
+      // Context line — present on both sides
+      const content = line.startsWith(' ') ? line.slice(1) : line;
+      oldLines.push(content);
+      newLines.push(content);
+    }
+  }
+
+  return { oldText: oldLines.join('\n'), newText: newLines.join('\n'), filename };
 }
 
 interface ExtractedText {
@@ -91,6 +155,9 @@ interface OutputRendererProps {
 
 export default function OutputRenderer({ text }: OutputRendererProps) {
   const localize = useLocalize();
+  const { theme } = useContext(ThemeContext);
+  const useDarkTheme = isDark(theme);
+
   const { text: displayText, rawError, error, isJson } = useMemo(() => extractText(text), [text]);
   const [isExpanded, setIsExpanded] = useState(false);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
@@ -102,12 +169,22 @@ export default function OutputRenderer({ text }: OutputRendererProps) {
     setTimeout(() => setIsCopied(false), 3000);
   }, [displayText]);
 
+  const isDiffOutput = useMemo(
+    () => !error && !isJson && isDiff(displayText),
+    [error, isJson, displayText],
+  );
+
+  const parsedDiff = useMemo(
+    () => (isDiffOutput ? parseUnifiedDiff(displayText) : null),
+    [isDiffOutput, displayText],
+  );
+
   if (!displayText) {
     return null;
   }
 
   const lines = displayText.split('\n');
-  const needsTruncation = lines.length > TRUNCATE_LINES;
+  const needsTruncation = !isDiffOutput && lines.length > TRUNCATE_LINES;
   const visibleText =
     needsTruncation && !isExpanded ? lines.slice(0, VISIBLE_LINES).join('\n') : displayText;
   const structured = !isJson && isStructuredText(displayText);
@@ -116,10 +193,65 @@ export default function OutputRenderer({ text }: OutputRendererProps) {
     <div className="relative">
       {isJson ? (
         <pre className="max-h-[300px] overflow-auto rounded text-xs">
-          <code className="hljs language-json !whitespace-pre-wrap !break-words">
-            {visibleText}
-          </code>
+          <code className="hljs language-json !whitespace-pre-wrap !break-words">{visibleText}</code>
         </pre>
+      ) : isDiffOutput && parsedDiff ? (
+        <div className="max-h-[400px] overflow-auto rounded text-xs [&_pre]:!text-xs [&_td]:!py-0">
+          <ReactDiffViewer
+            oldValue={parsedDiff.oldText}
+            newValue={parsedDiff.newText}
+            splitView={false}
+            compareMethod={DiffMethod.WORDS}
+            useDarkTheme={useDarkTheme}
+            hideLineNumbers={false}
+            showDiffOnly={true}
+            extraLinesSurroundingDiff={2}
+            disableWorker={true}
+            leftTitle={parsedDiff.filename || undefined}
+            styles={{
+              variables: {
+                dark: {
+                  diffViewerBackground: 'transparent',
+                  diffViewerColor: 'inherit',
+                  addedBackground: 'rgba(34,197,94,0.12)',
+                  addedColor: 'rgb(134,239,172)',
+                  removedBackground: 'rgba(239,68,68,0.12)',
+                  removedColor: 'rgb(252,165,165)',
+                  wordAddedBackground: 'rgba(34,197,94,0.3)',
+                  wordRemovedBackground: 'rgba(239,68,68,0.3)',
+                  addedGutterBackground: 'rgba(34,197,94,0.08)',
+                  removedGutterBackground: 'rgba(239,68,68,0.08)',
+                  gutterBackground: 'transparent',
+                  gutterBackgroundDark: 'transparent',
+                  codeFoldBackground: 'transparent',
+                  emptyLineBackground: 'transparent',
+                  gutterColor: 'rgba(156,163,175,0.5)',
+                  addedGutterColor: 'rgb(134,239,172)',
+                  removedGutterColor: 'rgb(252,165,165)',
+                },
+                light: {
+                  diffViewerBackground: 'transparent',
+                  diffViewerColor: 'inherit',
+                  addedBackground: 'rgba(34,197,94,0.08)',
+                  addedColor: 'rgb(21,128,61)',
+                  removedBackground: 'rgba(239,68,68,0.08)',
+                  removedColor: 'rgb(185,28,28)',
+                  wordAddedBackground: 'rgba(34,197,94,0.25)',
+                  wordRemovedBackground: 'rgba(239,68,68,0.25)',
+                  addedGutterBackground: 'rgba(34,197,94,0.05)',
+                  removedGutterBackground: 'rgba(239,68,68,0.05)',
+                  gutterBackground: 'transparent',
+                  gutterBackgroundDark: 'transparent',
+                  codeFoldBackground: 'transparent',
+                  emptyLineBackground: 'transparent',
+                  gutterColor: 'rgba(107,114,128,0.6)',
+                  addedGutterColor: 'rgb(21,128,61)',
+                  removedGutterColor: 'rgb(185,28,28)',
+                },
+              },
+            }}
+          />
+        </div>
       ) : (
         <pre
           className={cn(

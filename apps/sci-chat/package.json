@@ -187,5 +187,8 @@
       "admin/",
       "packages/"
     ]
+  },
+  "dependencies": {
+    "react-diff-viewer-continued": "^4.2.2"
   }
 }
