@@ -21,10 +21,10 @@ import type { TInterfaceConfig, TEndpointsConfig } from 'librechat-data-provider
 import type { NavLink } from '~/common';
 import {
   useAgentCapabilities,
+  useMCPServerManager,
   useGetAgentsConfig,
   useHasAccess,
 } from '~/hooks';
-import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
 import MCPBuilderPanel from '~/components/SidePanel/MCPBuilder/MCPBuilderPanel';
 import AgentPanelSwitch from '~/components/SidePanel/Agents/AgentPanelSwitch';
 import BookmarkPanel from '~/components/SidePanel/Bookmarks/BookmarkPanel';
@@ -88,7 +88,7 @@ export default function useSideNavLinks({
     permissionType: PermissionTypes.MCP_SERVERS,
     permission: Permissions.CREATE,
   });
-  const { mcpServerManager: { availableMCPServers } } = useMCPServerManagerContext();
+  const { availableMCPServers } = useMCPServerManager();
 
   const { agentsConfig } = useGetAgentsConfig({ endpointsConfig });
   const { skillsEnabled } = useAgentCapabilities(agentsConfig?.capabilities);
