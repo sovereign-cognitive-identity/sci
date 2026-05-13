@@ -45,6 +45,16 @@ pub async fn handle_anthropic_messages(
     let mut body: Value = serde_json::from_slice(&req.body)
         .map_err(|e| HandlerError::Malformed(format!("body JSON: {e}")))?;
 
+    // Context-window trim: long-running tool-heavy sessions accumulate MB of
+    // conversation history. Each 1 MB of body ≈ 250k tokens — expensive and
+    // slow. When the serialised body exceeds the threshold, trim the messages
+    // array down to a sliding window of the most-recent turns, keeping:
+    //   • messages[0]  — LibreChat artifact-instructions (always present)
+    //   • last CONTEXT_WINDOW_KEEP turns
+    // Sci memory recall injects the relevant long-term context at every turn,
+    // so trimming the raw message history is safe.
+    trim_context_window(&mut body, req.body.len());
+
     // Capture the original (pre-anonymization) user text BEFORE we mask
     // the body — that's what we'll store to memory after the request
     // completes. The TS proxy at packages/proxy/src/middleware/memory.ts
@@ -1102,6 +1112,39 @@ fn deanonymize_messages_response(value: &mut Value, session_map: &TokenMap) {
 // ── Body anonymization ─────────────────────────────────────────────────────
 
 /// Walk an Anthropic `/v1/messages` request body and anonymize every
+/// Body size above which we trim old messages to keep requests fast and cheap.
+const CONTEXT_TRIM_THRESHOLD_BYTES: usize = 400_000;
+/// Most-recent messages to keep when trimming.
+const CONTEXT_WINDOW_KEEP: usize = 30;
+
+/// Trim the `messages` array when the raw body exceeds the threshold.
+/// Keeps messages[0] (LibreChat artifact instructions) + last CONTEXT_WINDOW_KEEP.
+/// Sci memory recall injects long-term context via system[], so dropping old
+/// message history is safe.
+fn trim_context_window(body: &mut Value, raw_body_len: usize) {
+    if raw_body_len <= CONTEXT_TRIM_THRESHOLD_BYTES {
+        return;
+    }
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let total = messages.len();
+    if total <= CONTEXT_WINDOW_KEEP + 1 {
+        return; // nothing to trim
+    }
+    let keep_from = total - CONTEXT_WINDOW_KEEP;
+    let head = messages[0].clone();
+    messages.drain(1..keep_from);
+    messages[0] = head;
+    tracing::info!(
+        target: "sci_handlers::context",
+        original = total,
+        kept = messages.len(),
+        "context window trimmed: {} → {} messages",
+        total, messages.len()
+    );
+}
+
 /// piece of user-visible text. Mutates the JSON in place. Returns the
 /// list of detected entities for observability — handlers don't use
 /// it today but the shell logs `🔒 masked N` based on the count.
