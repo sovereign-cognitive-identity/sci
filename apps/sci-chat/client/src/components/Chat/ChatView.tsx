@@ -7,6 +7,7 @@ import { Constants, buildTree } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } from '~/Providers';
+import { MCPServerManagerProvider } from '~/Providers/MCPServerManagerContext';
 import { useInspector } from '~/components/Sci';
 import { useAddedResponse, useResumeOnLoad, useAdaptiveSSE, useChatHelpers } from '~/hooks';
 import ConversationStarters from './Input/ConversationStarters';
@@ -80,6 +81,7 @@ function ChatView({ index = 0 }: { index?: number }) {
   const { width: inspectorWidth } = useInspector();
 
   return (
+    <MCPServerManagerProvider conversationId={conversationId}>
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <AddedChatContext.Provider value={addedChatHelpers}>
@@ -116,6 +118,7 @@ function ChatView({ index = 0 }: { index?: number }) {
         </AddedChatContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
+    </MCPServerManagerProvider>
   );
 }
 

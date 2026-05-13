@@ -8,7 +8,6 @@ import {
   useToolToggle,
 } from '~/hooks';
 import { useMCPServerManager } from '~/hooks/MCP/useMCPServerManager';
-import { MCPServerManagerProvider } from './MCPServerManagerContext';
 import { getTimestampedValue } from '~/utils/timestamps';
 import { useGetStartupConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';
@@ -263,8 +262,6 @@ export default function BadgeRowProvider({
   };
 
   return (
-    <MCPServerManagerProvider conversationId={conversationId} storageContextKey={storageContextKey}>
-      <BadgeRowContext.Provider value={value}>{children}</BadgeRowContext.Provider>
-    </MCPServerManagerProvider>
+    <BadgeRowContext.Provider value={value}>{children}</BadgeRowContext.Provider>
   );
 }
