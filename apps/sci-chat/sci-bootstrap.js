@@ -95,15 +95,23 @@ for (const key of PROVIDER_ENV_TO_RESET) {
     globalThis.__sciMongoMemoryServer = mongo;
   }
 
-  // ── 2. Route outbound HTTP through Sci helper ────────────────────────
+  // ── 2. Route outbound HTTPS through Sci helper ─────────────────────────
+  //
+  // We use EnvHttpProxyAgent instead of bare ProxyAgent so that NO_PROXY
+  // is honoured automatically.  Hosts listed in NO_PROXY bypass sci-helper
+  // entirely — this prevents the model-list fetches (GET /v1/models) from
+  // hitting the proxy, which only supports HTTPS CONNECT tunnels and would
+  // 405 those plain-HTTP discovery requests, causing a retry storm that
+  // freezes the UI for several seconds each time you hit Send.
   const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
   if (proxyUrl) {
     try {
-      const { ProxyAgent, setGlobalDispatcher } = require('undici');
-      setGlobalDispatcher(new ProxyAgent(proxyUrl));
-      console.log(`[sci-bootstrap] HTTPS via Sci helper at ${proxyUrl}`);
+      const { EnvHttpProxyAgent, setGlobalDispatcher } = require('undici');
+      setGlobalDispatcher(new EnvHttpProxyAgent());
+      const noProxy = process.env.NO_PROXY || process.env.no_proxy || '(none)';
+      console.log(`[sci-bootstrap] HTTPS via Sci helper at ${proxyUrl} (NO_PROXY: ${noProxy})`);
     } catch (e) {
-      console.error('[sci-bootstrap] failed to install ProxyAgent:', e.message);
+      console.error('[sci-bootstrap] failed to install EnvHttpProxyAgent:', e.message);
       console.error('[sci-bootstrap] continuing without proxy — Sci will NOT see your traffic');
     }
   } else {
