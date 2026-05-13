@@ -1048,17 +1048,33 @@ fn deanonymize_messages_response(value: &mut Value, session_map: &TokenMap) {
 /// piece of user-visible text. Mutates the JSON in place. Returns the
 /// list of detected entities for observability — handlers don't use
 /// it today but the shell logs `🔒 masked N` based on the count.
-/// If the anonymizer would mask more than this many unique entities in a
-/// single request, something is wrong — either a cascade from over-tagged
-/// conversation history, or an unanticipated NER false-positive storm.
+/// Circuit breaker for the anonymizer. If a single request produces more
+/// unique entities than this, roll back all substitutions and pass the
+/// request through unmodified.
 ///
-/// At this threshold, the anonymizer rolls back all substitutions and passes
-/// the request through unmodified. This prevents tool-schema corruption and
-/// the LangGraph recursion-limit loop that follows from it. The threshold is
-/// high enough that legitimate turns (a user message mentioning 3–5 people
-/// and a couple of places) never hit it, but low enough to catch runaway
-/// accumulation early.
-const ANON_CIRCUIT_BREAKER: usize = 25;
+/// ## What this protects against
+/// An unanticipated NER false-positive storm that would corrupt tool schemas
+/// and cause the model to loop (the May 2026 LangGraph recursion-limit
+/// cascade). That specific cascade was fixed by SCI-199 (skip assistant
+/// history) + SCI-203 (state abbreviation context gates), so the circuit
+/// breaker is now a pure safety net for future bugs.
+///
+/// ## Why 100, not 25
+/// Per-request entity count is the WRONG signal for cascade detection.
+/// The May 2026 cascade grew *gradually* — adding 1-5 entities per turn
+/// over 90 minutes, from 23 → 92+. A single dense document (resume, bio,
+/// contract) legitimately produces 40-80 entities in ONE turn, then drops
+/// back to normal. A resume with 37 substitutions is correct behavior.
+///
+/// 100 covers legitimate dense-PII documents while still catching truly
+/// pathological behavior (100+ unique entities in one request requires
+/// either an extreme document or a catastrophic NER bug).
+///
+/// ## Better signal (future work)
+/// Cross-turn growth rate: if masked_count increases by >15 on three
+/// consecutive turns, that's a cascade pattern. Requires persisted state
+/// across requests. The current threshold is the pragmatic stop-gap.
+const ANON_CIRCUIT_BREAKER: usize = 100;
 
 fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<Entity>> {
     let mut all_entities = Vec::new();

@@ -104,9 +104,9 @@ pub async fn handle_openai_chat(
 /// of typed content parts (`{type: "text", text: "…"}`,
 /// `{type: "image_url", …}` etc.). We touch only the `text` parts,
 /// matching what the Anthropic handler does for its content blocks.
-/// See anthropic.rs for rationale. Shared constant intentionally
-/// duplicated to avoid a cross-crate dep for a single scalar.
-const ANON_CIRCUIT_BREAKER: usize = 25;
+/// See anthropic.rs for full rationale. 100 covers dense-PII documents
+/// (resumes, contracts) while catching truly pathological NER storms.
+const ANON_CIRCUIT_BREAKER: usize = 100;
 
 fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<Entity>> {
     let mut all_entities = Vec::new();
