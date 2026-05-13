@@ -29,12 +29,16 @@ if [[ ! -f "$ENV_FILE" ]]; then
     exit 1
 fi
 
-# Pull *only* the two vars Node needs at process startup — sourcing
-# the whole .env would fail because LibreChat config values like
+# Pull the vars Node needs at process startup — sourcing the whole .env
+# would fail because LibreChat config values like
 # `SESSION_EXPIRY=1000 * 60 * 60` are JS expressions that the shell
 # would interpret (the `*` as a glob). dotenv does the rest in JS.
 export HTTPS_PROXY="$(grep -E '^HTTPS_PROXY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
 export NODE_EXTRA_CA_CERTS="$(grep -E '^NODE_EXTRA_CA_CERTS=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+# NO_PROXY must be in the process environment before EnvHttpProxyAgent is
+# instantiated in sci-bootstrap.js — dotenv.config() runs later in JS
+# so process.env.NO_PROXY would be unset when the agent is created.
+export NO_PROXY="$(grep -E '^NO_PROXY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
 
 # Sanity: CA file must exist for Node's TLS to trust Sci's MITM cert.
 if [[ -n "${NODE_EXTRA_CA_CERTS:-}" && ! -f "$NODE_EXTRA_CA_CERTS" ]]; then
