@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { InspectorContext } from './InspectorContext';
+import { useInspectorControls } from './InspectorContext';
 
 import MemoryGraph from './MemoryGraph';
 import ProfileSelector from './ProfileSelector';
@@ -66,22 +66,11 @@ async function exportAllTurns(turns: AuditTurn[]) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function InspectorPanel() {
-  const [open,  setOpen]  = useState(() => readBoolLs(LS_OPEN_KEY, false));
-  const [width, setWidth] = useState(() => readNumberLs(LS_WIDTH_KEY, DEFAULT_WIDTH));
+  const { open, width, setOpen, setWidth } = useInspectorControls();
   const [tab,   setTab]   = useState<Tab>('turns');
   const [search, setSearch]   = useState('');
   const [exporting, setExporting] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    try { localStorage.setItem(LS_OPEN_KEY, open ? '1' : '0'); }
-    catch { /* ignore */ }
-  }, [open]);
-
-  useEffect(() => {
-    try { localStorage.setItem(LS_WIDTH_KEY, String(width)); }
-    catch { /* ignore */ }
-  }, [width]);
 
   useEffect(() => {
     if (!open) setSearch('');
@@ -112,7 +101,7 @@ export default function InspectorPanel() {
   };
 
   return (
-    <InspectorContext.Provider value={{ open, width: open ? width : 0 }}>
+    <>
       <Toggle open={open} onToggle={() => setOpen((x) => !x)} />
       {open && (
         <aside
@@ -244,7 +233,7 @@ export default function InspectorPanel() {
           </div>
         </aside>
       )}
-    </InspectorContext.Provider>
+    </>
   );
 }
 

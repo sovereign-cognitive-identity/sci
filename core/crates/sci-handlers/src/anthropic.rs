@@ -510,10 +510,10 @@ fn extract_user_text(body: &Value) -> String {
 
 /// Minimum content threshold for episodic storage. The TS proxy's
 /// floor was 20 chars; in dogfood we found that filters legitimate
-/// short questions like `"what's my email"` (15 chars). Lowered to 5
-/// — still skips trivial pings (`"hi"`, `"ok"`, `"yes"`) but lets
-/// real one-line questions through.
-const STORE_MIN_CHARS: usize = 5;
+/// short questions like `"what's my email"` (15 chars). Set to 20 —
+/// skips single-word pings ("hi", "ok", "yes", "you back?") that
+/// pollute recall without adding signal, while keeping real questions.
+const STORE_MIN_CHARS: usize = 20;
 
 /// SCI-156: profile name fallback if `state.active_profile_name()`
 /// returns something we can't resolve. Matches the TS proxy's
