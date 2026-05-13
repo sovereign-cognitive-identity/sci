@@ -1048,6 +1048,18 @@ fn deanonymize_messages_response(value: &mut Value, session_map: &TokenMap) {
 /// piece of user-visible text. Mutates the JSON in place. Returns the
 /// list of detected entities for observability — handlers don't use
 /// it today but the shell logs `🔒 masked N` based on the count.
+/// If the anonymizer would mask more than this many unique entities in a
+/// single request, something is wrong — either a cascade from over-tagged
+/// conversation history, or an unanticipated NER false-positive storm.
+///
+/// At this threshold, the anonymizer rolls back all substitutions and passes
+/// the request through unmodified. This prevents tool-schema corruption and
+/// the LangGraph recursion-limit loop that follows from it. The threshold is
+/// high enough that legitimate turns (a user message mentioning 3–5 people
+/// and a couple of places) never hit it, but low enough to catch runaway
+/// accumulation early.
+const ANON_CIRCUIT_BREAKER: usize = 25;
+
 fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<Entity>> {
     let mut all_entities = Vec::new();
 
@@ -1059,6 +1071,13 @@ fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<E
     // annotated system prompt re-entered the context and was injected as
     // visible user-turn text in the UI. The system prompt is not user PII;
     // skipping it breaks the injection loop with zero privacy tradeoff.
+
+    // Snapshot the messages array before any mutation so the circuit
+    // breaker can restore the original body if entity count runs away.
+    let pre_anon_snapshot = body
+        .get("messages")
+        .cloned()
+        .unwrap_or(Value::Array(vec![]));
 
     // `messages[*].content` is either a string or an array of typed
     // content blocks. We only touch `text` blocks.
@@ -1095,6 +1114,29 @@ fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<E
             }
             _ => {}
         }
+    }
+
+    // Circuit breaker: too many masked entities means the NER is over-firing
+    // (cascade from conversation history, unanticipated pattern, etc.). Roll
+    // back every substitution and let the request pass through clean rather
+    // than risk tool-schema corruption → model loops → LangGraph recursion
+    // limit error.
+    if all_entities.len() > ANON_CIRCUIT_BREAKER {
+        tracing::warn!(
+            target: "sci_handlers::anonymizer",
+            entity_count = all_entities.len(),
+            threshold    = ANON_CIRCUIT_BREAKER,
+            "circuit breaker fired: too many masked entities; \
+             rolling back substitutions and passing request through unmasked. \
+             Check NER rules for over-matching on conversation history."
+        );
+        // Restore the pre-anonymization messages array.
+        if let Some(msgs) = body.get_mut("messages") {
+            *msgs = pre_anon_snapshot;
+        }
+        // Discard the polluted token map so no bad entries reach the DB.
+        *map = TokenMap::default();
+        return Ok(Vec::new());
     }
 
     Ok(all_entities)

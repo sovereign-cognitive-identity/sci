@@ -104,8 +104,17 @@ pub async fn handle_openai_chat(
 /// of typed content parts (`{type: "text", text: "…"}`,
 /// `{type: "image_url", …}` etc.). We touch only the `text` parts,
 /// matching what the Anthropic handler does for its content blocks.
+/// See anthropic.rs for rationale. Shared constant intentionally
+/// duplicated to avoid a cross-crate dep for a single scalar.
+const ANON_CIRCUIT_BREAKER: usize = 25;
+
 fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<Entity>> {
     let mut all_entities = Vec::new();
+
+    let pre_anon_snapshot = body
+        .get("messages")
+        .cloned()
+        .unwrap_or(Value::Array(vec![]));
 
     let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
         return Ok(all_entities);
@@ -136,6 +145,21 @@ fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<E
             }
             _ => {}
         }
+    }
+
+    if all_entities.len() > ANON_CIRCUIT_BREAKER {
+        tracing::warn!(
+            target: "sci_handlers::anonymizer",
+            entity_count = all_entities.len(),
+            threshold    = ANON_CIRCUIT_BREAKER,
+            "circuit breaker fired: too many masked entities; \
+             rolling back substitutions and passing request through unmasked."
+        );
+        if let Some(msgs) = body.get_mut("messages") {
+            *msgs = pre_anon_snapshot;
+        }
+        *map = TokenMap::default();
+        return Ok(Vec::new());
     }
 
     Ok(all_entities)
