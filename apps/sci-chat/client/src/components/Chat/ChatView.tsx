@@ -7,6 +7,7 @@ import { Constants, buildTree } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } from '~/Providers';
+import { useInspector } from '~/components/Sci';
 import { useAddedResponse, useResumeOnLoad, useAdaptiveSSE, useChatHelpers } from '~/hooks';
 import ConversationStarters from './Input/ConversationStarters';
 import { useGetMessagesByConvoId } from '~/data-provider';
@@ -76,12 +77,17 @@ function ChatView({ index = 0 }: { index?: number }) {
     content = <Landing centerFormOnLanding={centerFormOnLanding} />;
   }
 
+  const { width: inspectorWidth } = useInspector();
+
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
         <AddedChatContext.Provider value={addedChatHelpers}>
           <Presentation>
-            <div className="relative flex h-full w-full flex-col">
+            <div
+              className="relative flex h-full w-full flex-col transition-[padding] duration-200"
+              style={{ paddingRight: inspectorWidth }}
+            >
               <Header />
               <>
                 <div

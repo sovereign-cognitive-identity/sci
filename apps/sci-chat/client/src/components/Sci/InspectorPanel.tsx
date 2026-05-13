@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { InspectorContext } from './InspectorContext';
 
 import MemoryGraph from './MemoryGraph';
 import ProfileSelector from './ProfileSelector';
@@ -111,7 +112,7 @@ export default function InspectorPanel() {
   };
 
   return (
-    <>
+    <InspectorContext.Provider value={{ open, width: open ? width : 0 }}>
       <Toggle open={open} onToggle={() => setOpen((x) => !x)} />
       {open && (
         <aside
@@ -243,7 +244,7 @@ export default function InspectorPanel() {
           </div>
         </aside>
       )}
-    </>
+    </InspectorContext.Provider>
   );
 }
 
