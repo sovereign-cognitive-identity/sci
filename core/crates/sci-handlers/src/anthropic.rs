@@ -597,6 +597,10 @@ fn is_agent_automation_prompt(s: &str) -> bool {
         "The user stepped away and is coming back",
         "Recap in under ",
         "Summarize the following conversation",
+        // LibreChat artifact system prompt — sent as messages[0] with role=user
+        // in every request. Not user PII; storing it pollutes recall with
+        // documentation blobs about artifact creation.
+        "The assistant can create and reference artifacts during conversations",
     ];
     for p in KNOWN_AGENT_PREFIXES {
         if trimmed.starts_with(p) {
@@ -2237,6 +2241,27 @@ mod tests {
         assert!(is_agent_automation_prompt("[CODE_REVIEW]"));
         // Leading whitespace OK.
         assert!(is_agent_automation_prompt("   [SUGGESTION MODE: x]"));
+    }
+
+    #[test]
+    fn artifact_instructions_blocked_from_memory() {
+        // LibreChat sends the artifact system prompt as messages[0] with
+        // role=user on every request. It must not be stored as episodic memory.
+        let artifact = "The assistant can create and reference artifacts during conversations.\n\
+                         Artifacts are for substantial, self-contained content…";
+        assert!(
+            is_agent_automation_prompt(artifact),
+            "artifact instructions must be treated as agent boilerplate, not user input"
+        );
+        // Real user input must not be blocked.
+        assert!(
+            !is_agent_automation_prompt("What's the capital of France?"),
+            "real user question should not be filtered"
+        );
+        assert!(
+            !is_agent_automation_prompt("I'm driving to OK today"),
+            "real user message should not be filtered"
+        );
     }
 
     #[test]
