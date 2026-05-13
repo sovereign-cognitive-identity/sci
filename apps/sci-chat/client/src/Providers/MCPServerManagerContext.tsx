@@ -5,23 +5,18 @@
  * consumer in the tree shares the same React-Query observer instead of each
  * one registering its own.
  *
- * Before this context existed, `useMCPServerManager` (and therefore
- * `useMCPServersQuery`) was called from at least 9 different components
- * simultaneously, producing 30+ React-Query observers on the
- * `["mcpServers"]` key.  Every cache invalidation (OAuth poll, server
- * reinit, etc.) triggered a re-render in ALL of those components at once.
+ * Provider is mounted at TWO levels:
+ *   1. App.jsx root (conversationId=null) — covers sidebar, tool dropdowns,
+ *      landing page, and anything outside ChatView. Always present.
+ *   2. ChatView (conversationId=activeId) — overrides #1 for components
+ *      inside a conversation so they get the per-conversation scope.
  *
- * Additionally, `useMCPIconMap` was called inside per-message components
- * (`ToolCall`, `ToolCallGroup`), adding one observer per message bubble.
- * That path is now handled by the `mcpIconMap` value exposed here.
- *
- * Usage
- * -----
- * Wrap your component tree with <MCPServerManagerProvider> once (already
- * done inside BadgeRowProvider which sits above most chat UI).
- *
- * In any child:
- *   const { mcpServerManager, mcpIconMap } = useMCPServerManagerContext();
+ * Because the root provider is always present, `useMCPServerManagerContext`
+ * never needs a hook-based fallback. The previous fallback called
+ * `useMCPServerManager` + `useMCPServersQuery` unconditionally in every
+ * consumer, creating one React-Query observer per component
+ * (ToolCallGroup, MCPTool, sidebar items…) — that was the source of the
+ * re-render cascade that caused the send-button lag.
  */
 
 import React, { createContext, useContext, useMemo } from 'react';
@@ -36,37 +31,14 @@ type MCPServerManagerContextType = {
 
 const MCPServerManagerContext = createContext<MCPServerManagerContextType | undefined>(undefined);
 
-/**
- * Own instance of the hooks — used as fallback when a consumer renders
- * outside MCPServerManagerProvider (e.g. landing page, AgentPanel, routes
- * that load before ChatView mounts the provider).
- *
- * Rules-of-hooks: these are called unconditionally every render so React
- * always sees the same hook order. When the context IS present the fallback
- * values are simply ignored; when it ISN'T they keep the component working
- * with a real (non-shared) observer instead of crashing.
- *
- * Caveat: components outside the provider get their own React-Query observer
- * rather than the shared one — the original motivation for this context. That
- * is acceptable; the alternative (a hard crash on the landing page) is not.
- */
-export function useMCPServerManagerContext(): MCPServerManagerContextType {
-  const ctx = useContext(MCPServerManagerContext);
-  const fallbackManager = useMCPServerManager({ conversationId: undefined });
-  const { data: servers } = useMCPServersQuery({ staleTime: Infinity });
-  const fallbackIconMap = useMemo(() => {
-    const map = new Map<string, string>();
-    if (!servers) return map;
-    for (const [name, config] of Object.entries(servers)) {
-      if ((config as { iconPath?: string }).iconPath) {
-        map.set(name, (config as { iconPath: string }).iconPath);
-      }
-    }
-    return map;
-  }, [servers]);
+/** Static empty shell — returned when accessed outside any provider (tests, Storybook). */
+const EMPTY_CONTEXT: MCPServerManagerContextType = {
+  mcpServerManager: {} as ReturnType<typeof useMCPServerManager>,
+  mcpIconMap: new Map(),
+};
 
-  if (ctx) return ctx;
-  return { mcpServerManager: fallbackManager, mcpIconMap: fallbackIconMap };
+export function useMCPServerManagerContext(): MCPServerManagerContextType {
+  return useContext(MCPServerManagerContext) ?? EMPTY_CONTEXT;
 }
 
 interface Props {
@@ -76,11 +48,8 @@ interface Props {
 }
 
 export function MCPServerManagerProvider({ children, conversationId, storageContextKey }: Props) {
-  // Single hook instance — all children share this one React-Query observer.
   const mcpServerManager = useMCPServerManager({ conversationId, storageContextKey });
 
-  // Derive the icon map from the already-loaded server data.
-  // Re-uses the same query data; does NOT register a second observer.
   const { data: servers } = useMCPServersQuery({ staleTime: Infinity });
 
   const mcpIconMap = useMemo(() => {
@@ -96,8 +65,6 @@ export function MCPServerManagerProvider({ children, conversationId, storageCont
 
   const value = useMemo(
     () => ({ mcpServerManager, mcpIconMap }),
-    // mcpServerManager reference is stable because useMCPServerManager
-    // wraps all returned functions in useCallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [mcpServerManager, mcpIconMap],
   );

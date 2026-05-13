@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-qu
 import { ScreenshotProvider, useApiErrorBoundary } from './hooks';
 import WakeLockManager from '~/components/System/WakeLockManager';
 import { InspectorPanel as SciInspectorPanel, AttachDropMount as SciAttachDropMount, InspectorContext } from '~/components/Sci';
+import { MCPServerManagerProvider } from '~/Providers/MCPServerManagerContext';
 import { getThemeFromEnv } from './utils/getThemeFromEnv';
 import { initializeFontSize } from '~/store/fontSize';
 import { LiveAnnouncer } from '~/a11y';
@@ -84,11 +85,13 @@ const App = () => {
             <RadixToast.Provider>
               <ToastProvider>
                 <DndProvider backend={HTML5Backend}>
+                  <MCPServerManagerProvider>
                   <InspectorContext.Provider value={inspectorValue}>
                     <RouterProvider router={router} />
                     <SciInspectorPanel />
                     <SciAttachDropMount />
                   </InspectorContext.Provider>
+                  </MCPServerManagerProvider>
                   <WakeLockManager />
                   <ReactQueryDevtools initialIsOpen={false} position="top-right" />
                   <Toast />
