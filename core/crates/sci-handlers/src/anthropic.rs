@@ -1227,29 +1227,41 @@ fn deanonymize_messages_response(value: &mut Value, session_map: &TokenMap) {
 ///
 ///   1. **tools array last entry** — marks the entire 77-tool schema
 ///      (~20k tokens) as cacheable. Tools are static per-session.
-///   2. **messages[0]** — the LibreChat artifact instructions (~3k tokens),
-///      identical on every turn.
+///   2. **artifact instructions message** — the first large user message
+///      (~3k tokens), identical on every turn.
 ///
-/// Together these save ~23k tokens/turn after the first cache-warm turn.
-/// At $3/MTok input and $0.30/MTok cached-read, a 20-turn session saves
-/// roughly $0.65 in input costs.
+/// Anthropic limits cache_control to 4 blocks per request. This function
+/// counts existing blocks first (some may already be in system[] or in
+/// conversation history from prior turns) and only adds up to that cap.
+/// Blocks that already carry cache_control are not marked again.
 ///
-/// Cache TTL: 5 minutes (Anthropic ephemeral). Re-warms automatically if
-/// a session goes quiet for > 5 min.
+/// Cache TTL: 5 minutes (Anthropic ephemeral).
 fn mark_cache_control(body: &mut Value) {
+    // Anthropic hard limit — never send more than this many cache_control blocks.
+    const CACHE_CONTROL_LIMIT: usize = 4;
+
+    let existing = count_cache_control_blocks(body);
+    let mut budget = CACHE_CONTROL_LIMIT.saturating_sub(existing);
+    if budget == 0 { return; }
+
     let cc = serde_json::json!({"type": "ephemeral"});
 
-    // 1. Tools — mark the last tool so Anthropic caches the full prefix.
-    if let Some(tools) = body.get_mut("tools").and_then(|v| v.as_array_mut()) {
-        if let Some(last) = tools.last_mut().and_then(|v| v.as_object_mut()) {
-            last.insert("cache_control".into(), cc.clone());
+    // 1. Tools — mark the last tool (idempotent: skip if already marked).
+    if budget > 0 {
+        if let Some(tools) = body.get_mut("tools").and_then(|v| v.as_array_mut()) {
+            if let Some(last) = tools.last_mut().and_then(|v| v.as_object_mut()) {
+                if !last.contains_key("cache_control") {
+                    last.insert("cache_control".into(), cc.clone());
+                    budget -= 1;
+                }
+            }
         }
     }
 
+    if budget == 0 { return; }
+
     // 2. Artifact instructions — find the first user message whose content
-    //    is a long string (>500 chars). LibreChat injects these as a user-role
-    //    message but not necessarily at index 0; position varies with context
-    //    trimming and conversation length.
+    //    is a long string (>500 chars) and does NOT already have cache_control.
     const ARTIFACT_MIN_LEN: usize = 500;
     if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
         // Search only the first 5 messages — artifact instructions are always
@@ -1260,6 +1272,9 @@ fn mark_cache_control(body: &mut Value) {
             }
             match msg.get_mut("content") {
                 Some(Value::String(s)) if s.len() >= ARTIFACT_MIN_LEN => {
+                    // Already a string — convert to typed block so we can
+                    // attach cache_control. Not already marked (strings can't
+                    // carry cache_control), so no idempotency check needed.
                     let text = s.clone();
                     *msg.get_mut("content").unwrap() = serde_json::json!([{
                         "type": "text",
@@ -1269,6 +1284,15 @@ fn mark_cache_control(body: &mut Value) {
                     break;
                 }
                 Some(Value::Array(blocks)) => {
+                    // Check if the last block already has cache_control — if so
+                    // this message was already marked in a previous turn and is
+                    // now sitting in conversation history. Don't double-mark.
+                    let already_marked = blocks.last()
+                        .and_then(|b| b.as_object())
+                        .map(|o| o.contains_key("cache_control"))
+                        .unwrap_or(false);
+                    if already_marked { break; }
+
                     let total_len: usize = blocks.iter()
                         .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
                         .map(|s| s.len())
@@ -1284,6 +1308,37 @@ fn mark_cache_control(body: &mut Value) {
             }
         }
     }
+}
+
+/// Count cache_control blocks already present in the request body so
+/// mark_cache_control can stay under Anthropic's 4-block hard limit.
+/// Scans system[], tools[], and the first few messages[].
+fn count_cache_control_blocks(body: &Value) -> usize {
+    let mut count = 0usize;
+
+    // system[]
+    if let Some(arr) = body.get("system").and_then(|v| v.as_array()) {
+        for block in arr {
+            if block.get("cache_control").is_some() { count += 1; }
+        }
+    }
+    // tools[]
+    if let Some(arr) = body.get("tools").and_then(|v| v.as_array()) {
+        for tool in arr {
+            if tool.get("cache_control").is_some() { count += 1; }
+        }
+    }
+    // messages[] — only first 10; cache_control on old history is the bug we're fixing
+    if let Some(arr) = body.get("messages").and_then(|v| v.as_array()) {
+        for msg in arr.iter().take(10) {
+            if let Some(content) = msg.get("content").and_then(|v| v.as_array()) {
+                for block in content {
+                    if block.get("cache_control").is_some() { count += 1; }
+                }
+            }
+        }
+    }
+    count
 }
 
 // ── Tool result truncation ───────────────────────────────────────────────────
