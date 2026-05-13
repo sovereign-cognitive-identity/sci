@@ -9,7 +9,9 @@ use crate::types::Result;
 use crate::upstream::UpstreamClient;
 use async_trait::async_trait;
 use sci_memory::LocalAdapter;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Embed text into a 768-dim vector. Implemented by SCI-130 against
 /// BGE-base-en-v1.5; SCI-126 ships a `NoopEmbedder` that returns a
@@ -75,6 +77,56 @@ pub struct HandlerState {
     /// legitimate single dense document (one spike, returns to baseline)
     /// from a runaway cascade (sustained elevation across many turns).
     pub cascade_monitor: Arc<CascadeMonitor>,
+
+    /// Per-minute rate limiter. Sliding window of recent request timestamps.
+    /// Protects against retry storms, runaway agents, and accidental tight
+    /// loops that would burn the weekly token budget in minutes.
+    pub rate_limiter: Arc<RateLimiter>,
+}
+
+/// Sliding-window rate limiter. Thread-safe; lock held briefly (no I/O).
+pub struct RateLimiter {
+    /// Timestamps of requests within the current window.
+    window: Mutex<VecDeque<Instant>>,
+    /// Window duration in seconds.
+    pub window_secs: u64,
+    /// Maximum requests allowed in the window.
+    pub max_requests: usize,
+}
+
+impl RateLimiter {
+    pub fn new(window_secs: u64, max_requests: usize) -> Self {
+        Self {
+            window: Mutex::new(VecDeque::new()),
+            window_secs,
+            max_requests,
+        }
+    }
+
+    /// Record a new request. Returns `true` if the request is within the
+    /// rate limit, `false` if it should be blocked.
+    pub fn check_and_record(&self) -> bool {
+        let now = Instant::now();
+        let cutoff = now - std::time::Duration::from_secs(self.window_secs);
+        let mut window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        // Drop entries outside the sliding window.
+        while window.front().map_or(false, |t| *t < cutoff) {
+            window.pop_front();
+        }
+        if window.len() >= self.max_requests {
+            return false;
+        }
+        window.push_back(now);
+        true
+    }
+
+    /// Current requests in the window (for logging).
+    pub fn current_count(&self) -> usize {
+        let now = Instant::now();
+        let cutoff = now - std::time::Duration::from_secs(self.window_secs);
+        let window = self.window.lock().unwrap_or_else(|e| e.into_inner());
+        window.iter().filter(|t| **t >= cutoff).count()
+    }
 }
 
 impl HandlerState {
@@ -90,6 +142,9 @@ impl HandlerState {
             active_profile:  Arc::new(Mutex::new("work".to_string())),
             active_project:  Arc::new(Mutex::new(None)),
             cascade_monitor: Arc::new(CascadeMonitor::new()),
+            // 20 requests per minute — enough for active tool-heavy sessions
+            // (~3 per minute typical), hard stop on retry storms.
+            rate_limiter:    Arc::new(RateLimiter::new(60, 20)),
         }
     }
 

@@ -41,6 +41,36 @@ pub async fn handle_anthropic_messages(
     // covers parse + anonymize + recall + upstream + deanon.
     let started_at = std::time::Instant::now();
 
+    // ── 0. Safety guards ──────────────────────────────────────────────────
+    //
+    // Check rate limit BEFORE parsing (cheap) and size cap AFTER trim (after
+    // we've done our best to reduce the body). Both fire a 429/413 so
+    // LibreChat surfaces an error to the user rather than silently burning
+    // tokens.
+
+    if !state.rate_limiter.check_and_record() {
+        tracing::error!(
+            target: "sci_handlers::rate_limit",
+            count = state.rate_limiter.current_count(),
+            limit = state.rate_limiter.max_requests,
+            window_secs = state.rate_limiter.window_secs,
+            "RATE LIMIT: too many requests — blocking to protect token budget"
+        );
+        let body_stream: BodyStream = Box::pin(futures::stream::once(async {
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                b"rate limit: too many requests in 60s - possible retry storm, \
+                  check sci-helper logs",
+            ))
+        }));
+        return Ok(HandlerResponse {
+            status:               429,
+            headers:              std::collections::HashMap::new(),
+            body:                 body_stream,
+            inspect_request:      None,
+            inspect_upstream_raw: None,
+        });
+    }
+
     // ── 1. Parse + anonymize ───────────────────────────────────────────────
     let mut body: Value = serde_json::from_slice(&req.body)
         .map_err(|e| HandlerError::Malformed(format!("body JSON: {e}")))?;
@@ -54,6 +84,34 @@ pub async fn handle_anthropic_messages(
     // Sci memory recall injects the relevant long-term context at every turn,
     // so trimming the raw message history is safe.
     trim_context_window(&mut body, req.body.len());
+
+    // Hard size cap: if the body is STILL too large after trimming, block the
+    // request entirely. This should never fire in normal operation (trim keeps
+    // bodies to ~50–150 KB) but acts as a final backstop against pathological
+    // cases — extremely long individual messages, code dumps, etc.
+    const HARD_MAX_BODY_BYTES: usize = 800_000; // ~200k tokens absolute max
+    let trimmed_size = serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(req.body.len());
+    if trimmed_size > HARD_MAX_BODY_BYTES {
+        tracing::error!(
+            target: "sci_handlers::size_guard",
+            bytes = trimmed_size,
+            limit = HARD_MAX_BODY_BYTES,
+            "HARD SIZE CAP: request body still too large after trim — blocking"
+        );
+        let body_stream: BodyStream = Box::pin(futures::stream::once(async {
+            Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                b"request too large: context exceeds hard limit even after trimming. \
+                  Start a new conversation to reset context.",
+            ))
+        }));
+        return Ok(HandlerResponse {
+            status:               413,
+            headers:              std::collections::HashMap::new(),
+            body:                 body_stream,
+            inspect_request:      None,
+            inspect_upstream_raw: None,
+        });
+    }
 
     // Capture the original (pre-anonymization) user text BEFORE we mask
     // the body — that's what we'll store to memory after the request
