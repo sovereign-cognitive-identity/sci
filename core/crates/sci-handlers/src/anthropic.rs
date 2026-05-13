@@ -75,6 +75,21 @@ pub async fn handle_anthropic_messages(
     let mut body: Value = serde_json::from_slice(&req.body)
         .map_err(|e| HandlerError::Malformed(format!("body JSON: {e}")))?;
 
+    // Tool result truncation: individual tool results (read_file, shell_exec
+    // logs, etc.) can be 20–100 KB each and survive whole-message trimming
+    // because they're single content blocks. Truncate them first so the
+    // subsequent trim and size checks operate on the reduced body.
+    let truncated_blocks = truncate_tool_results(&mut body);
+    if truncated_blocks > 0 {
+        tracing::info!(
+            target: "sci_handlers::context",
+            count = truncated_blocks,
+            max_bytes = MAX_TOOL_RESULT_BYTES,
+            "tool result truncation: {} block(s) reduced to ≤{} bytes each",
+            truncated_blocks, MAX_TOOL_RESULT_BYTES,
+        );
+    }
+
     // Context-window trim: long-running tool-heavy sessions accumulate MB of
     // conversation history. Each 1 MB of body ≈ 250k tokens — expensive and
     // slow. When the serialised body exceeds the threshold, trim the messages
@@ -1269,6 +1284,111 @@ fn mark_cache_control(body: &mut Value) {
             }
         }
     }
+}
+
+// ── Tool result truncation ───────────────────────────────────────────────────
+
+/// Individual tool results larger than this are head+tail truncated before
+/// forwarding. A single `read_file` on a 200-line source file or a
+/// `shell_exec` log dump can hit 20–100 KB — well above what the model needs
+/// for most tool interactions. 8 KB is generous for a tool result while still
+/// cutting multi-KB bloat to a fraction of its original size.
+const MAX_TOOL_RESULT_BYTES: usize = 8_192; // 8 KB per tool result
+/// Lines to keep from the beginning of a truncated tool result.
+const TOOL_RESULT_HEAD_LINES: usize = 50;
+/// Lines to keep from the end of a truncated tool result.
+const TOOL_RESULT_TAIL_LINES: usize = 20;
+
+/// Walk `messages` looking for user-role messages that contain
+/// `tool_result` content blocks. For each block whose text content
+/// exceeds [`MAX_TOOL_RESULT_BYTES`], replace the text with:
+///
+/// ```text
+/// <head lines>
+/// ... [N lines truncated] ...
+/// <tail lines>
+/// ```
+///
+/// Tool results can be a string or an array of typed blocks
+/// (`[{"type":"text","text":"…"}]`). Both shapes are handled.
+///
+/// Returns the number of blocks truncated (for the tracing log call-site).
+fn truncate_tool_results(body: &mut Value) -> usize {
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return 0;
+    };
+
+    let mut truncated = 0usize;
+
+    for message in messages.iter_mut() {
+        if message.get("role").and_then(|v| v.as_str()) != Some("user") {
+            continue;
+        }
+        let Some(content) = message.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for block in content.iter_mut() {
+            if block.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+                continue;
+            }
+            match block.get("content") {
+                // Shape 1: content is a plain string.
+                Some(Value::String(_)) => {
+                    let text = block["content"].as_str().unwrap();
+                    if text.len() <= MAX_TOOL_RESULT_BYTES {
+                        continue;
+                    }
+                    let replacement = head_tail_truncate(text);
+                    block["content"] = Value::String(replacement);
+                    truncated += 1;
+                }
+                // Shape 2: content is an array of typed blocks.
+                Some(Value::Array(_)) => {
+                    let inner = block["content"].as_array_mut().unwrap();
+                    for inner_block in inner.iter_mut() {
+                        if inner_block.get("type").and_then(|v| v.as_str()) != Some("text") {
+                            continue;
+                        }
+                        let text = match inner_block.get("text").and_then(|v| v.as_str()) {
+                            Some(t) if t.len() > MAX_TOOL_RESULT_BYTES => t,
+                            _ => continue,
+                        };
+                        let replacement = head_tail_truncate(text);
+                        inner_block["text"] = Value::String(replacement);
+                        truncated += 1;
+                    }
+                }
+                // No content field, or an unexpected shape — leave alone.
+                _ => {}
+            }
+        }
+    }
+
+    truncated
+}
+
+/// Replace the body of a large string with its first
+/// [`TOOL_RESULT_HEAD_LINES`] lines + a count banner +
+/// last [`TOOL_RESULT_TAIL_LINES`] lines.
+fn head_tail_truncate(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let keep = TOOL_RESULT_HEAD_LINES + TOOL_RESULT_TAIL_LINES;
+    if total <= keep {
+        // Byte-length was over threshold but line count is small
+        // (very long single lines). In that case just hard-truncate
+        // at MAX_TOOL_RESULT_BYTES and append a byte-count note.
+        let mut out = text[..MAX_TOOL_RESULT_BYTES].to_string();
+        out.push_str(&format!(
+            "\n... [{} bytes truncated] ...",
+            text.len() - MAX_TOOL_RESULT_BYTES,
+        ));
+        return out;
+    }
+    let skipped = total - keep;
+    let head = lines[..TOOL_RESULT_HEAD_LINES].join("\n");
+    let tail = lines[total - TOOL_RESULT_TAIL_LINES..].join("\n");
+    format!("{head}\n... [{skipped} lines truncated] ...\n{tail}")
 }
 
 /// Body size above which we trim old messages to keep requests fast and cheap.
@@ -2702,6 +2822,137 @@ mod tests {
         for expected in ["toolu_a", "toolu_b", "toolu_c"] {
             assert!(ids.contains(expected), "missing tool_result for {expected}: {content:?}");
         }
+    }
+
+    // ── Tool result truncation ──────────────────────────────────────────
+
+    #[test]
+    fn truncate_tool_results_noop_on_small_result() {
+        let small = "x".repeat(100);
+        let mut body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_x",
+                    "content": small.clone()
+                }]
+            }]
+        });
+        let n = truncate_tool_results(&mut body);
+        assert_eq!(n, 0, "small result must not be touched");
+        assert_eq!(
+            body["messages"][0]["content"][0]["content"].as_str().unwrap(),
+            &small,
+        );
+    }
+
+    #[test]
+    fn truncate_tool_results_string_content_shape() {
+        // 800 lines × ~12 chars ≈ 9.6 KB — well above the 8 KB threshold.
+        let lines: Vec<String> = (0..800).map(|i| format!("line {:06}", i)).collect();
+        let big = lines.join("\n");
+        assert!(big.len() > MAX_TOOL_RESULT_BYTES, "test pre-condition: {} bytes", big.len());
+
+        let mut body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_x",
+                    "content": big
+                }]
+            }]
+        });
+        let n = truncate_tool_results(&mut body);
+        assert_eq!(n, 1);
+        let result = body["messages"][0]["content"][0]["content"].as_str().unwrap();
+        // Should contain head and tail lines.
+        assert!(result.contains("line 000000"), "head missing: {result:.80}");
+        assert!(result.contains("line 000799"), "tail missing: {result:.80}");
+        // Middle should be truncated.
+        assert!(result.contains("lines truncated"), "banner missing: {result:.80}");
+        assert!(!result.contains("line 000400"), "middle line must be gone: {result:.80}");
+        // Must be under the byte limit (with banner overhead, still much smaller).
+        assert!(result.len() < big.len(), "truncated must be shorter");
+    }
+
+    #[test]
+    fn truncate_tool_results_array_content_shape() {
+        // Same content but wrapped in the typed-blocks array shape.
+        let lines: Vec<String> = (0..800).map(|i| format!("line {:06}", i)).collect();
+        let big = lines.join("\n");
+
+        let mut body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_x",
+                    "content": [{"type": "text", "text": big}]
+                }]
+            }]
+        });
+        let n = truncate_tool_results(&mut body);
+        assert_eq!(n, 1);
+        let result = body["messages"][0]["content"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+        assert!(result.contains("line 000000"));
+        assert!(result.contains("line 000799"));
+        assert!(result.contains("lines truncated"));
+    }
+
+    #[test]
+    fn truncate_tool_results_skips_assistant_messages() {
+        // tool_result blocks only appear in user messages in practice,
+        // but confirm assistant messages are skipped even if malformed.
+        let big = "x\n".repeat(5000);
+        let mut body = serde_json::json!({
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_x",
+                    "content": big.clone()
+                }]
+            }]
+        });
+        let n = truncate_tool_results(&mut body);
+        assert_eq!(n, 0, "assistant-role messages must not be touched");
+    }
+
+    #[test]
+    fn truncate_tool_results_multiple_blocks_in_one_message() {
+        let big = "line\n".repeat(5000); // definitely > 8 KB
+        let small = "tiny result";
+        let mut body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "a", "content": big.clone()},
+                    {"type": "tool_result", "tool_use_id": "b", "content": small},
+                    {"type": "tool_result", "tool_use_id": "c", "content": big.clone()},
+                ]
+            }]
+        });
+        let n = truncate_tool_results(&mut body);
+        assert_eq!(n, 2, "only the two large blocks should be truncated");
+        assert!(
+            body["messages"][0]["content"][1]["content"].as_str().unwrap() == small,
+            "small block must be untouched",
+        );
+    }
+
+    #[test]
+    fn head_tail_truncate_few_long_lines_byte_truncates() {
+        // Single very long line — fewer than HEAD+TAIL lines total,
+        // so the byte-truncation fallback fires.
+        let long_line = "A".repeat(MAX_TOOL_RESULT_BYTES * 2);
+        let result = head_tail_truncate(&long_line);
+        assert!(result.len() <= MAX_TOOL_RESULT_BYTES + 60, // +banner
+            "byte truncation must cap length: {}", result.len());
+        assert!(result.contains("bytes truncated"), "byte banner missing");
     }
 
     #[test]
