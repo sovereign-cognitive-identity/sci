@@ -1231,22 +1231,38 @@ fn mark_cache_control(body: &mut Value) {
         }
     }
 
-    // 2. messages[0] — artifact instructions.
+    // 2. Artifact instructions — find the first user message whose content
+    //    is a long string (>500 chars). LibreChat injects these as a user-role
+    //    message but not necessarily at index 0; position varies with context
+    //    trimming and conversation length.
+    const ARTIFACT_MIN_LEN: usize = 500;
     if let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) {
-        if let Some(first) = messages.first_mut() {
-            match first.get_mut("content") {
-                Some(Value::String(s)) => {
-                    // Convert bare string to typed block so we can attach cache_control.
+        // Search only the first 5 messages — artifact instructions are always
+        // near the top; scanning the whole array is unnecessary.
+        for msg in messages.iter_mut().take(5) {
+            if msg.get("role").and_then(|v| v.as_str()) != Some("user") {
+                continue;
+            }
+            match msg.get_mut("content") {
+                Some(Value::String(s)) if s.len() >= ARTIFACT_MIN_LEN => {
                     let text = s.clone();
-                    *first.get_mut("content").unwrap() = serde_json::json!([{
+                    *msg.get_mut("content").unwrap() = serde_json::json!([{
                         "type": "text",
                         "text": text,
                         "cache_control": {"type": "ephemeral"}
                     }]);
+                    break;
                 }
                 Some(Value::Array(blocks)) => {
-                    if let Some(last_block) = blocks.last_mut().and_then(|v| v.as_object_mut()) {
-                        last_block.insert("cache_control".into(), cc);
+                    let total_len: usize = blocks.iter()
+                        .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                        .map(|s| s.len())
+                        .sum();
+                    if total_len >= ARTIFACT_MIN_LEN {
+                        if let Some(last_block) = blocks.last_mut().and_then(|v| v.as_object_mut()) {
+                            last_block.insert("cache_control".into(), cc);
+                        }
+                        break;
                     }
                 }
                 _ => {}
