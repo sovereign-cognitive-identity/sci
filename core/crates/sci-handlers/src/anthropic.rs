@@ -1395,11 +1395,23 @@ fn head_tail_truncate(text: &str) -> String {
 const CONTEXT_TRIM_THRESHOLD_BYTES: usize = 400_000;
 /// Most-recent messages to keep when trimming.
 const CONTEXT_WINDOW_KEEP: usize = 30;
+/// Max characters per user turn in the prior-context summary.
+const SUMMARY_USER_CHARS: usize = 200;
+/// Max characters per assistant turn in the prior-context summary.
+const SUMMARY_ASST_CHARS: usize = 150;
+/// Hard cap on the total summary block size.
+const SUMMARY_MAX_CHARS: usize = 3_000;
 
 /// Trim the `messages` array when the raw body exceeds the threshold.
-/// Keeps messages[0] (LibreChat artifact instructions) + last CONTEXT_WINDOW_KEEP.
-/// Sci memory recall injects long-term context via system[], so dropping old
-/// message history is safe.
+///
+/// Before dropping the old messages, extract a compact conversational
+/// summary (user questions + assistant prose responses, no tool noise)
+/// and inject it as messages[1] so the model retains thread continuity.
+/// The summary goes through the normal anonymizer pass that runs after
+/// this function, so PII in the summary is masked correctly.
+///
+/// Keeps messages[0] (artifact instructions) + summary + last
+/// CONTEXT_WINDOW_KEEP turns.
 fn trim_context_window(body: &mut Value, raw_body_len: usize) {
     if raw_body_len <= CONTEXT_TRIM_THRESHOLD_BYTES {
         return;
@@ -1413,15 +1425,111 @@ fn trim_context_window(body: &mut Value, raw_body_len: usize) {
     }
     let keep_from = total - CONTEXT_WINDOW_KEEP;
     let head = messages[0].clone();
+
+    // Build the summary BEFORE draining so we still have the content.
+    let summary = build_prior_context_summary(&messages[1..keep_from]);
+
     messages.drain(1..keep_from);
     messages[0] = head;
+
+    // Inject the summary as messages[1] — sits between the artifact
+    // instructions and the retained conversation history. The anonymizer
+    // processes it as a normal user message, masking any PII.
+    let had_summary = !summary.is_empty();
+    if had_summary {
+        messages.insert(1, serde_json::json!({
+            "role":    "user",
+            "content": summary,
+        }));
+    }
+
     tracing::info!(
         target: "sci_handlers::context",
-        original = total,
-        kept = messages.len(),
-        "context window trimmed: {} → {} messages",
-        total, messages.len()
+        original   = total,
+        kept       = messages.len(),
+        summarised = keep_from - 1,
+        had_summary,
+        "context window trimmed: {} → {} messages ({} dropped{})",
+        total, messages.len(), keep_from - 1,
+        if had_summary { ", prior-context summary injected" } else { "" }
     );
+}
+
+/// Walk the messages that are about to be dropped and produce a compact
+/// plain-text summary of the conversational content.
+///
+/// Rules:
+///   - User text blocks  → first SUMMARY_USER_CHARS chars
+///   - Assistant text responses → first SUMMARY_ASST_CHARS chars
+///   - tool_use / tool_result blocks → skipped (noisy, already in memory)
+///   - Automation prompts (titles, recap instructions) → skipped
+///   - Total capped at SUMMARY_MAX_CHARS
+fn build_prior_context_summary(messages: &[Value]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut total_chars = 0usize;
+
+    for msg in messages {
+        if total_chars >= SUMMARY_MAX_CHARS { break; }
+
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let (limit, label) = match role {
+            "user"      => (SUMMARY_USER_CHARS, "You"),
+            "assistant" => (SUMMARY_ASST_CHARS, "Me"),
+            _           => continue,
+        };
+
+        let text = extract_conversational_text(msg.get("content"), role);
+        if text.is_empty() { continue; }
+
+        // Skip agent automation prompts that slipped through into history.
+        if is_agent_automation_prompt(&text) { continue; }
+
+        let truncated = if text.chars().count() > limit {
+            let cut: String = text.chars().take(limit).collect();
+            format!("{cut}\u{2026}") // … ellipsis
+        } else {
+            text
+        };
+
+        let line = format!("{label}: {truncated}");
+        total_chars += line.len();
+        lines.push(line);
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "[Prior session context — {} turns omitted for brevity:]\n{}\n[End prior context]",
+        lines.len(),
+        lines.join("\n"),
+    )
+}
+
+/// Pull plain text out of a content field, skipping tool noise.
+/// For user messages: skip tool_result blocks.
+/// For assistant messages: skip tool_use blocks (the input JSON isn't prose).
+fn extract_conversational_text(content: Option<&Value>, role: &str) -> String {
+    let skip_type = match role {
+        "user"      => "tool_result",
+        "assistant" => "tool_use",
+        _           => return String::new(),
+    };
+    match content {
+        Some(Value::String(s)) => s.trim().to_string(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|v| v.as_str()) != Some(skip_type))
+            .filter_map(|b| match b.get("type").and_then(|v| v.as_str()) {
+                Some("text") => b.get("text").and_then(|v| v.as_str()).map(str::trim),
+                _            => None,
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
+        _ => String::new(),
+    }
 }
 
 /// piece of user-visible text. Mutates the JSON in place. Returns the
