@@ -38,9 +38,42 @@ pub async fn handle_openai_chat(
     let mut body: Value = serde_json::from_slice(&req.body)
         .map_err(|e| HandlerError::Malformed(format!("body JSON: {e}")))?;
 
+    let messages_snapshot = body
+        .get("messages")
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(vec![]));
+
     let mut session_map = TokenMap::default();
     let entities        = anonymize_messages_body(&mut body, &mut session_map)?;
     let masked_count    = entities.len() as u32;
+
+    let profile_id = state.active_profile_name();
+    if masked_count > 0 {
+        let cascade = state
+            .cascade_monitor
+            .update_and_check(masked_count, &profile_id);
+
+        if cascade {
+            tracing::error!(
+                target: "sci_handlers::anonymizer",
+                masked_count,
+                profile = %profile_id,
+                "ANONYMIZER CASCADE DETECTED (OpenAI path): rolling back substitutions."
+            );
+            if let Some(msgs) = body.get_mut("messages") {
+                *msgs = messages_snapshot;
+            }
+            session_map = TokenMap::default();
+            let err_body = Box::pin(futures::stream::once(async {
+                Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                    b"anonymizer cascade detected; request rolled back",
+                ))
+            }));
+            return Ok(HandlerResponse::streaming(503, HashMap::new(), err_body));
+        }
+    } else {
+        state.cascade_monitor.update_and_check(0, &profile_id);
+    }
 
     // ── 2. Memory recall + injection ───────────────────────────────────────
     let recall_seed = extract_recall_seed(&body);

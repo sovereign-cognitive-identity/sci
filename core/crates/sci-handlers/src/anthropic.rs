@@ -62,9 +62,62 @@ pub async fn handle_anthropic_messages(
         .and_then(|v| v.as_str())
         .map(str::to_owned);
 
+    // Snapshot the messages array once, before anonymization. Both the
+    // per-request circuit breaker and the cross-turn cascade breaker
+    // use this same snapshot for rollback — no double clone.
+    let messages_snapshot = body
+        .get("messages")
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(vec![]));
+
     let mut session_map = TokenMap::default();
     let entities        = anonymize_messages_body(&mut body, &mut session_map)?;
     let masked_count    = entities.len() as u32;
+
+    // Cross-turn cascade breaker: update the monitor and fire if 5 or more
+    // consecutive turns have all exceeded the elevated-entity threshold.
+    // Uses the same rollback path as the per-request breaker.
+    let profile_id = state.active_profile_name();
+    if masked_count > 0 {
+        // Only feed real counts. When the per-request breaker already fired
+        // (masked_count == 0), we pass 0 so the window absorbs a "clean"
+        // turn rather than inflating the cascade signal.
+        let cascade = state
+            .cascade_monitor
+            .update_and_check(masked_count, &profile_id);
+
+        if cascade {
+            tracing::error!(
+                target: "sci_handlers::anonymizer",
+                masked_count,
+                profile = %profile_id,
+                "ANONYMIZER CASCADE DETECTED: 5 consecutive turns above elevated \
+                 threshold. Rolling back substitutions and resetting monitor. \
+                 Check NER rules for a feedback loop in conversation history."
+            );
+            if let Some(msgs) = body.get_mut("messages") {
+                *msgs = messages_snapshot;
+            }
+            session_map = TokenMap::default();
+            let err_body: BodyStream = Box::pin(futures::stream::once(async {
+                Ok::<_, std::io::Error>(bytes::Bytes::from_static(
+                    b"anonymizer cascade detected; request rolled back \
+                      \x97 check sci-helper logs",
+                ))
+            }));
+            return Ok(HandlerResponse {
+                status:               503,
+                headers:              std::collections::HashMap::new(),
+                body:                 err_body,
+                inspect_request:      None,
+                inspect_upstream_raw: None,
+            });
+        }
+    } else {
+        // Per-request breaker already fired; register a zero so the cascade
+        // window doesn't count this turn as elevated.
+        state.cascade_monitor.update_and_check(0, &profile_id);
+    }
 
     // SCI-200: orphan `tool_use` guard. Upstream chat harnesses
     // (LibreChat agents, openclaw, custom Langchain clients) sometimes
@@ -1088,8 +1141,9 @@ fn anonymize_messages_body(body: &mut Value, map: &mut TokenMap) -> Result<Vec<E
     // visible user-turn text in the UI. The system prompt is not user PII;
     // skipping it breaks the injection loop with zero privacy tradeoff.
 
-    // Snapshot the messages array before any mutation so the circuit
-    // breaker can restore the original body if entity count runs away.
+    // The per-request snapshot is taken by the caller (handle_messages_request)
+    // and passed in for rollback. We re-snapshot here only for the internal
+    // per-request breaker — caller's snapshot is used for cascade rollback.
     let pre_anon_snapshot = body
         .get("messages")
         .cloned()

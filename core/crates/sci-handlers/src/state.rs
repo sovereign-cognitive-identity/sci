@@ -4,6 +4,7 @@
 //! and hands to every per-request handler call. Cheap to clone (each
 //! field is wrapped in `Arc`).
 
+use crate::cascade::CascadeMonitor;
 use crate::types::Result;
 use crate::upstream::UpstreamClient;
 use async_trait::async_trait;
@@ -67,6 +68,13 @@ pub struct HandlerState {
     /// behavior). Same single-global-per-helper trade-off as
     /// `active_profile` — acceptable for v1 daily-driver use.
     pub active_project: Arc<Mutex<Option<String>>>,
+
+    /// Cross-turn anonymizer cascade monitor. Tracks masked-entity counts
+    /// across consecutive turns per profile; fires when 5 consecutive turns
+    /// all exceed the elevated threshold (35 entities). Distinguishes a
+    /// legitimate single dense document (one spike, returns to baseline)
+    /// from a runaway cascade (sustained elevation across many turns).
+    pub cascade_monitor: Arc<CascadeMonitor>,
 }
 
 impl HandlerState {
@@ -79,8 +87,9 @@ impl HandlerState {
             storage,
             embedder,
             upstream,
-            active_profile: Arc::new(Mutex::new("work".to_string())),
-            active_project: Arc::new(Mutex::new(None)),
+            active_profile:  Arc::new(Mutex::new("work".to_string())),
+            active_project:  Arc::new(Mutex::new(None)),
+            cascade_monitor: Arc::new(CascadeMonitor::new()),
         }
     }
 

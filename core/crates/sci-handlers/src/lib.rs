@@ -44,6 +44,7 @@
 #![warn(clippy::all)]
 
 mod anthropic;
+mod cascade;
 mod deanonymize_stream;
 mod dispatch;
 mod google;
