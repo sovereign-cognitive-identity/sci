@@ -45,7 +45,7 @@ use std::collections::HashSet;
 /// SCI-203b: state abbreviations that are ALSO common English words
 /// when written in ALL-CAPS. For these, all-caps alone is not sufficient
 /// to distinguish "Portland, OR" (Oregon) from "A OR B" (logical or).
-/// The unigram PLACE rule requires a preceding-comma context for tokens
+/// The unigram PLACE rule requires geographic context for tokens
 /// whose norm is in this set.
 static AMBIGUOUS_ABBREVS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     // norm (lowercase) of the ambiguous ones — common words in all-caps:
@@ -57,6 +57,16 @@ static AMBIGUOUS_ABBREVS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     //   CO = company prefix        DC = Washington DC / direct current
     ["or", "in", "ok", "oh", "hi", "me", "id",
      "la", "ma", "pa", "co", "dc"]
+        .into_iter().collect()
+});
+
+/// Movement/location prepositions that reliably precede a geographic
+/// destination — "driving to OK", "flying from OR", "heading into ME".
+/// When an AMBIGUOUS_ABBREVS token follows one of these, treat it as
+/// a state abbreviation rather than the common-word sense.
+static GEO_PREPOSITIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    ["to", "from", "toward", "towards", "into", "via",
+     "through", "near", "outside", "past"]
         .into_iter().collect()
 });
 
@@ -362,7 +372,7 @@ pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
         if PLACES_UNIGRAM.contains(t.norm.as_str())
             && !is_allowlisted(t.surface)
             && short_place_passes_case_guard(t)
-            && !ambiguous_abbrev_needs_comma(t, i, &toks)
+            && !ambiguous_abbrev_blocked(t, i, &toks)
         {
             push(&mut out, &mut seen, t.surface.to_string(), EntityType::Place);
             // "X, ST" — if this token ends with comma and the next is a
@@ -432,20 +442,29 @@ fn short_place_passes_case_guard(t: &Token<'_>) -> bool {
         && t.surface.chars().all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase())
 }
 
-/// Returns true when the token is an AMBIGUOUS abbreviation that needs a
-/// comma-preceding token to be treated as a state code.
+/// Returns true when an ambiguous abbreviation should be BLOCKED —
+/// i.e. it does not have sufficient geographic context to distinguish
+/// it from its common-word meaning.
 ///
-/// Call site: unigram PLACE rule. If this returns true, skip the tag —
-/// the comma-extension path will handle "Portland, OR" correctly when it
-/// encounters "Portland," as the current token.
-fn ambiguous_abbrev_needs_comma(t: &Token<'_>, i: usize, toks: &[Token<'_>]) -> bool {
+/// An ambiguous abbreviation IS treated as a state when:
+///   1. The preceding token ends with a comma ("Portland, OR") — address form
+///   2. The preceding token is a geo-preposition ("driving to OK",
+///      "flying from OR", "heading into ME")
+///
+/// Everything else is blocked: "A OR B", "sounds OK", "send it to ME",
+/// "HI there!", "that's IN scope", etc.
+fn ambiguous_abbrev_blocked(t: &Token<'_>, i: usize, toks: &[Token<'_>]) -> bool {
     if !AMBIGUOUS_ABBREVS.contains(t.norm.as_str()) {
         return false; // not ambiguous — normal all-caps check sufficient
     }
-    // Ambiguous: require that the PRECEDING token ends with a comma
-    // (the "City, STATE" address pattern). If there's no prior token,
-    // or the prior token doesn't end with a comma, block this match.
-    i == 0 || !toks[i - 1].raw.ends_with(',')
+    if i == 0 { return true; } // no preceding token → block
+    let prev = &toks[i - 1];
+    // Allow: preceded by comma  ("Portland, OR")
+    if prev.raw.ends_with(',') { return false; }
+    // Allow: preceded by geo-preposition  ("driving to OK", "from OR")
+    if GEO_PREPOSITIONS.contains(prev.norm.as_str()) { return false; }
+    // Block everything else
+    true
 }
 
 /// Falls back to `start_surface + " " + end_surface` if locating
@@ -829,6 +848,39 @@ mod tests {
         let tx_out = entities_of_kind("Moving to TX in spring", EntityType::Place);
         assert!(tx_out.contains(&"TX".to_string()),
             "TX not tagged; got {tx_out:?}");
+    }
+
+    #[test]
+    fn geo_preposition_triggers_ambiguous_abbrev() {
+        // "I am driving to OK today" — Casey's exact example.
+        // "to" is a geo-preposition, so OK should tag as Oklahoma.
+        let out = entities_of_kind("I am driving to OK today", EntityType::Place);
+        assert!(out.contains(&"OK".to_string()),
+            "expected OK after 'to' to tag as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn geo_preposition_from_tags_state() {
+        // "flying from OR" — movement preposition before Oregon.
+        let out = entities_of_kind("I am flying from OR to TX", EntityType::Place);
+        assert!(out.contains(&"OR".to_string()),
+            "expected OR after 'from' to tag as PLACE; got {out:?}");
+        assert!(out.contains(&"TX".to_string()),
+            "expected TX to tag as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn non_geo_context_blocks_ambiguous_abbrev() {
+        // "sounds OK", "I OR you", "say HI" — no geographic context.
+        let ok_out = entities_of_kind("That sounds OK to me", EntityType::Place);
+        assert!(!ok_out.contains(&"OK".to_string()),
+            "non-geo OK tagged: {ok_out:?}");
+        let or_out = entities_of_kind("you OR me should go", EntityType::Place);
+        assert!(!or_out.contains(&"OR".to_string()),
+            "non-geo OR tagged: {or_out:?}");
+        let hi_out = entities_of_kind("Say HI to everyone", EntityType::Place);
+        assert!(!hi_out.contains(&"HI".to_string()),
+            "non-geo HI tagged: {hi_out:?}");
     }
 
     #[test]
