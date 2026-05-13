@@ -36,14 +36,37 @@ type MCPServerManagerContextType = {
 
 const MCPServerManagerContext = createContext<MCPServerManagerContextType | undefined>(undefined);
 
+/**
+ * Own instance of the hooks — used as fallback when a consumer renders
+ * outside MCPServerManagerProvider (e.g. landing page, AgentPanel, routes
+ * that load before ChatView mounts the provider).
+ *
+ * Rules-of-hooks: these are called unconditionally every render so React
+ * always sees the same hook order. When the context IS present the fallback
+ * values are simply ignored; when it ISN'T they keep the component working
+ * with a real (non-shared) observer instead of crashing.
+ *
+ * Caveat: components outside the provider get their own React-Query observer
+ * rather than the shared one — the original motivation for this context. That
+ * is acceptable; the alternative (a hard crash on the landing page) is not.
+ */
 export function useMCPServerManagerContext(): MCPServerManagerContextType {
   const ctx = useContext(MCPServerManagerContext);
-  if (!ctx) {
-    throw new Error(
-      'useMCPServerManagerContext must be used within MCPServerManagerProvider',
-    );
-  }
-  return ctx;
+  const fallbackManager = useMCPServerManager({ conversationId: undefined });
+  const { data: servers } = useMCPServersQuery({ staleTime: Infinity });
+  const fallbackIconMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (!servers) return map;
+    for (const [name, config] of Object.entries(servers)) {
+      if ((config as { iconPath?: string }).iconPath) {
+        map.set(name, (config as { iconPath: string }).iconPath);
+      }
+    }
+    return map;
+  }, [servers]);
+
+  if (ctx) return ctx;
+  return { mcpServerManager: fallbackManager, mcpIconMap: fallbackIconMap };
 }
 
 interface Props {
