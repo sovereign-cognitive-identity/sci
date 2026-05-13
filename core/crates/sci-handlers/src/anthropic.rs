@@ -1240,6 +1240,12 @@ fn mark_cache_control(body: &mut Value) {
     // Anthropic hard limit — never send more than this many cache_control blocks.
     const CACHE_CONTROL_LIMIT: usize = 4;
 
+    // Strip ALL cache_control blocks that accumulated in messages[] from
+    // prior turns. We re-add exactly the ones we want below. This is the
+    // correct fix for both old sessions (history already over limit) and
+    // new ones. system[] and tools[] are left alone — those are ours.
+    strip_message_cache_controls(body);
+
     let existing = count_cache_control_blocks(body);
     let mut budget = CACHE_CONTROL_LIMIT.saturating_sub(existing);
     if budget == 0 { return; }
@@ -1305,6 +1311,26 @@ fn mark_cache_control(body: &mut Value) {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+/// Remove cache_control from every content block inside messages[].
+/// Called before re-applying markers so stale accumulated blocks from
+/// prior turns don't push the count over Anthropic's 4-block limit.
+/// system[] and tools[] are intentionally left untouched.
+fn strip_message_cache_controls(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for msg in messages.iter_mut() {
+        let Some(content) = msg.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        for block in content.iter_mut() {
+            if let Some(obj) = block.as_object_mut() {
+                obj.remove("cache_control");
             }
         }
     }
