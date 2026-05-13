@@ -209,6 +209,14 @@ pub struct StoreAuditTurnInput<'a> {
     pub latency_ms:      Option<u64>,
     pub error:           Option<&'a str>,
     pub token_mappings:  Vec<TokenMappingInput<'a>>,
+    /// Tokens written to the Anthropic prompt cache this turn (cache miss).
+    pub cache_creation_tokens: Option<u64>,
+    /// Tokens read from the Anthropic prompt cache this turn (cache hit).
+    pub cache_read_tokens:     Option<u64>,
+    /// Total input tokens billed this turn (excludes cache_read at discount).
+    pub input_tokens:          Option<u64>,
+    /// Output tokens generated this turn.
+    pub output_tokens:         Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,6 +247,18 @@ pub struct AuditTurn {
     #[serde(rename = "latencyMs")]
     pub latency_ms:      Option<u64>,
     pub error:           Option<String>,
+    /// Anthropic prompt-cache tokens written (cache miss cost).
+    #[serde(rename = "cacheCreationTokens")]
+    pub cache_creation_tokens: Option<u64>,
+    /// Anthropic prompt-cache tokens read (cache hit savings).
+    #[serde(rename = "cacheReadTokens")]
+    pub cache_read_tokens:     Option<u64>,
+    /// Total input tokens billed (at full price).
+    #[serde(rename = "inputTokens")]
+    pub input_tokens:          Option<u64>,
+    /// Output tokens generated.
+    #[serde(rename = "outputTokens")]
+    pub output_tokens:         Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

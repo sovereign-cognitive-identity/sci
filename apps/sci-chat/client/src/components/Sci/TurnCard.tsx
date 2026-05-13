@@ -166,6 +166,23 @@ export default function TurnCard({ turn, searchQuery }: Props) {
             {turn.latencyMs != null && (
               <span className="whitespace-nowrap">⚡ {turn.latencyMs}&thinsp;ms</span>
             )}
+            {/* Prompt-cache indicators */}
+            {turn.cacheReadTokens != null && turn.cacheReadTokens > 0 && (
+              <span
+                className="whitespace-nowrap text-emerald-500"
+                title={`Cache hit: ${turn.cacheReadTokens.toLocaleString()} tokens read from cache (~90% discount)`}
+              >
+                🎯 {(turn.cacheReadTokens / 1000).toFixed(1)}k
+              </span>
+            )}
+            {turn.cacheCreationTokens != null && turn.cacheCreationTokens > 0 && turn.cacheReadTokens === 0 && (
+              <span
+                className="whitespace-nowrap text-amber-500"
+                title={`Cache write: ${turn.cacheCreationTokens.toLocaleString()} tokens written to cache`}
+              >
+                📝 {(turn.cacheCreationTokens / 1000).toFixed(1)}k
+              </span>
+            )}
             <span
               className={`whitespace-nowrap font-mono ${
                 statusOk ? 'text-green-500' : 'text-red-500'

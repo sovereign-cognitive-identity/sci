@@ -31,7 +31,7 @@
 
 use crate::error::{MemoryError, Result};
 use crate::recall::{embedding_to_bytes, recall};
-use crate::schema::{EMBEDDING_DIM, SCHEMA, SEED_PROFILES};
+use crate::schema::{EMBEDDING_DIM, MIGRATIONS, SCHEMA, SEED_PROFILES};
 use crate::types::{
     AuditTurn, IdentityFact, Metadata, Profile, RecallQuery, RecallResult, StorageStats,
     StoreAuditTurnInput, StoreEpisodicInput, StoreIdentityInput, StoreSemanticInput, TokenDirection,
@@ -73,6 +73,16 @@ impl LocalAdapter {
 
     fn init_with_backend(conn: Connection, backend: &str) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        // Additive migrations — each ALTER TABLE is idempotent: SQLite
+        // returns "duplicate column" on re-runs, which we swallow.
+        for migration in MIGRATIONS {
+            if let Err(e) = conn.execute_batch(migration) {
+                let msg = e.to_string();
+                if !msg.contains("duplicate column") {
+                    return Err(e.into());
+                }
+            }
+        }
         let adapter = LocalAdapter { conn, backend: backend.to_string() };
         adapter.seed_profiles()?;
         Ok(adapter)
@@ -356,11 +366,14 @@ impl LocalAdapter {
             "INSERT INTO audit_turns (
                id, profile_id, host, endpoint, model, oauth_active,
                user_text, assistant_text, request_body, response_raw,
-               recall_injected, masked_count, status, latency_ms, error
+               recall_injected, masked_count, status, latency_ms, error,
+               cache_creation_tokens, cache_read_tokens,
+               input_tokens, output_tokens
              )
              VALUES (?1, ?2, ?3, ?4, ?5, ?6,
                      ?7, ?8, ?9, ?10,
-                     ?11, ?12, ?13, ?14, ?15)",
+                     ?11, ?12, ?13, ?14, ?15,
+                     ?16, ?17, ?18, ?19)",
             params![
                 id,
                 input.profile_id,
@@ -377,6 +390,10 @@ impl LocalAdapter {
                 input.status.map(|s| s as i64),
                 input.latency_ms.map(|s| s as i64),
                 input.error,
+                input.cache_creation_tokens.map(|v| v as i64),
+                input.cache_read_tokens.map(|v| v as i64),
+                input.input_tokens.map(|v| v as i64),
+                input.output_tokens.map(|v| v as i64),
             ],
         )?;
 
@@ -420,7 +437,9 @@ impl LocalAdapter {
                 "SELECT id, profile_id, created_at, host, endpoint, model,
                         oauth_active, user_text, assistant_text, request_body,
                         response_raw, recall_injected, masked_count,
-                        status, latency_ms, error
+                        status, latency_ms, error,
+                        cache_creation_tokens, cache_read_tokens,
+                        input_tokens, output_tokens
                    FROM audit_turns
                   WHERE profile_id = ?1
                   ORDER BY created_at DESC
@@ -433,7 +452,9 @@ impl LocalAdapter {
                 "SELECT id, profile_id, created_at, host, endpoint, model,
                         oauth_active, user_text, assistant_text, request_body,
                         response_raw, recall_injected, masked_count,
-                        status, latency_ms, error
+                        status, latency_ms, error,
+                        cache_creation_tokens, cache_read_tokens,
+                        input_tokens, output_tokens
                    FROM audit_turns
                   ORDER BY created_at DESC
                   LIMIT ?1",
@@ -452,7 +473,9 @@ impl LocalAdapter {
                 "SELECT id, profile_id, created_at, host, endpoint, model,
                         oauth_active, user_text, assistant_text, request_body,
                         response_raw, recall_injected, masked_count,
-                        status, latency_ms, error
+                        status, latency_ms, error,
+                        cache_creation_tokens, cache_read_tokens,
+                        input_tokens, output_tokens
                    FROM audit_turns
                   WHERE id = ?1",
                 params![id],
@@ -560,7 +583,11 @@ fn row_to_audit_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditTurn> {
     let masked_count:    i64            = row.get(12)?;
     let status:          Option<i64>    = row.get(13)?;
     let latency_ms:      Option<i64>    = row.get(14)?;
-    let error:           Option<String> = row.get(15)?;
+    let error:                   Option<String> = row.get(15)?;
+    let cache_creation_tokens:   Option<i64>    = row.get(16).unwrap_or(None);
+    let cache_read_tokens:       Option<i64>    = row.get(17).unwrap_or(None);
+    let input_tokens:            Option<i64>    = row.get(18).unwrap_or(None);
+    let output_tokens:           Option<i64>    = row.get(19).unwrap_or(None);
     Ok(AuditTurn {
         id,
         profile_id,
@@ -578,6 +605,10 @@ fn row_to_audit_turn(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditTurn> {
         status:       status.map(|s| s as u16),
         latency_ms:   latency_ms.map(|s| s as u64),
         error,
+        cache_creation_tokens: cache_creation_tokens.map(|v| v as u64),
+        cache_read_tokens:     cache_read_tokens.map(|v| v as u64),
+        input_tokens:          input_tokens.map(|v| v as u64),
+        output_tokens:         output_tokens.map(|v| v as u64),
     })
 }
 

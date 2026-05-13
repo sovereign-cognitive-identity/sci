@@ -38,11 +38,26 @@ pub struct DeanonymizingStream {
     /// Available after `wrap()`'s stream ends; read by the storage
     /// path so we can persist what the user actually saw.
     pub full_response: Arc<Mutex<String>>,
+    /// Prompt-cache usage extracted from the `message_start` SSE event.
+    /// Populated once per stream; `None` until `message_start` is seen.
+    pub cache_metrics: Arc<Mutex<Option<CacheMetrics>>>,
+}
+
+/// Token-usage breakdown returned by Anthropic in the `message_start` event.
+#[derive(Debug, Clone, Default)]
+pub struct CacheMetrics {
+    pub input_tokens:            u64,
+    pub cache_creation_tokens:   u64,
+    pub cache_read_tokens:       u64,
+    pub output_tokens:           u64,  // filled from message_delta
 }
 
 impl DeanonymizingStream {
     pub fn new() -> Self {
-        Self { full_response: Arc::new(Mutex::new(String::new())) }
+        Self {
+            full_response: Arc::new(Mutex::new(String::new())),
+            cache_metrics: Arc::new(Mutex::new(None)),
+        }
     }
 
     /// Wrap an upstream `BodyStream` so its bytes are deanonymized in
@@ -86,7 +101,8 @@ impl DeanonymizingStream {
         token_map:   TokenMap,
         on_complete: Option<Box<dyn FnOnce(String) + Send + 'static>>,
     ) -> BodyStream {
-        let full = self.full_response.clone();
+        let full    = self.full_response.clone();
+        let metrics = self.cache_metrics.clone();
         let mut buf: Vec<u8> = Vec::new();
         let mut upstream = upstream;
         let mut on_complete = on_complete;
@@ -109,7 +125,7 @@ impl DeanonymizingStream {
                 while let Some(end) = find_event_boundary(&buf) {
                     let event_bytes: Vec<u8> = buf.drain(..end).collect();
                     let processed =
-                        process_event(&event_bytes, &token_map, &full);
+                        process_event(&event_bytes, &token_map, &full, &metrics);
                     yield Ok(Bytes::from(processed));
                 }
             }
@@ -164,6 +180,7 @@ fn process_event(
     raw:        &[u8],
     token_map:  &TokenMap,
     full_resp:  &Arc<Mutex<String>>,
+    cache_arc:  &Arc<Mutex<Option<CacheMetrics>>>,
 ) -> Vec<u8> {
     let text = match std::str::from_utf8(raw) {
         Ok(s)  => s,
@@ -183,6 +200,7 @@ fn process_event(
             // than to drop the event.
             match serde_json::from_str::<serde_json::Value>(json_str) {
                 Ok(mut value) => {
+                    extract_cache_metrics(&value, cache_arc);
                     deanonymize_text_delta(&mut value, token_map, full_resp);
                     out.push_str("data: ");
                     out.push_str(&value.to_string());
@@ -200,6 +218,55 @@ fn process_event(
         }
     }
     out.into_bytes()
+}
+
+/// Extract Anthropic prompt-cache usage from `message_start` and
+/// output token count from `message_delta` events.
+///
+/// Anthropic sends these two events during every SSE stream:
+///
+///   `message_start`:  usage.input_tokens, usage.cache_creation_input_tokens,
+///                     usage.cache_read_input_tokens
+///   `message_delta`:  usage.output_tokens
+///
+/// We accumulate into a shared `CacheMetrics` so the finalize callback
+/// can persist them alongside the audit_turn row.
+fn extract_cache_metrics(value: &serde_json::Value, arc: &Arc<Mutex<Option<CacheMetrics>>>) {
+    let Some(obj) = value.as_object() else { return; };
+    let event_type = obj.get("type").and_then(|v| v.as_str());
+
+    match event_type {
+        Some("message_start") => {
+            let usage = obj
+                .get("message").and_then(|m| m.get("usage"));
+            if let Some(u) = usage {
+                let get = |key: &str| u.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+                let m = CacheMetrics {
+                    input_tokens:          get("input_tokens"),
+                    cache_creation_tokens: get("cache_creation_input_tokens"),
+                    cache_read_tokens:     get("cache_read_input_tokens"),
+                    output_tokens:         0, // filled below
+                };
+                if let Ok(mut guard) = arc.lock() {
+                    *guard = Some(m);
+                }
+            }
+        }
+        Some("message_delta") => {
+            let out = obj.get("usage")
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if out > 0 {
+                if let Ok(mut guard) = arc.lock() {
+                    if let Some(ref mut m) = *guard {
+                        m.output_tokens = out;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// In-place edit: deanonymize whichever provider-specific text-delta

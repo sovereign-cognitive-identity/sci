@@ -23,6 +23,14 @@ export interface AuditTurn {
   status: number | null;
   latencyMs: number | null;
   error: string | null;
+  /** Tokens written to Anthropic prompt cache (cache miss; ~125% cost). */
+  cacheCreationTokens: number | null;
+  /** Tokens read from Anthropic prompt cache (cache hit; ~10% cost). */
+  cacheReadTokens: number | null;
+  /** Input tokens billed at full price this turn. */
+  inputTokens: number | null;
+  /** Output tokens generated this turn. */
+  outputTokens: number | null;
 }
 
 export interface TokenMapping {

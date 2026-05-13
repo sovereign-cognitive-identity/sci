@@ -93,6 +93,23 @@ export default function InspectorPanel() {
     ).length;
   }, [turns.data, search]);
 
+  /** Session-level prompt-cache stats across all loaded turns. */
+  const cacheStats = useMemo(() => {
+    if (!turns.data) return null;
+    let totalRead = 0, totalWrite = 0, totalInput = 0, totalOutput = 0, hits = 0;
+    for (const t of turns.data) {
+      if (t.cacheReadTokens)     { totalRead  += t.cacheReadTokens;     hits++; }
+      if (t.cacheCreationTokens) { totalWrite += t.cacheCreationTokens; }
+      if (t.inputTokens)         totalInput  += t.inputTokens;
+      if (t.outputTokens)        totalOutput += t.outputTokens;
+    }
+    if (totalRead === 0 && totalWrite === 0) return null;
+    // Anthropic pricing (Sonnet): $3/MTok input, $0.30/MTok cache-read.
+    // Saved = tokens that would have been $3/MTok but were $0.30/MTok instead.
+    const savedUsd = (totalRead * (3 - 0.30)) / 1_000_000;
+    return { totalRead, totalWrite, totalInput, totalOutput, hits, savedUsd };
+  }, [turns.data]);
+
   const handleExportAll = async () => {
     if (!turns.data || turns.data.length === 0) return;
     setExporting(true);
@@ -207,6 +224,33 @@ export default function InspectorPanel() {
                     </p>
                   )}
                 </div>
+
+                {/* ── Cache stats bar ── */}
+                {cacheStats && (
+                  <div className="flex-shrink-0 border-b border-border-medium bg-surface-secondary px-3 py-1.5">
+                    <div className="flex items-center gap-3 text-[10px]">
+                      <span className="text-text-secondary">Cache</span>
+                      <span
+                        className="text-emerald-500"
+                        title={`${cacheStats.totalRead.toLocaleString()} tokens read from cache across ${cacheStats.hits} turns`}
+                      >
+                        🎯 {(cacheStats.totalRead / 1000).toFixed(0)}k read
+                      </span>
+                      <span
+                        className="text-amber-500"
+                        title={`${cacheStats.totalWrite.toLocaleString()} tokens written to cache`}
+                      >
+                        📝 {(cacheStats.totalWrite / 1000).toFixed(0)}k written
+                      </span>
+                      <span
+                        className="font-medium text-emerald-400"
+                        title="Estimated cost savings vs. paying full input price for cached tokens"
+                      >
+                        ~${cacheStats.savedUsd.toFixed(3)} saved
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
                   <RecallPreview enabled={open} />

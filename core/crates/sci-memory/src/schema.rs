@@ -202,6 +202,17 @@ CREATE INDEX IF NOT EXISTS idx_token_mappings_token_profile
     ON token_mappings(token, profile_id);
 "#;
 
+/// Additive migrations applied after SCHEMA. Each is a single ALTER TABLE
+/// that adds a column with a safe default. SQLite ignores "duplicate column"
+/// errors so these are idempotent on databases that already have the column.
+pub const MIGRATIONS: &[&str] = &[
+    // Prompt-caching metrics (Anthropic cache_control feature).
+    "ALTER TABLE audit_turns ADD COLUMN cache_creation_tokens INTEGER",
+    "ALTER TABLE audit_turns ADD COLUMN cache_read_tokens     INTEGER",
+    "ALTER TABLE audit_turns ADD COLUMN input_tokens          INTEGER",
+    "ALTER TABLE audit_turns ADD COLUMN output_tokens         INTEGER",
+];
+
 /// Profile seeds — `'work'` is what `injectMemoryContext` looks up by
 /// default; `'personal'` is for the eventual UI toggle. Same names as
 /// the TS adapter so an existing user's data flows over.
