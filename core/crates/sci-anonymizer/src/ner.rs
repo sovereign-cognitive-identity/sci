@@ -70,6 +70,21 @@ static GEO_PREPOSITIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
         .into_iter().collect()
 });
 
+/// Copula verbs (lowercase) that follow a grammatical subject. When an
+/// AMBIGUOUS_ABBREVS token is immediately followed by one of these —
+/// without itself having a trailing comma — it is in subject position and
+/// likely refers to the state: "OK is my home state", "ME was the goal".
+///
+/// We restrict to LOWERCASE copulas so that "OK? Are you sure?" (where
+/// "Are" starts a new sentence and is therefore capitalised) does not
+/// falsely fire. t.is_cap == false on a copula → same sentence.
+static COPULAS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    ["is", "was", "are", "were", "has", "had", "will", "would", "can",
+     "could", "should", "must", "might", "may", "becomes", "became",
+     "seems", "remained", "stayed"]
+        .into_iter().collect()
+});
+
 // ── Lexicons ──────────────────────────────────────────────────────────────
 
 const FIRST_NAMES_RAW: &str = include_str!("data/first_names.txt");
@@ -446,24 +461,52 @@ fn short_place_passes_case_guard(t: &Token<'_>) -> bool {
 /// i.e. it does not have sufficient geographic context to distinguish
 /// it from its common-word meaning.
 ///
-/// An ambiguous abbreviation IS treated as a state when:
-///   1. The preceding token ends with a comma ("Portland, OR") — address form
-///   2. The preceding token is a geo-preposition ("driving to OK",
-///      "flying from OR", "heading into ME")
+/// Decision table (checked in priority order):
 ///
-/// Everything else is blocked: "A OR B", "sounds OK", "send it to ME",
-/// "HI there!", "that's IN scope", etc.
+///  ALLOW — geo-preposition precedes:  "driving to OK", "flying from OR"
+///  ALLOW — comma precedes:            "Portland, OR is nice"
+///  BLOCK — token itself has trailing comma: "OK, let's go", "OK, sure"
+///           (acknowledgment form — comma follows, not precedes)
+///  ALLOW — lowercase copula follows:  "OK is my home", "ME was the plan"
+///           (subject position; copula must be lower-case so that
+///           "OK? Are you sure?" — where "Are" starts a new sentence —
+///           does not falsely fire)
+///  BLOCK — everything else:  "A OR B", "sounds OK", "say HI", etc.
 fn ambiguous_abbrev_blocked(t: &Token<'_>, i: usize, toks: &[Token<'_>]) -> bool {
     if !AMBIGUOUS_ABBREVS.contains(t.norm.as_str()) {
-        return false; // not ambiguous — normal all-caps check sufficient
+        return false; // not ambiguous — all-caps check alone is sufficient
     }
-    if i == 0 { return true; } // no preceding token → block
-    let prev = &toks[i - 1];
-    // Allow: preceded by comma  ("Portland, OR")
-    if prev.raw.ends_with(',') { return false; }
-    // Allow: preceded by geo-preposition  ("driving to OK", "from OR")
-    if GEO_PREPOSITIONS.contains(prev.norm.as_str()) { return false; }
-    // Block everything else
+
+    // 1. Geo-preposition preceding — highest priority, overrides trailing comma
+    //    e.g. "I'm from OK, and from TX" — "OK," still tagged
+    if i > 0 && GEO_PREPOSITIONS.contains(toks[i - 1].norm.as_str()) {
+        return false;
+    }
+
+    // 2. Comma-preceding — address form "Portland, OR"
+    if i > 0 && toks[i - 1].raw.ends_with(',') {
+        return false;
+    }
+
+    // 3. Token itself has a trailing comma → acknowledgment form
+    //    "OK, let's go",  "Sure, OK, whatever"
+    //    (geo-preposition already handled above, so this is safe)
+    if t.raw.ends_with(',') {
+        return true;
+    }
+
+    // 4. Lowercase copula immediately follows → subject position
+    //    "OK is my home",  "ME was the original plan"
+    //    Lowercase gate: "OK? Are you sure?" — "Are" is sentence-initial
+    //    (capitalised), so it does NOT trigger this rule.
+    if i + 1 < toks.len() {
+        let next = &toks[i + 1];
+        if !next.is_cap && COPULAS.contains(next.norm.as_str()) {
+            return false;
+        }
+    }
+
+    // 5. Default: not enough context — block
     true
 }
 
@@ -881,6 +924,32 @@ mod tests {
         let hi_out = entities_of_kind("Say HI to everyone", EntityType::Place);
         assert!(!hi_out.contains(&"HI".to_string()),
             "non-geo HI tagged: {hi_out:?}");
+    }
+
+    #[test]
+    fn acknowledgment_form_not_tagged() {
+        // "OK, let's go" — OK followed by comma = agreement, not Oklahoma.
+        let out = entities_of_kind("OK, let's go to the store", EntityType::Place);
+        assert!(!out.contains(&"OK".to_string()),
+            "acknowledgment OK, should not tag: {out:?}");
+    }
+
+    #[test]
+    fn subject_position_tagged() {
+        // "OK is my home" — Casey's exact example. OK as grammatical
+        // subject followed by a copula verb = state, not "okay".
+        let out = entities_of_kind("OK is my home state", EntityType::Place);
+        assert!(out.contains(&"OK".to_string()),
+            "subject-position OK should tag as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn sentence_boundary_copula_not_triggered() {
+        // "OK? Are you sure?" — "Are" starts a new sentence (capitalised),
+        // so the copula rule must NOT fire. OK is a question/acknowledgment.
+        let out = entities_of_kind("OK? Are you sure?", EntityType::Place);
+        assert!(!out.contains(&"OK".to_string()),
+            "sentence-boundary copula must not trigger state tag: {out:?}");
     }
 
     #[test]
