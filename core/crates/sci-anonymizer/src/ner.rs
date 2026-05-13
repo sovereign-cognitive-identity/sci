@@ -168,9 +168,24 @@ fn tokenize(text: &str) -> Vec<Token<'_>> {
 /// punctuation) rather than the trimmed `surface`, because the
 /// trimmer strips leading `[` — so by the time we look at `surface`,
 /// `Casey` has become `PERSON_1` with no bracket signal left.
+/// SCI-196b: also match *partial* placeholder shapes that lack digits
+/// or a closing bracket. Production inputs contain these forms in:
+///   • source-code comments quoting `[PLACE_` or `[PLACE_2"`
+///   • SQL tool_result output showing `[PLACE_3]|OR` rows
+///   • past-session discussion text about the bug itself
+///
+/// The original SCI-196 implementation required at least one digit
+/// AND a closing `]`. That was too strict: `[PLACE_"` (trailing quote
+/// from tokenizer splitting `"Casey [PLACE_"`) has no digit and no `]`,
+/// so it returned false, and the compound-PERSON rule absorbed it.
+///
+/// Relaxed rule: match `[UPPER+_` followed by *anything* (digits,
+/// punctuation, EOF). The pattern `[` + all-caps word + `_` is
+/// unambiguous enough in practice that false positives are negligible.
 fn is_bracketed_placeholder(raw: &str) -> bool {
     let bytes = raw.as_bytes();
-    if bytes.len() < 4 || bytes[0] != b'[' {
+    // Minimum: `[A_` = 3 bytes.
+    if bytes.len() < 3 || bytes[0] != b'[' {
         return false;
     }
     let mut i = 1usize;
@@ -180,21 +195,10 @@ fn is_bracketed_placeholder(raw: &str) -> bool {
         i += 1;
     }
     if i == start { return false; }
-    // Underscore.
+    // Underscore immediately after the uppercase letters — required.
     if i >= bytes.len() || bytes[i] != b'_' { return false; }
-    i += 1;
-    // One or more digits.
-    let digit_start = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == digit_start { return false; }
-    // Closing bracket — required. We accept either `]` followed by
-    // anything (punctuation, EOF) or no closing bracket at all when
-    // it's the tail of a token that the tokenizer truncated. Be
-    // strict: require the `]` for a positive match; truncated cases
-    // are an SCI-194-class bug and shouldn't recur post-fix.
-    if i >= bytes.len() || bytes[i] != b']' { return false; }
+    // Matched `[UPPER+_` — this is a placeholder shape regardless of
+    // what follows (digits, `]`, trailing punctuation, or EOF).
     true
 }
 
@@ -638,6 +642,62 @@ mod tests {
             assert!(
                 !e.text.contains("[PLACE_") && !e.text.contains("[PERSON_"),
                 "entity text absorbed a bracketed token: {:?}", e.text,
+            );
+        }
+    }
+
+    // ── SCI-196b: incomplete-placeholder gate ─────────────────────────
+    // The original SCI-196 fix required a closing `]`. Production inputs
+    // (source-code comments, SQL output, discussion of the bug) contain
+    // *partial* placeholder shapes like `[PLACE_` with no closing bracket.
+    // These bypassed the gate and were absorbed by the compound-PERSON rule,
+    // producing `"Casey [PLACE_"` (15 chars) as a poisoned original.
+    // All inputs below must produce ZERO entity texts containing `[PLACE_`.
+
+    #[test]
+    fn incomplete_placeholder_bare_stem_not_absorbed() {
+        // Exact production-failure shape: `[PLACE_` with no digits, no `]`
+        let text = r#"the pattern "Casey [PLACE_" appears in poison rows"#;
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed bare-stem incomplete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_placeholder_with_digits_not_absorbed() {
+        // `[PLACE_2` — digits present, closing `]` stripped by tokenizer
+        let text = "Casey [PLACE_2 was still being extended before this fix";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed digit-form incomplete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_placeholder_quoted_source_not_absorbed() {
+        // Quoted in source-code comment: `Casey [PLACE_2"` (closing quote, no bracket)
+        let text = r#"entity.original was "Casey [PLACE_2" which is wrong"#;
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed quoted incomplete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn complete_placeholder_still_gated() {
+        // Original SCI-196 case must still work — complete `[PLACE_2]`
+        let text = "Casey moved to [PLACE_2] last week";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed complete placeholder: {:?}", e.text
             );
         }
     }
