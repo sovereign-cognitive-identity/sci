@@ -219,3 +219,37 @@ export const img: React.ElementType = memo(function MarkdownImage({
   return <img src={fixedSrc} alt={alt} title={title} className={className} style={style} />;
 });
 img.displayName = 'MarkdownImage';
+
+/**
+ * Render ~~deleted~~ text as a code-diff removal highlight instead of
+ * browser-default strikethrough. Red background + red text, no line-through.
+ */
+export const del: React.ElementType = memo(function MarkdownDel({
+  children,
+}: {
+  children?: React.ReactNode;
+}) {
+  return (
+    <span className="rounded bg-red-500/15 px-0.5 text-red-400 dark:bg-red-500/20 dark:text-red-400">
+      {children}
+    </span>
+  );
+});
+del.displayName = 'MarkdownDel';
+
+/**
+ * Render inserted text (if produced by any remark plugin) as a code-diff
+ * addition highlight — green background + green text.
+ */
+export const ins: React.ElementType = memo(function MarkdownIns({
+  children,
+}: {
+  children?: React.ReactNode;
+}) {
+  return (
+    <span className="rounded bg-green-500/15 px-0.5 text-green-400 dark:bg-green-500/20 dark:text-green-400">
+      {children}
+    </span>
+  );
+});
+ins.displayName = 'MarkdownIns';
