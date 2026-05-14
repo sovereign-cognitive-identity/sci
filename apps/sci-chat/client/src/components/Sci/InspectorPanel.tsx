@@ -103,11 +103,12 @@ export default function InspectorPanel() {
       if (t.inputTokens)         totalInput  += t.inputTokens;
       if (t.outputTokens)        totalOutput += t.outputTokens;
     }
-    if (totalRead === 0 && totalWrite === 0) return null;
-    // Anthropic pricing (Sonnet): $3/MTok input, $0.30/MTok cache-read.
-    // Saved = tokens that would have been $3/MTok but were $0.30/MTok instead.
+    if (totalRead === 0 && totalWrite === 0 && totalInput === 0) return null;
+    // Anthropic Sonnet pricing: $3/MTok input, $15/MTok output, $0.30/MTok cache-read.
     const savedUsd = (totalRead * (3 - 0.30)) / 1_000_000;
-    return { totalRead, totalWrite, totalInput, totalOutput, hits, savedUsd };
+    const costUsd  = (totalInput * 3 + totalOutput * 15) / 1_000_000;
+    const totalTokens = totalInput + totalOutput;
+    return { totalRead, totalWrite, totalInput, totalOutput, hits, savedUsd, costUsd, totalTokens };
   }, [turns.data]);
 
   const handleExportAll = async () => {
@@ -225,9 +226,31 @@ export default function InspectorPanel() {
                   )}
                 </div>
 
-                {/* ── Cache stats bar ── */}
+                {/* ── Token usage + cache stats bar ── */}
                 {cacheStats && (
                   <div className="flex-shrink-0 border-b border-border-medium bg-surface-secondary px-3 py-1.5">
+                    {/* Row 1: token counts + cost */}
+                    {cacheStats.totalTokens > 0 && (
+                      <div className="mb-1 flex items-center gap-3 text-[10px]">
+                        <span className="text-text-secondary">Session</span>
+                        <span
+                          className="text-text-primary"
+                          title={`Input: ${cacheStats.totalInput.toLocaleString()} | Output: ${cacheStats.totalOutput.toLocaleString()}`}
+                        >
+                          {(cacheStats.totalTokens / 1000).toFixed(1)}k tokens
+                        </span>
+                        <span
+                          className="font-medium text-sky-400"
+                          title={`Input cost ($3/MTok) + output cost ($15/MTok). Does not include cache write overhead.`}
+                        >
+                          ~${cacheStats.costUsd.toFixed(3)}
+                        </span>
+                        <span className="text-text-secondary">
+                          {turns.data?.length ?? 0} turns
+                        </span>
+                      </div>
+                    )}
+                    {/* Row 2: cache savings */}
                     <div className="flex items-center gap-3 text-[10px]">
                       <span className="text-text-secondary">Cache</span>
                       <span
@@ -244,7 +267,7 @@ export default function InspectorPanel() {
                       </span>
                       <span
                         className="font-medium text-emerald-400"
-                        title="Estimated cost savings vs. paying full input price for cached tokens"
+                        title="Estimated savings vs. paying full input price for all cached tokens"
                       >
                         ~${cacheStats.savedUsd.toFixed(3)} saved
                       </span>

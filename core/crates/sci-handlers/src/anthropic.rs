@@ -585,10 +585,24 @@ fn extract_user_text(body: &Value) -> String {
     for msg in messages.iter().rev() {
         if msg.get("role").and_then(|v| v.as_str()) != Some("user") { continue; }
         let content = msg.get("content");
-        if let Some(s) = content.and_then(|v| v.as_str()) { return s.to_string(); }
+
+        // String content — skip if it's boilerplate (artifact instructions etc.)
+        if let Some(s) = content.and_then(|v| v.as_str()) {
+            if !is_agent_automation_prompt(s) {
+                return s.to_string();
+            }
+            continue;
+        }
+
         if let Some(arr) = content.and_then(|v| v.as_array()) {
-            // Concatenate all text blocks in the most recent user turn —
-            // matches what a user perceives as "what I just said."
+            // Skip messages that are entirely tool_result blocks — those are
+            // tool outputs from prior turns, not user-authored text.
+            let has_only_tool_results = arr.iter().all(|b| {
+                b.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+            });
+            if has_only_tool_results { continue; }
+
+            // Concatenate text blocks, skipping boilerplate chunks.
             let parts: Vec<&str> = arr
                 .iter()
                 .filter_map(|b| {
@@ -598,6 +612,7 @@ fn extract_user_text(body: &Value) -> String {
                         None
                     }
                 })
+                .filter(|s| !is_agent_automation_prompt(s))
                 .collect();
             if !parts.is_empty() {
                 return parts.join("\n");

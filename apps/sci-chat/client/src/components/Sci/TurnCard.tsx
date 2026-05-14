@@ -183,6 +183,15 @@ export default function TurnCard({ turn, searchQuery }: Props) {
                 📝 {(turn.cacheCreationTokens / 1000).toFixed(1)}k
               </span>
             )}
+            {/* Token cost: input + output billed tokens */}
+            {turn.inputTokens != null && turn.inputTokens > 0 && (
+              <span
+                className="whitespace-nowrap text-text-secondary"
+                title={`Input: ${turn.inputTokens.toLocaleString()} tokens | Output: ${(turn.outputTokens ?? 0).toLocaleString()} tokens | Est. cost: $${(((turn.inputTokens * 3) + ((turn.outputTokens ?? 0) * 15)) / 1_000_000).toFixed(4)}`}
+              >
+                {((turn.inputTokens + (turn.outputTokens ?? 0)) / 1000).toFixed(1)}k tok
+              </span>
+            )}
             <span
               className={`whitespace-nowrap font-mono ${
                 statusOk ? 'text-green-500' : 'text-red-500'
