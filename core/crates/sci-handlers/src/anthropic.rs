@@ -228,6 +228,32 @@ pub async fn handle_anthropic_messages(
         );
     }
 
+    // SCI-200b: orphan `server_tool_use` guard (Anthropic native web_search).
+    //
+    // Anthropic's native web_search beta emits a `server_tool_use` block
+    // (id: "srvtoolu_…") AND a `web_search_tool_result` block in the SAME
+    // assistant turn. LibreChat's @librechat/agents skips the
+    // `web_search_tool_result` chunk when building stored contentParts
+    // (handleServerToolResult returns skipHandling=true), so the result block
+    // is never persisted. On replay, LangChain emits the assistant message
+    // with `server_tool_use` but without `web_search_tool_result`, and the
+    // Anthropic API rejects with:
+    //   "messages.N: `web_search` tool use … found without a corresponding
+    //    `web_search_tool_result` block"
+    //
+    // Fix: inject a `web_search_tool_result_error` block immediately after
+    // each orphaned `server_tool_use` in the assistant message, and strip any
+    // stale `tool_result` for the same srvtoolu_ ID from the next user message
+    // (LangChain sometimes emits these when the provider hint is absent).
+    let srv_repaired = repair_orphan_server_tool_uses(&mut body);
+    if srv_repaired > 0 {
+        tracing::warn!(
+            target: "sci_handlers::anthropic",
+            repaired = srv_repaired,
+            "SCI-200b auto-repaired {srv_repaired} orphan server_tool_use block(s) in outbound request"
+        );
+    }
+
     // ── 2. Memory recall + injection ───────────────────────────────────────
     //
     // Pull the user's most recent text out of `messages[].content` and
@@ -567,6 +593,156 @@ fn repair_orphan_tool_uses(body: &mut Value) -> u32 {
             for block in synthetic_blocks.into_iter().rev() {
                 content.insert(0, block);
             }
+        }
+    }
+
+    total_injected
+}
+
+/// SCI-200b: repair orphaned `server_tool_use` blocks (Anthropic native web_search).
+///
+/// For Anthropic's native `web_search` tool, both the `server_tool_use` block
+/// (the search request) and the `web_search_tool_result` block (the results)
+/// appear in the SAME assistant message. LibreChat's @librechat/agents does not
+/// persist the `web_search_tool_result` block, so replayed conversation history
+/// contains `server_tool_use` without its paired result. Anthropic's API rejects
+/// this with a 400: "web_search tool use … found without a corresponding
+/// web_search_tool_result block".
+///
+/// Additionally, LangChain sometimes emits a stale `tool_result` block for the
+/// same `srvtoolu_` ID in the following user message (when formatAgentMessages
+/// is called without a provider hint). These stale `tool_result` blocks are also
+/// stripped to prevent secondary orphan errors.
+///
+/// Returns the number of `web_search_tool_result_error` blocks injected.
+fn repair_orphan_server_tool_uses(body: &mut Value) -> u32 {
+    const SRV_PREFIX: &str = "srvtoolu_";
+
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return 0;
+    };
+
+    // First pass (read-only): for each assistant message, find server_tool_use
+    // ids that have no matching web_search_tool_result in the same message.
+    // Record (assistant_idx, [orphan_ids]) for the mutation pass.
+    let mut planned: Vec<(usize, Vec<String>)> = Vec::new();
+
+    for i in 0..messages.len() {
+        let role = messages[i].get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if role != "assistant" { continue; }
+
+        let Some(content) = messages[i].get("content").and_then(|v| v.as_array()) else {
+            continue;
+        };
+
+        // Collect srvtoolu_ ids from server_tool_use (or tool_use with srvtoolu_ id).
+        let server_tool_use_ids: Vec<String> = content.iter()
+            .filter(|c| {
+                let t = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                (t == "server_tool_use" || t == "tool_use")
+                    && c.get("id").and_then(|v| v.as_str())
+                        .map(|id| id.starts_with(SRV_PREFIX))
+                        .unwrap_or(false)
+            })
+            .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+
+        if server_tool_use_ids.is_empty() { continue; }
+
+        // Collect web_search_tool_result tool_use_ids already in this message.
+        let existing_result_ids: std::collections::HashSet<String> = content.iter()
+            .filter(|c| c.get("type").and_then(|v| v.as_str()) == Some("web_search_tool_result"))
+            .filter_map(|c| c.get("tool_use_id").and_then(|v| v.as_str()).map(String::from))
+            .collect();
+
+        let orphans: Vec<String> = server_tool_use_ids.into_iter()
+            .filter(|id| !existing_result_ids.contains(id))
+            .collect();
+
+        if !orphans.is_empty() {
+            planned.push((i, orphans));
+        }
+    }
+
+    let total_injected: u32 = planned.iter().map(|(_, ids)| ids.len() as u32).sum();
+    if total_injected == 0 { return 0; }
+
+    // Collect all repaired srvtoolu_ ids for the user-message cleanup pass.
+    let repaired_ids: std::collections::HashSet<String> = planned.iter()
+        .flat_map(|(_, ids)| ids.iter().cloned())
+        .collect();
+
+    // Apply mutations in reverse index order to preserve indices.
+    // Insert web_search_tool_result_error blocks AFTER each orphaned server_tool_use.
+    planned.sort_by(|a, b| b.0.cmp(&a.0));
+    for (assistant_idx, orphan_ids) in planned {
+        for id in &orphan_ids {
+            tracing::warn!(
+                target: "sci_handlers::anthropic",
+                tool_use_id = id.as_str(),
+                "orphan server_tool_use auto-repaired (SCI-200b): upstream sent server_tool_use \
+                 without web_search_tool_result; injecting synthetic error block"
+            );
+        }
+
+        let content = messages[assistant_idx]
+            .get_mut("content")
+            .and_then(|v| v.as_array_mut())
+            .expect("content was an array above");
+
+        // For each orphan, insert the error block immediately after the server_tool_use.
+        // Traverse in reverse so earlier insertions don't shift later indices.
+        let orphan_set: std::collections::HashSet<&str> =
+            orphan_ids.iter().map(String::as_str).collect();
+        let positions: Vec<usize> = content.iter().enumerate()
+            .filter(|(_, c)| {
+                let t = c.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                (t == "server_tool_use" || t == "tool_use")
+                    && c.get("id").and_then(|v| v.as_str())
+                        .map(|id| orphan_set.contains(id))
+                        .unwrap_or(false)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        for (offset, pos) in positions.into_iter().enumerate() {
+            let insert_after = pos + 1 + offset; // adjust for prior insertions
+            let id = content[insert_after - 1]
+                .get("id").and_then(|v| v.as_str())
+                .unwrap_or("").to_string();
+            let error_block = serde_json::json!({
+                "type": "web_search_tool_result",
+                "tool_use_id": id,
+                "content": {
+                    "type": "web_search_tool_result_error",
+                    "error_code": "unavailable"
+                }
+            });
+            content.insert(insert_after, error_block);
+        }
+    }
+
+    // Strip stale tool_result blocks with srvtoolu_ ids from user messages.
+    // These are produced by LangChain when it doesn't know the provider is
+    // Anthropic and formats server-tool results as regular tool_results.
+    let messages = body.get_mut("messages").and_then(|v| v.as_array_mut())
+        .expect("messages was checked above");
+    for msg in messages.iter_mut() {
+        if msg.get("role").and_then(|v| v.as_str()) != Some("user") { continue; }
+        let Some(content) = msg.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+        content.retain(|block| {
+            if block.get("type").and_then(|v| v.as_str()) != Some("tool_result") {
+                return true;
+            }
+            let tool_use_id = block.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
+            !repaired_ids.contains(tool_use_id)
+        });
+        // If the user message content is now empty, replace with a placeholder
+        // text block so role-alternation stays intact.
+        if content.is_empty() {
+            content.push(serde_json::json!({"type": "text", "text": ""}));
         }
     }
 
@@ -1488,15 +1664,19 @@ fn head_tail_truncate(text: &str) -> String {
 }
 
 /// Body size above which we trim old messages to keep requests fast and cheap.
-const CONTEXT_TRIM_THRESHOLD_BYTES: usize = 400_000;
+/// Claude supports 200k tokens (~800KB at ~4 bytes/token). We trigger at 160k
+/// tokens (~640KB) to leave 40k tokens of headroom for the response.
+const CONTEXT_TRIM_THRESHOLD_BYTES: usize = 640_000;
 /// Most-recent messages to keep when trimming.
-const CONTEXT_WINDOW_KEEP: usize = 30;
+/// Matches the UI render window (40 messages) so what the user sees ≈ what
+/// the model has in its active context.
+const CONTEXT_WINDOW_KEEP: usize = 40;
 /// Max characters per user turn in the prior-context summary.
-const SUMMARY_USER_CHARS: usize = 200;
+const SUMMARY_USER_CHARS: usize = 400;
 /// Max characters per assistant turn in the prior-context summary.
-const SUMMARY_ASST_CHARS: usize = 150;
+const SUMMARY_ASST_CHARS: usize = 300;
 /// Hard cap on the total summary block size.
-const SUMMARY_MAX_CHARS: usize = 3_000;
+const SUMMARY_MAX_CHARS: usize = 6_000;
 
 /// Trim the `messages` array when the raw body exceeds the threshold.
 ///
@@ -1639,7 +1819,9 @@ fn build_prior_context_summary(messages: &[Value]) -> String {
     }
 
     format!(
-        "[Prior session context — {} turns omitted for brevity:]\n{}\n[End prior context]",
+        "[Automatic context compaction — {} earlier turns have been summarized below. \
+This is handled transparently by the system; the user does NOT need to start a new \
+conversation. Continue naturally from where we left off.]\n{}\n[End prior context]",
         lines.len(),
         lines.join("\n"),
     )
@@ -1858,13 +2040,17 @@ async fn inject_memory_context(
         let storage = state.storage.lock()
             .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
         storage.recall(&sci_memory::RecallQuery {
-            query_embedding: &query_emb,
-            query:           seed,
-            profile_id:      &profile_id,
-            limit:           5,
+            query_embedding:    &query_emb,
+            query:              seed,
+            profile_id:         &profile_id,
+            limit:              5,
             // Empty `types` searches all three classes, matching the TS
             // default for `injectMemoryContext`.
-            types:           &[],
+            types:              &[],
+            // Cap episodic scan to the 2000 most-recent rows. Prevents
+            // O(n) cosine over the full corpus (currently ~10 k) from
+            // adding 200–350 ms to every request TTFT. Recent turns are
+            // the most relevant; semantic/identity stay uncapped (small).
         })?
     };
 
