@@ -53,15 +53,18 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
     [],
   );
 
-  const remarkPlugins: Pluggable[] = [
-    supersub,
-    remarkGfm,
-    remarkDirective,
-    artifactPlugin,
-    [remarkMath, { singleDollarTextMath: false }],
-    unicodeCitation,
-    mcpUIResourcePlugin,
-  ];
+  const remarkPlugins: Pluggable[] = useMemo(
+    () => [
+      supersub,
+      remarkGfm,
+      remarkDirective,
+      artifactPlugin,
+      [remarkMath, { singleDollarTextMath: false }],
+      unicodeCitation,
+      mcpUIResourcePlugin,
+    ],
+    [],
+  );
 
   if (isInitializing) {
     return (

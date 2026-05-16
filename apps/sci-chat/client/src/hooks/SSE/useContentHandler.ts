@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -28,9 +28,48 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
   const queryClient = useQueryClient();
   const messageMap = useMemo(() => new Map<string, TMessage>(), []);
 
+  // Use a ref so the RAF callback always has the latest setMessages without stale closures
+  const setMessagesRef = useRef(setMessages);
+  setMessagesRef.current = setMessages;
+
+  // Pending messages buffered between animation frames
+  const pendingMessagesRef = useRef<TMessage[] | null>(null);
+  const rafIdRef = useRef<number | null>(null);
+
+  // Flush pending messages to React Query — called at most once per animation frame
+  const scheduleFlush = useCallback(() => {
+    if (rafIdRef.current !== null) return;
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      const pending = pendingMessagesRef.current;
+      if (pending !== null) {
+        pendingMessagesRef.current = null;
+        setMessagesRef.current(pending);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+      }
+    };
+  }, []);
+
   /** Reset the message map - call this after sync to prevent stale state from overwriting synced content */
   const resetMessageMap = useCallback(() => {
     messageMap.clear();
+    // Flush any pending render immediately so the final state is committed before reset
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    const pending = pendingMessagesRef.current;
+    if (pending !== null) {
+      pendingMessagesRef.current = null;
+      setMessagesRef.current(pending);
+    }
   }, [messageMap]);
 
   const handler = useCallback(
@@ -38,9 +77,12 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
       const { type, messageId, thread_id, conversationId, index } = data;
 
       const _messages = getMessages();
+      // Preserve object refs for messages whose thread_id already matches — avoids creating
+      // new objects for every non-streaming message on every SSE token
       const messages =
-        _messages?.filter((m) => m.messageId !== messageId).map((msg) => ({ ...msg, thread_id })) ??
-        [];
+        _messages
+          ?.filter((m) => m.messageId !== messageId)
+          .map((msg) => (msg.thread_id === thread_id ? msg : { ...msg, thread_id })) ?? [];
       const userMessage = messages[messages.length - 1] as TMessage | undefined;
 
       const { initialResponse } = submission;
@@ -87,9 +129,12 @@ export default function useContentHandler({ setMessages, getMessages }: TUseCont
         response.content.push(initialContentPart);
       }
 
-      setMessages([...messages, response]);
+      // Buffer the update and schedule a render on the next animation frame (~60 FPS cap).
+      // This prevents O(N) re-renders per token when LLMs stream faster than the display rate.
+      pendingMessagesRef.current = [...messages, response];
+      scheduleFlush();
     },
-    [queryClient, getMessages, messageMap, setMessages],
+    [queryClient, getMessages, messageMap, scheduleFlush],
   );
 
   return { contentHandler: handler, resetContentHandler: resetMessageMap };

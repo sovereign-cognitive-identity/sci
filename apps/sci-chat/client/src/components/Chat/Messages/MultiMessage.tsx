@@ -1,5 +1,5 @@
+import { memo, useEffect, useCallback } from 'react';
 import { useRecoilState } from 'recoil';
-import { useEffect, useCallback } from 'react';
 import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps } from '~/common';
@@ -8,7 +8,20 @@ import MessageParts from './MessageParts';
 import Message from './Message';
 import store from '~/store';
 
-export default function MultiMessage({
+// Bail if messagesTree contains the same message objects as before.
+// Combined with the buildTree stabilizer in ChatView, this prevents hooks from
+// running in branches of the conversation tree that haven't changed.
+function areMultiMessagePropsEqual(prev: TMessageProps, next: TMessageProps): boolean {
+  if (prev.messageId !== next.messageId) return false;
+  if (prev.currentEditId !== next.currentEditId) return false;
+  if (prev.messagesTree === next.messagesTree) return true;
+  if (!prev.messagesTree || !next.messagesTree) return false;
+  if (prev.messagesTree.length !== next.messagesTree.length) return false;
+  // Element-by-element ref check (O(siblings) which is typically 1-2)
+  return prev.messagesTree.every((m, i) => m === next.messagesTree![i]);
+}
+
+const MultiMessage = memo(function MultiMessage({
   // messageId is used recursively here
   messageId,
   messagesTree,
@@ -75,4 +88,7 @@ export default function MultiMessage({
   }
 
   return <Message {...sharedProps} />;
-}
+}, areMultiMessagePropsEqual);
+MultiMessage.displayName = 'MultiMessage';
+
+export default MultiMessage;

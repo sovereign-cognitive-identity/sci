@@ -1,4 +1,4 @@
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
@@ -10,8 +10,10 @@ import { ChatContext, AddedChatContext, ChatFormProvider, useFileMapContext } fr
 import { MCPServerManagerProvider } from '~/Providers/MCPServerManagerContext';
 import { useInspector } from '~/components/Sci';
 import { useAddedResponse, useResumeOnLoad, useAdaptiveSSE, useChatHelpers } from '~/hooks';
+import { useGlobalShortcuts } from '~/hooks/useGlobalShortcuts';
 import ConversationStarters from './Input/ConversationStarters';
 import { useGetMessagesByConvoId } from '~/data-provider';
+import ShortcutHelpDialog from './ShortcutHelpDialog';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -42,11 +44,58 @@ function ChatView({ index = 0 }: { index?: number }) {
 
   const fileMap = useFileMapContext();
 
+  // Cache of stable message node refs keyed by messageId.
+  // buildTree creates new objects for ALL messages on every React Query update.
+  // The stabilizer below preserves refs for messages whose content hasn't changed,
+  // which lets React.memo bail out on unchanged branches of the conversation tree.
+  const treeNodeCache = useRef<Map<string, TMessage>>(new Map());
+  useEffect(() => {
+    treeNodeCache.current.clear();
+  }, [conversationId]);
+
   const { data: messagesTree = null, isLoading } = useGetMessagesByConvoId(conversationId ?? '', {
     select: useCallback(
       (data: TMessage[]) => {
         const dataTree = buildTree({ messages: data, fileMap });
-        return dataTree?.length === 0 ? null : (dataTree ?? null);
+        if (!dataTree?.length) return dataTree?.length === 0 ? null : (dataTree ?? null);
+
+        const cache = treeNodeCache.current;
+
+        // Walk the tree bottom-up: if a node's content fields and children refs are all
+        // unchanged, return the cached node ref so downstream React.memo checks pass.
+        const stabilize = (nodes: TMessage[]): TMessage[] => {
+          let anyChanged = false;
+          const result = nodes.map((node) => {
+            const stableChildren = node.children?.length
+              ? stabilize(node.children as TMessage[])
+              : node.children;
+
+            const prev = cache.get(node.messageId);
+            if (
+              prev &&
+              prev.text === node.text &&
+              prev.content === node.content &&
+              prev.error === node.error &&
+              prev.unfinished === node.unfinished &&
+              prev.siblingIndex === node.siblingIndex &&
+              prev.children === stableChildren
+            ) {
+              return prev;
+            }
+
+            const stable: TMessage =
+              stableChildren !== node.children
+                ? { ...node, children: stableChildren }
+                : { ...node };
+            cache.set(node.messageId, stable);
+            anyChanged = true;
+            return stable;
+          });
+
+          return anyChanged ? result : nodes;
+        };
+
+        return stabilize(dataTree);
       },
       [fileMap],
     ),
@@ -80,45 +129,55 @@ function ChatView({ index = 0 }: { index?: number }) {
 
   const { width: inspectorWidth } = useInspector();
 
+  const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
+  useGlobalShortcuts({
+    conversationId,
+    setValue: methods.setValue,
+    onToggleHelp: () => setShortcutHelpOpen((v) => !v),
+  });
+
   return (
-    <MCPServerManagerProvider conversationId={conversationId}>
-    <ChatFormProvider {...methods}>
-      <ChatContext.Provider value={chatHelpers}>
-        <AddedChatContext.Provider value={addedChatHelpers}>
-          <Presentation>
-            <div
-              className="relative flex h-full w-full flex-col transition-[padding] duration-200"
-              style={{ paddingRight: inspectorWidth }}
-            >
-              <Header />
-              <>
+    <>
+      <ShortcutHelpDialog open={shortcutHelpOpen} onOpenChange={setShortcutHelpOpen} />
+      <MCPServerManagerProvider conversationId={conversationId}>
+        <ChatFormProvider {...methods}>
+          <ChatContext.Provider value={chatHelpers}>
+            <AddedChatContext.Provider value={addedChatHelpers}>
+              <Presentation>
                 <div
-                  className={cn(
-                    'flex flex-col',
-                    isLandingPage
-                      ? 'flex-1 items-center justify-end sm:justify-center'
-                      : 'h-full overflow-y-auto',
-                  )}
+                  className="relative flex h-full w-full flex-col transition-[padding] duration-200"
+                  style={{ paddingRight: inspectorWidth }}
                 >
-                  {content}
-                  <div
-                    className={cn(
-                      'w-full',
-                      isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
-                    )}
-                  >
-                    <ChatForm index={index} />
-                    {isLandingPage ? <ConversationStarters /> : <Footer />}
-                  </div>
+                  <Header />
+                  <>
+                    <div
+                      className={cn(
+                        'flex flex-col',
+                        isLandingPage
+                          ? 'flex-1 items-center justify-end sm:justify-center'
+                          : 'h-full overflow-y-auto',
+                      )}
+                    >
+                      {content}
+                      <div
+                        className={cn(
+                          'w-full',
+                          isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
+                        )}
+                      >
+                        <ChatForm index={index} />
+                        {isLandingPage ? <ConversationStarters /> : <Footer />}
+                      </div>
+                    </div>
+                    {isLandingPage && <Footer />}
+                  </>
                 </div>
-                {isLandingPage && <Footer />}
-              </>
-            </div>
-          </Presentation>
-        </AddedChatContext.Provider>
-      </ChatContext.Provider>
-    </ChatFormProvider>
-    </MCPServerManagerProvider>
+              </Presentation>
+            </AddedChatContext.Provider>
+          </ChatContext.Provider>
+        </ChatFormProvider>
+      </MCPServerManagerProvider>
+    </>
   );
 }
 

@@ -7,29 +7,48 @@ import { useMessagesViewContext } from '~/Providers';
 
 export default function useMessageProcess({ message }: { message?: TMessage | null }) {
   const latestText = useRef<string | number>('');
-  const hasNoChildren = useMemo(() => (message?.children?.length ?? 0) === 0, [message]);
+  // Keep a ref so the effect always calls setLatestMessage with the freshest message
+  // without needing `message` itself in the effect's dependency array
+  const messageRef = useRef<TMessage | null | undefined>(message);
+  messageRef.current = message;
+
+  // Depend on children LENGTH (stable primitive) rather than the full `message` object
+  // (buildTree creates new message objects on every token, which would re-run this memo
+  // for every message in the conversation on every streaming update)
+  const hasNoChildren = useMemo(
+    () => (message?.children?.length ?? 0) === 0,
+    [message?.children?.length],
+  );
 
   const { conversation, setAbortScroll, setLatestMessage, isSubmitting } = useMessagesViewContext();
+
+  // Compute a stable key from specific message fields rather than the whole object.
+  // This prevents the effect below from firing for ALL N messages on every streaming token —
+  // only the leaf message (whose text is growing) has a changing textKey.
+  const textKey = useMemo(
+    () => (message ? getTextKey(message, conversation?.conversationId) : ''),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [message?.messageId, message?.text, message?.content, message?.conversationId, conversation?.conversationId],
+  );
 
   useEffect(() => {
     const convoId = conversation?.conversationId;
     if (convoId === Constants.NEW_CONVO) {
       return;
     }
-    if (!message) {
+    const msg = messageRef.current;
+    if (!msg) {
       return;
     }
     if (!hasNoChildren) {
       return;
     }
 
-    const textKey = getTextKey(message, convoId);
-
     // Check for text/conversation change
     const logInfo = {
       textKey,
       'latestText.current': latestText.current,
-      messageId: message.messageId,
+      messageId: msg.messageId,
       convoId,
     };
 
@@ -50,11 +69,11 @@ export default function useMessageProcess({ message }: { message?: TMessage | nu
     ) {
       logger.log('latest_message', '[useMessageProcess] Setting latest message; logInfo:', logInfo);
       latestText.current = textKey;
-      setLatestMessage({ ...message });
+      setLatestMessage({ ...msg });
     } else {
       logger.log('latest_message', 'No change in latest message; logInfo', logInfo);
     }
-  }, [hasNoChildren, message, setLatestMessage, conversation?.conversationId]);
+  }, [hasNoChildren, textKey, setLatestMessage, conversation?.conversationId]);
 
   /** Use ref for isSubmitting to stabilize handleScroll across isSubmitting changes */
   const isSubmittingRef = useRef(isSubmitting);
