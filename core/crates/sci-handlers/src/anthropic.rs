@@ -93,6 +93,14 @@ pub async fn handle_anthropic_messages(
     // Context-window trim: long-running tool-heavy sessions accumulate MB of
     // conversation history. Each 1 MB of body ≈ 250k tokens — expensive and
     // slow. When the serialised body exceeds the threshold, trim the messages
+    // Strip images from older turns BEFORE size-based trimming.
+    // Images are extremely token-dense — a single photo can be 1–5k tokens.
+    // LibreChat re-sends every image in every turn, so a conversation with a
+    // few image attachments hits the context hard cap within a handful of turns.
+    // We keep images only in the most-recent IMAGE_HISTORY_KEEP turns and
+    // replace older ones with a text placeholder so the model retains awareness.
+    cull_old_images(&mut body);
+
     // array down to a sliding window of the most-recent turns, keeping:
     //   • messages[0]  — LibreChat artifact-instructions (always present)
     //   • last CONTEXT_WINDOW_KEEP turns
@@ -1680,6 +1688,88 @@ const SUMMARY_MAX_CHARS: usize = 6_000;
 
 /// Trim the `messages` array when the raw body exceeds the threshold.
 ///
+/// How many of the most-recent turns may keep their image content blocks.
+/// Turns older than this have images stripped and replaced with a placeholder.
+/// 3 gives the model enough recent visual context while preventing image
+/// accumulation from blowing out the context on long visual conversations.
+const IMAGE_HISTORY_KEEP: usize = 3;
+
+/// Strip image blocks from all but the most-recent IMAGE_HISTORY_KEEP turns.
+///
+/// LibreChat sends the full message history on every request, including every
+/// image ever attached. A single high-res photo is 1–5k tokens; a handful of
+/// images across a conversation will hit the hard context cap within minutes.
+///
+/// This runs BEFORE trim_context_window so that image culling reduces the body
+/// size before the turn-count trimmer even fires — giving text conversations
+/// more headroom and making visual conversations sustainable.
+///
+/// Stripped image blocks are replaced with a single text placeholder so the
+/// model knows images were present without re-paying the token cost.
+fn cull_old_images(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+
+    let total = messages.len();
+    // Keep images intact in the last IMAGE_HISTORY_KEEP messages.
+    // Everything before that gets images stripped.
+    let strip_before = total.saturating_sub(IMAGE_HISTORY_KEEP);
+    if strip_before == 0 {
+        return; // conversation short enough that all images are recent
+    }
+
+    let mut total_stripped = 0u32;
+
+    for msg in &mut messages[..strip_before] {
+        let Some(content) = msg.get_mut("content").and_then(|v| v.as_array_mut()) else {
+            continue;
+        };
+
+        let image_count = content
+            .iter()
+            .filter(|b| {
+                matches!(
+                    b.get("type").and_then(|v| v.as_str()),
+                    Some("image") | Some("image_url")
+                )
+            })
+            .count() as u32;
+
+        if image_count == 0 {
+            continue;
+        }
+
+        // Remove image blocks
+        content.retain(|b| !matches!(
+            b.get("type").and_then(|v| v.as_str()),
+            Some("image") | Some("image_url")
+        ));
+
+        // Insert a single placeholder so the model knows images were here
+        let label = if image_count == 1 {
+            "[1 image removed — older than the visual context window]".to_string()
+        } else {
+            format!("[{image_count} images removed — older than the visual context window]")
+        };
+        content.push(serde_json::json!({ "type": "text", "text": label }));
+
+        // If content is now empty (message was image-only), remove the placeholder
+        // to avoid sending a content-less message which would be invalid.
+        // Instead keep the placeholder so the turn boundary is preserved.
+        total_stripped += image_count;
+    }
+
+    if total_stripped > 0 {
+        tracing::info!(
+            target: "sci_handlers::context",
+            stripped = total_stripped,
+            kept_in_last = IMAGE_HISTORY_KEEP,
+            "image culling: stripped {total_stripped} image block(s) from older turns"
+        );
+    }
+}
+
 /// Before dropping the old messages, extract a compact conversational
 /// summary (user questions + assistant prose responses, no tool noise)
 /// and inject it as messages[1] so the model retains thread continuity.
