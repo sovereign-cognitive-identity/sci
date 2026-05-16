@@ -14,8 +14,12 @@ import store from '~/store';
 
 function MessagesViewContent({
   messagesTree: _messagesTree,
+  hiddenCount = 0,
+  onShowAllMessages,
 }: {
   messagesTree?: TMessage[] | null;
+  hiddenCount?: number;
+  onShowAllMessages?: () => void;
 }) {
   const localize = useLocalize();
   const fontSize = useAtomValue(fontSizeAtom);
@@ -50,6 +54,19 @@ function MessagesViewContent({
             }}
           >
             <div className="flex flex-col pb-9 pt-14 dark:bg-transparent">
+              {hiddenCount > 0 && (
+                <div className="flex items-center justify-center px-4 pb-2 pt-1">
+                  <div className="flex items-center gap-3 rounded-lg border border-border-light bg-surface-secondary px-4 py-2 text-sm text-text-secondary">
+                    <span>↑ {hiddenCount} earlier messages not shown</span>
+                    <button
+                      onClick={onShowAllMessages}
+                      className="font-medium text-text-primary underline-offset-2 hover:underline"
+                    >
+                      Show all (slower)
+                    </button>
+                  </div>
+                </div>
+              )}
               {(_messagesTree && _messagesTree.length == 0) || _messagesTree === null ? (
                 <div
                   className={cn(
@@ -100,10 +117,22 @@ function MessagesViewContent({
   );
 }
 
-export default function MessagesView({ messagesTree }: { messagesTree?: TMessage[] | null }) {
+export default function MessagesView({
+  messagesTree,
+  hiddenCount,
+  onShowAllMessages,
+}: {
+  messagesTree?: TMessage[] | null;
+  hiddenCount?: number;
+  onShowAllMessages?: () => void;
+}) {
   return (
     <MessagesViewProvider>
-      <MessagesViewContent messagesTree={messagesTree} />
+      <MessagesViewContent
+        messagesTree={messagesTree}
+        hiddenCount={hiddenCount}
+        onShowAllMessages={onShowAllMessages}
+      />
     </MessagesViewProvider>
   );
 }

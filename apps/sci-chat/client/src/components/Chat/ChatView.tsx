@@ -44,11 +44,21 @@ function ChatView({ index = 0 }: { index?: number }) {
 
   const fileMap = useFileMapContext();
 
+  // How many recent messages to render. Beyond this the DOM cost grows O(N) per frame.
+  // Users can expand via the banner that appears when messages are hidden.
+  const MAX_RENDERED_MESSAGES = 40;
+  const [showAllMessages, setShowAllMessages] = useState(false);
+  // Reset window when navigating to a different conversation
+  useEffect(() => {
+    setShowAllMessages(false);
+  }, [conversationId]);
+
   // Cache of stable message node refs keyed by messageId.
   // buildTree creates new objects for ALL messages on every React Query update.
   // The stabilizer below preserves refs for messages whose content hasn't changed,
   // which lets React.memo bail out on unchanged branches of the conversation tree.
   const treeNodeCache = useRef<Map<string, TMessage>>(new Map());
+  const hiddenCountRef = useRef(0);
   useEffect(() => {
     treeNodeCache.current.clear();
   }, [conversationId]);
@@ -56,7 +66,15 @@ function ChatView({ index = 0 }: { index?: number }) {
   const { data: messagesTree = null, isLoading } = useGetMessagesByConvoId(conversationId ?? '', {
     select: useCallback(
       (data: TMessage[]) => {
-        const dataTree = buildTree({ messages: data, fileMap });
+        // Windowing: only render the last MAX_RENDERED_MESSAGES to cap O(N) DOM cost.
+        // Messages outside the window are still in React Query — just not in the DOM.
+        const toRender =
+          !showAllMessages && data.length > MAX_RENDERED_MESSAGES
+            ? data.slice(-MAX_RENDERED_MESSAGES)
+            : data;
+        hiddenCountRef.current = data.length - toRender.length;
+
+        const dataTree = buildTree({ messages: toRender, fileMap });
         if (!dataTree?.length) return dataTree?.length === 0 ? null : (dataTree ?? null);
 
         const cache = treeNodeCache.current;
@@ -97,7 +115,7 @@ function ChatView({ index = 0 }: { index?: number }) {
 
         return stabilize(dataTree);
       },
-      [fileMap],
+      [fileMap, showAllMessages],
     ),
     enabled: !!fileMap,
   });
@@ -122,7 +140,13 @@ function ChatView({ index = 0 }: { index?: number }) {
   } else if ((isLoading || isNavigating) && !isLandingPage) {
     content = <LoadingSpinner />;
   } else if (!isLandingPage) {
-    content = <MessagesView messagesTree={messagesTree} />;
+    content = (
+      <MessagesView
+        messagesTree={messagesTree}
+        hiddenCount={hiddenCountRef.current}
+        onShowAllMessages={() => setShowAllMessages(true)}
+      />
+    );
   } else {
     content = <Landing centerFormOnLanding={centerFormOnLanding} />;
   }
