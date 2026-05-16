@@ -76,6 +76,25 @@ export default function useStepHandler({
   const pendingDeltaBuffer = useRef(new Map<string, TStepEvent[]>());
   /** Coalesces rapid-fire summarize delta renders into a single rAF frame */
   const summarizeDeltaRaf = useRef<number | null>(null);
+
+  // RAF throttle for streaming text/reasoning deltas — mirrors useContentHandler.
+  // ON_MESSAGE_DELTA and ON_REASONING_DELTA fire on every token; without throttling
+  // they trigger O(N) re-renders per token for all N messages in the conversation.
+  const setMessagesRef = useRef(setMessages);
+  setMessagesRef.current = setMessages;
+  const pendingDeltaMessagesRef = useRef<TMessage[] | null>(null);
+  const deltaRafIdRef = useRef<number | null>(null);
+  const scheduleDeltaFlush = useCallback(() => {
+    if (deltaRafIdRef.current !== null) return;
+    deltaRafIdRef.current = requestAnimationFrame(() => {
+      deltaRafIdRef.current = null;
+      const pending = pendingDeltaMessagesRef.current;
+      if (pending !== null) {
+        pendingDeltaMessagesRef.current = null;
+        setMessagesRef.current(pending);
+      }
+    });
+  }, []);
   /**
    * Maps `SubagentUpdateEvent.subagentRunId` → parent `tool_call_id`.
    * Preferred source is `payload.parentToolCallId` (threaded through by the
@@ -626,7 +645,9 @@ export default function useStepHandler({
           );
           messageMap.current.set(responseMessageId, updatedResponse);
           const currentMessages = getMessages() || [];
-          setMessages([...currentMessages.slice(0, -1), updatedResponse]);
+          // RAF-throttle: ON_MESSAGE_DELTA fires on every text token — buffer and flush at 60 FPS
+          pendingDeltaMessagesRef.current = [...currentMessages.slice(0, -1), updatedResponse];
+          scheduleDeltaFlush();
         }
       } else if (stepEvent.event === StepEvents.ON_REASONING_DELTA) {
         const reasoningDelta = stepEvent.data;
@@ -669,7 +690,9 @@ export default function useStepHandler({
           );
           messageMap.current.set(responseMessageId, updatedResponse);
           const currentMessages = getMessages() || [];
-          setMessages([...currentMessages.slice(0, -1), updatedResponse]);
+          // RAF-throttle: ON_REASONING_DELTA fires on every thinking token — buffer and flush at 60 FPS
+          pendingDeltaMessagesRef.current = [...currentMessages.slice(0, -1), updatedResponse];
+          scheduleDeltaFlush();
         }
       } else if (stepEvent.event === StepEvents.ON_RUN_STEP_DELTA) {
         const runStepDelta = stepEvent.data;
@@ -882,6 +905,7 @@ export default function useStepHandler({
       lastAnnouncementTimeRef,
       announcePolite,
       setMessages,
+      scheduleDeltaFlush,
       calculateContentIndex,
       applySubagentUpdate,
     ],
