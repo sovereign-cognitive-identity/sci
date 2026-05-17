@@ -1,0 +1,546 @@
+[
+  {
+    "name": "person_first_name_alone",
+    "input": "Casey said the deploy went fine.",
+    "expected_text": "[PERSON_1] said the deploy went fine.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Casey",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "person_full_name",
+    "input": "Hi! My name is Casey Zandbergen and I work on Sci.",
+    "expected_text": "Hi! My name is [PERSON_1] and I work on Sci.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Casey Zandbergen",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "person_honorific",
+    "input": "Jennifer Adams submitted the report on time.",
+    "expected_text": "[PERSON_1] submitted the report on time.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Jennifer Adams",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "person_multiple",
+    "input": "Alice and Bob reviewed the changes. Carol approved it.",
+    "expected_text": "[PERSON_1] and [PERSON_2] reviewed the changes. [PERSON_3] approved it.",
+    "expected_entity_count": 3,
+    "expected_detected": [
+      {
+        "text": "Alice",
+        "type": "PERSON"
+      },
+      {
+        "text": "Bob",
+        "type": "PERSON"
+      },
+      {
+        "text": "Carol",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "person_in_sentence",
+    "input": "The meeting between Sarah and James ran long.",
+    "expected_text": "The meeting between [PERSON_1] and [PERSON_2] ran long.",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "Sarah",
+        "type": "PERSON"
+      },
+      {
+        "text": "James",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "place_city",
+    "input": "Visiting Tulsa next week for the conference.",
+    "expected_text": "Visiting [PLACE_1] next week for the conference.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Tulsa",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_city_state",
+    "input": "The team is based in Portland.",
+    "expected_text": "The team is based in [PLACE_1].",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Portland",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_bigram",
+    "input": "Flying to New York for the sprint review.",
+    "expected_text": "Flying to [PLACE_1] for the sprint review.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "New York",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_unambiguous_state_code",
+    "input": "She is flying from Houston.",
+    "expected_text": "She is flying from [PLACE_1].",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Houston",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_state_ca",
+    "input": "Visiting Colorado in the fall.",
+    "expected_text": "Visiting [PLACE_1] in the fall.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Colorado",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_ambiguous_state_geo_prep",
+    "input": "I am driving to Oklahoma for the weekend.",
+    "expected_text": "I am driving to [PLACE_1] for the weekend.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Oklahoma",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_subject_copula",
+    "input": "Oregon is my home state.",
+    "expected_text": "[PLACE_1] is my home state.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Oregon",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "place_full_state_name",
+    "input": "Visit Oregon and Washington on the road trip.",
+    "expected_text": "Visit [PLACE_1] and [PLACE_2] on the road trip.",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "Oregon",
+        "type": "PLACE"
+      },
+      {
+        "text": "Washington",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "org_suffix_corp",
+    "input": "The contract was signed with Meridian Corp last Friday.",
+    "expected_text": "The contract was signed with [ORG_1] last Friday.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Meridian Corp",
+        "type": "ORG"
+      }
+    ]
+  },
+  {
+    "name": "org_suffix_llc",
+    "input": "Accounts are managed by PinnacleTrust LLC.",
+    "expected_text": "Accounts are managed by [ORG_1].",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "PinnacleTrust LLC",
+        "type": "ORG"
+      },
+      {
+        "text": "PinnacleTrust",
+        "type": "PROJECT"
+      }
+    ]
+  },
+  {
+    "name": "org_suffix_corp2",
+    "input": "The contract is with Meridian Corp.",
+    "expected_text": "The contract is with [ORG_1].",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Meridian Corp",
+        "type": "ORG"
+      }
+    ]
+  },
+  {
+    "name": "email_plain",
+    "input": "Reach me at casey@example.com anytime.",
+    "expected_text": "Reach me at [EMAIL_1] anytime.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "casey@example.com",
+        "type": "EMAIL"
+      }
+    ]
+  },
+  {
+    "name": "email_in_sentence",
+    "input": "Forward the report to ops@acme.io and finance@acme.io.",
+    "expected_text": "Forward the report to [EMAIL_1] and [EMAIL_2].",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "ops@acme.io",
+        "type": "EMAIL"
+      },
+      {
+        "text": "finance@acme.io",
+        "type": "EMAIL"
+      }
+    ]
+  },
+  {
+    "name": "url_full_https",
+    "input": "See https://sci.dev/docs for setup instructions.",
+    "expected_text": "See [URL_1] for setup instructions.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "https://sci.dev/docs",
+        "type": "URL"
+      }
+    ]
+  },
+  {
+    "name": "url_bare_domain",
+    "input": "Visit acme.com or check the docs at docs.acme.io.",
+    "expected_text": "Visit [URL_1] or check the docs at docs.acme.io.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "acme.com",
+        "type": "URL"
+      }
+    ]
+  },
+  {
+    "name": "url_mixed",
+    "input": "Docs at https://docs.example.com and status at status.example.com.",
+    "expected_text": "Docs at [URL_1] and status at status.example.com.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "https://docs.example.com",
+        "type": "URL"
+      }
+    ]
+  },
+  {
+    "name": "phone_us_dashes",
+    "input": "Call me at 918-555-1234 if you need anything.",
+    "expected_text": "Call me at [PHONE_1] if you need anything.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "918-555-1234",
+        "type": "PHONE"
+      }
+    ]
+  },
+  {
+    "name": "phone_us_parens",
+    "input": "The main line is 415-867-5309 for support.",
+    "expected_text": "The main line is [PHONE_1] for support.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "415-867-5309",
+        "type": "PHONE"
+      }
+    ]
+  },
+  {
+    "name": "handle_twitter",
+    "input": "Follow the updates at @caseydev on Twitter.",
+    "expected_text": "Follow the updates at [HANDLE_1] on [ORG_1].",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "@caseydev",
+        "type": "HANDLE"
+      },
+      {
+        "text": "Twitter",
+        "type": "ORG"
+      }
+    ]
+  },
+  {
+    "name": "handle_in_text",
+    "input": "Ping @jsmith or @kwilliams on Slack.",
+    "expected_text": "Ping [HANDLE_1] or [HANDLE_2] on Slack.",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "@jsmith",
+        "type": "HANDLE"
+      },
+      {
+        "text": "@kwilliams",
+        "type": "HANDLE"
+      }
+    ]
+  },
+  {
+    "name": "camel_project_name",
+    "input": "The OpenClaw gateway handles all agent routing.",
+    "expected_text": "The [PROJECT_1] gateway handles all agent routing.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "OpenClaw",
+        "type": "PROJECT"
+      }
+    ]
+  },
+  {
+    "name": "camel_farm_project",
+    "input": "CrossTimbersFarm is backed up nightly.",
+    "expected_text": "[PROJECT_1] is backed up nightly.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "CrossTimbersFarm",
+        "type": "PROJECT"
+      }
+    ]
+  },
+  {
+    "name": "camel_multiple",
+    "input": "BlueBubbles and RadarScope are on the device.",
+    "expected_text": "[PROJECT_1] and [PROJECT_2] are on the device.",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "BlueBubbles",
+        "type": "PROJECT"
+      },
+      {
+        "text": "RadarScope",
+        "type": "PROJECT"
+      }
+    ]
+  },
+  {
+    "name": "mixed_intro_prompt",
+    "input": "Hi! My name is Casey Zandbergen and I work on Sci, a sovereign cognitive identity layer at sci.com.",
+    "expected_text": "Hi! My name is [PERSON_1] and I work on Sci, a sovereign cognitive identity layer at [URL_1].",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "sci.com",
+        "type": "URL"
+      },
+      {
+        "text": "Casey Zandbergen",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "mixed_email_and_person",
+    "input": "Casey Zandbergen will follow up at casey@sci.dev.",
+    "expected_text": "[PERSON_1] will follow up at [EMAIL_1].",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "casey@sci.dev",
+        "type": "EMAIL"
+      },
+      {
+        "text": "Casey Zandbergen",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "mixed_person_place_url",
+    "input": "Sarah is based in Portland and her site is sarah.dev.",
+    "expected_text": "[PERSON_1] is based in [PLACE_1] and her site is [URL_1].",
+    "expected_entity_count": 3,
+    "expected_detected": [
+      {
+        "text": "sarah.dev",
+        "type": "URL"
+      },
+      {
+        "text": "Sarah",
+        "type": "PERSON"
+      },
+      {
+        "text": "Portland",
+        "type": "PLACE"
+      }
+    ]
+  },
+  {
+    "name": "mixed_camel_and_org",
+    "input": "OpenClaw powers the routing layer for Meridian Corp.",
+    "expected_text": "[PROJECT_1] powers the routing layer for [ORG_1].",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "Meridian Corp",
+        "type": "ORG"
+      },
+      {
+        "text": "OpenClaw",
+        "type": "PROJECT"
+      }
+    ]
+  },
+  {
+    "name": "mixed_realistic_message",
+    "input": "Just pushed the fix to https://github.com/example/repo — let Casey Zandbergen know and CC ops@example.com.",
+    "expected_text": "Just pushed the fix to [URL_1] — let [PERSON_1] know and CC [EMAIL_1].",
+    "expected_entity_count": 3,
+    "expected_detected": [
+      {
+        "text": "https://github.com/example/repo",
+        "type": "URL"
+      },
+      {
+        "text": "ops@example.com",
+        "type": "EMAIL"
+      },
+      {
+        "text": "Casey Zandbergen",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "allowlist_tech_names",
+    "input": "We use TypeScript, React, and Docker in production.",
+    "expected_text": "We use TypeScript, React, and Docker in production.",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "allowlist_ai_tools",
+    "input": "Claude and ChatGPT are both useful for code review.",
+    "expected_text": "[PERSON_1] and ChatGPT are both useful for code review.",
+    "expected_entity_count": 1,
+    "expected_detected": [
+      {
+        "text": "Claude",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "name": "edge_empty_input",
+    "input": "",
+    "expected_text": "",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_only_punctuation",
+    "input": "... --- ???",
+    "expected_text": "... --- ???",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_all_lowercase",
+    "input": "no entities here, just plain lowercase text for now.",
+    "expected_text": "no entities here, just plain lowercase text for now.",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_code_fence_skipped",
+    "input": "Run `npm install` then build the project.",
+    "expected_text": "Run `npm install` then build the project.",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_inline_backtick",
+    "input": "Set `OWNER=Casey` in your env before running.",
+    "expected_text": "Set `OWNER=Casey` in your env before running.",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_logical_or_not_place",
+    "input": "packages are installed OR able to be imported",
+    "expected_text": "packages are installed OR able to be imported",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_acknowledgment_ok_not_place",
+    "input": "OK, let's go to the store.",
+    "expected_text": "OK, let's go to the store.",
+    "expected_entity_count": 0,
+    "expected_detected": []
+  },
+  {
+    "name": "edge_repeated_name",
+    "input": "Casey said hi. Then Casey said goodbye. Finally Casey Zandbergen arrived.",
+    "expected_text": "[PERSON_1] said hi. Then [PERSON_1] said goodbye. Finally [PERSON_2] arrived.",
+    "expected_entity_count": 2,
+    "expected_detected": [
+      {
+        "text": "Casey",
+        "type": "PERSON"
+      },
+      {
+        "text": "Casey Zandbergen",
+        "type": "PERSON"
+      }
+    ]
+  }
+]

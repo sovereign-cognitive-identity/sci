@@ -1,0 +1,76 @@
+[package]
+name         = "sci-embeddings"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "BGE-base-en-v1.5 embeddings via ort + tokenizers. Implements sci_handlers::Embedder."
+
+# SCI-130 — embedding generation. Wraps `ort` (Rust ONNX Runtime
+# bindings) + `tokenizers` (HuggingFace) around BAAI/bge-base-en-v1.5.
+# Output is a 768-dim mean-pooled, L2-normalized vector matching the TS
+# reference (`packages/core/src/embeddings.ts` via `@huggingface/
+# transformers`). Cosine parity vs the TS path is asserted >= 0.999.
+#
+# Cross-platform mandate: ort + tokenizers both build on macOS (arm64 +
+# x86_64), iOS (via the iOS target triple), Android (arm64 + x86_64),
+# Windows, and Linux. Execution providers are feature-flagged so a
+# build doesn't pull in CoreML on Linux or CUDA on macOS.
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+tracing    = { workspace = true }
+once_cell  = { workspace = true }
+
+sci-handlers = { path = "../sci-handlers" }
+sci-memory   = { path = "../sci-memory"   }
+
+# ort v2 is the actively-maintained line. `download-binaries` pulls
+# prebuilt onnxruntime libs so users don't need to install the C++
+# library. `ndarray` feature gives us the array type ort uses for
+# inputs/outputs.
+ort        = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "ndarray", "download-binaries"] }
+ndarray    = "0.16"
+
+# HuggingFace tokenizers — the BERT WordPiece tokenizer ships as a
+# tokenizer.json alongside the model on the Hub.
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+
+# Tokio for async + the spawn_blocking pool. ONNX inference is
+# CPU-bound; we offload it off the runtime workers.
+tokio       = { version = "1", features = ["rt", "macros", "fs", "sync"] }
+async-trait = "0.1"
+
+# reqwest with rustls for the first-run model download. No openssl.
+reqwest    = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+futures    = "0.3"
+
+# SHA256 verification of downloaded model + tokenizer files.
+sha2       = "0.10"
+hex        = "0.4"
+
+# `~/.sci/models/...` resolution.
+dirs       = "5"
+
+[dev-dependencies]
+tokio      = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
+tempfile   = "3"
+
+[features]
+default = []
+
+# Apple platforms: enable CoreML execution provider. Picked at runtime
+# via `ort::execution_providers!` ordering — falls back to CPU if the
+# CoreML EP fails to register (e.g. older macOS).
+coreml = ["ort/coreml"]
+
+# NVIDIA GPUs. Off by default — most desktop installs don't have CUDA.
+cuda = ["ort/cuda"]
+
+# Android only. Stub here; the Android shell will turn it on.
+nnapi = []
+
+# Windows DirectML. Same story — off by default.
+directml = ["ort/directml"]

@@ -1,0 +1,46 @@
+[package]
+name         = "sci-oauth"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Anthropic Claude Pro / Max OAuth (PKCE) client for Sci. Mirrors packages/ui/src/oauth.ts."
+
+# SCI-140: port of the TS OAuth flow at packages/ui/src/oauth.ts +
+# packages/proxy/src/upstream-auth.ts. Two halves:
+#
+#   1. Initial authorization flow — PKCE + loopback HTTP server +
+#      browser redirect. Run by a one-shot CLI (or future macOS app
+#      "Sign in with Claude" button).
+#   2. Token cache + refresh — read ~/.sci/oauth.json, return the
+#      access_token, refresh proactively before expiry. Called from
+#      the Anthropic handler when no API key is set on the request.
+#
+# Cross-platform shape: stays inside the Rust core. The macOS app's
+# in-app webview integration lands as a follow-up via the same
+# functions exposed here through a thin C ABI.
+
+[dependencies]
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+thiserror     = { workspace = true }
+once_cell     = { workspace = true }
+
+reqwest       = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+sha2          = "0.10"
+base64        = "0.22"
+rand          = "0.9"
+url           = "2"
+tokio         = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time", "process"] }
+chrono        = { version = "0.4", features = ["serde"] }
+
+[[bin]]
+name = "sci-oauth-cli"
+path = "src/bin/sci_oauth_cli.rs"
+
+[dev-dependencies]
+tempfile      = "3"
+# Tests that mutate `SCI_OAUTH_CACHE_PATH` env var race when cargo
+# runs them in parallel; `serial_test` puts each one behind a global
+# mutex so the env-var swap is single-threaded.
+serial_test   = "3"

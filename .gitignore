@@ -10,3 +10,20 @@ docs/.vitepress/dist/
 docs/.vitepress/cache/
 # Test temp files
 /tmp/sci-test*
+
+# ── Rust workspace ───────────────────────────────────────────────────
+core/target/
+apps/*/target/
+**/Cargo.lock.bak
+core/crates/*/Cargo.lock.bak
+
+# ── Xcode ────────────────────────────────────────────────────────────
+apps/sci-mac/build/
+apps/sci-mac/DerivedData/
+apps/sci-mac/**/xcuserdata/
+apps/sci-mac/**/*.xcuserstate
+apps/sci-mac/Pods/
+
+# ── shipped binaries (only commit source) ───────────────────────────
+apps/sci-mac/SciHelper/target/
+apps/sci-mac/SciTunnel/target/

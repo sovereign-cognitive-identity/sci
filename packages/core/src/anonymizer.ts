@@ -308,15 +308,93 @@ export function buildTokenMap(entities: Entity[], existing?: TokenMap): TokenMap
   return tokenMap
 }
 
-function applyTokenMap(text: string, tokenMap: TokenMap): string {
+// ── Code-region detection (SCI-198) ──────────────────────────────────────────
+//
+// Locates markdown code regions in text and returns their [start, end) byte
+// ranges (sorted, non-overlapping). Mirrors the Rust sci-anonymizer
+// code_regions module. Callers use these ranges to skip entity substitution
+// inside code fences and inline backtick spans, preventing project names,
+// variable identifiers, etc. from getting anonymized inside code snippets.
+//
+// Recognised:  triple-backtick fences (``` … ```), triple-tilde fences
+//              (~~~ … ~~~), inline single-backtick spans (` … `).
+// Not recognised: 4-space indented blocks (too many false positives).
+
+function extractCodeRegions(text: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = []
+  let i = 0
+  const n = text.length
+
+  while (i < n) {
+    const ch = text[i]!
+
+    // Fenced block: ``` or ~~~
+    if ((ch === '`' || ch === '~') && text[i + 1] === ch && text[i + 2] === ch) {
+      const fence = ch
+      const start = i
+      i += 3
+      while (i < n && text[i] !== '\n') i++   // skip info string
+      if (i < n) i++                            // consume opening newline
+      let closed = false
+      while (i < n) {
+        if (text[i] === fence && text[i + 1] === fence && text[i + 2] === fence) {
+          i += 3
+          while (i < n && text[i] !== '\n') i++ // skip closing fence tail
+          if (i < n) i++
+          regions.push([start, i])
+          closed = true
+          break
+        }
+        i++
+      }
+      if (!closed) { regions.push([start, n]); break }
+      continue
+    }
+
+    // Inline backtick span (line-scoped, escape-aware)
+    if (ch === '`' && (i === 0 || text[i - 1] !== '\\')) {
+      const start = i
+      i++
+      while (i < n && text[i] !== '`' && text[i] !== '\n') i++
+      if (i < n && text[i] === '`') { i++; regions.push([start, i]) }
+      continue
+    }
+
+    i++
+  }
+
+  return regions
+}
+
+function applyEntriesToSlice(text: string, entries: [string, string][]): string {
   let result = text
-  // Sort by entity length descending — replace longer matches first
-  const entries = [...tokenMap.forward.entries()].sort((a, b) => b[0].length - a[0].length)
   for (const [entity, token] of entries) {
     const escaped = entity.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     result = result.replace(new RegExp(`(?<![\\w@/])${escaped}(?![\\w])`, 'gi'), token)
   }
   return result
+}
+
+function applyTokenMap(text: string, tokenMap: TokenMap): string {
+  // Sort by entity length descending — replace longer matches first so
+  // "Casey Zandbergen" becomes [PERSON_1] before "Casey" gets a shot.
+  const entries = [...tokenMap.forward.entries()].sort((a, b) => b[0].length - a[0].length)
+  const codeRegions = extractCodeRegions(text)
+
+  if (codeRegions.length === 0) {
+    return applyEntriesToSlice(text, entries)
+  }
+
+  // Interleave non-code (substituted) and code (verbatim) segments. SCI-198.
+  let out = ''
+  let pos = 0
+  for (const [rStart, rEnd] of codeRegions) {
+    if (pos < rStart) out += applyEntriesToSlice(text.slice(pos, rStart), entries)
+    out += text.slice(rStart, rEnd)  // code region — verbatim
+    pos = rEnd
+  }
+  if (pos < text.length) out += applyEntriesToSlice(text.slice(pos), entries)
+  return out
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

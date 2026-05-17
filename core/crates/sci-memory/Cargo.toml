@@ -1,0 +1,40 @@
+[package]
+name         = "sci-memory"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Local SQLite + sqlite-vec memory store with recall + decay. Mirrors @sci/core's CloudAdapter."
+
+# SCI-125 — storage (rusqlite + sqlite-vec) + the StorageAdapter shape that
+# sci-handlers will consume. Embedding generation (ort + BGE) is split off
+# as SCI-125a; this crate accepts caller-provided embeddings as `Vec<f32>`.
+[dependencies]
+serde      = { workspace = true }
+thiserror  = { workspace = true }
+serde_json = { workspace = true }
+
+# rusqlite with `bundled` ships its own libsqlite — no system dep, no
+# version drift across user machines, no setup. `serde_json` is bundled
+# only if we let SQLite emit JSON columns; we do `json_extract(...)` in
+# a couple of consolidation queries, so include the json1 extension.
+rusqlite   = { version = "0.39", features = ["bundled", "blob", "limits", "uuid", "serde_json"] }
+
+# Vector search note: SCI-125 uses brute-force cosine in Rust over
+# embedding BLOBs in SQLite. The `sqlite-vec` crate (v0.1.10-alpha.3,
+# only version on crates.io as of 2026-05-09) has a missing-source-file
+# build bug; per-platform `.dylib` distribution is an option but
+# reintroduces the cross-platform headache we picked Rust to avoid.
+# Brute-force cosine is sub-100ms up to ~5k memories — fine for v0.5
+# — and the recall API surface stays identical when we eventually
+# swap in sqlite-vec or another ANN index.
+
+# UUIDs for primary keys — match the TS adapter's `randomUUID()` shape.
+uuid       = { version = "1", features = ["v4"] }
+
+# RFC3339 timestamps so the SQLite TEXT columns round-trip cleanly with
+# the TS side (which writes ISO-8601).
+chrono     = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile   = "3"

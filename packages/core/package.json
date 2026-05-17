@@ -19,7 +19,8 @@
     "extract-identity:haiku": "SCI_EXTRACT_MODEL=anthropic/claude-haiku-4-5 node dist/identity-extractor.js",
     "extract-identity:flash": "SCI_EXTRACT_MODEL=google/gemini-flash-1.5 node dist/identity-extractor.js",
     "consolidate": "node dist/consolidation-cron.js",
-    "consolidate:week": "SCI_CONSOLIDATION_WINDOW_DAYS=7 node dist/consolidation-cron.js"
+    "consolidate:week": "SCI_CONSOLIDATION_WINDOW_DAYS=7 node dist/consolidation-cron.js",
+    "capture-fixtures": "node ../../core/tests/capture-from-ts.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1042.0",
