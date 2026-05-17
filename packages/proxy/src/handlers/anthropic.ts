@@ -28,12 +28,13 @@ import type { OpenRouterMessage } from '../openrouter.js'
 import { streamDirectAnthropic } from '../direct-anthropic.js'
 import { injectMemoryContext, storeInteraction } from '../middleware/memory.js'
 import { selectModel } from '../router.js'
+import { getTracer, SpanStatusCode } from '@sci/telemetry'
 
 const ROUTING_MODE = process.env['SCI_ROUTING_MODE'] ?? 'direct'
 
 interface AnthropicMessage {
   role: 'user' | 'assistant'
-  content: string | Array<{ type: string; text?: string }>
+  content: string | Array<{ type: string; [key: string]: unknown }>
 }
 
 interface AnthropicRequest {
@@ -88,7 +89,7 @@ function anonymizeContent(
   let currentMap = tokenMap
 
   const anonymizedBlocks = content.map(block => {
-    if (block.type !== 'text' || !block.text) return block  // preserve non-text blocks
+    if (block.type !== 'text' || typeof block.text !== 'string' || !block.text) return block  // preserve non-text blocks
     rawParts.push(block.text)
     const r = anonymize(block.text, currentMap)
     currentMap = r.tokenMap
@@ -113,6 +114,117 @@ function anonymizeContent(
   }
 }
 
+const ANTHROPIC_SERVER_TOOL_PREFIX = 'srvtoolu_'
+
+/**
+ * Repairs orphaned server tool use blocks in Anthropic conversation history.
+ *
+ * When LibreChat replays a conversation that included Anthropic's native web_search,
+ * it emits an assistant message with a `server_tool_use` block (id: srvtoolu_xxx) but
+ * no corresponding `web_search_tool_result` block. Anthropic rejects this with a 400.
+ *
+ * Root cause: @librechat/agents skips web_search_tool_result chunks when building
+ * LibreChat's stored content parts (handleServerToolResult returns skipHandling=true),
+ * so the result block is never persisted and cannot be included on replay.
+ *
+ * Fix: for every assistant message that has a server_tool_use / tool_use with a
+ * srvtoolu_ id but no matching web_search_tool_result, inject a
+ * web_search_tool_result_error block immediately after the orphaned tool_use.
+ * This satisfies Anthropic's pairing requirement so the conversation can continue.
+ *
+ * Also strips any stale `tool_result` blocks in subsequent user messages whose
+ * tool_use_id matches a srvtoolu_ id — LangChain produces these when formatting
+ * ToolMessages without the provider=anthropic hint, and they would otherwise
+ * appear as orphaned tool_results on Anthropic's side.
+ */
+function repairServerToolUseBlocks(
+  messages: AnthropicMessage[]
+): AnthropicMessage[] {
+  type Block = { type: string; [key: string]: unknown }
+  const result: AnthropicMessage[] = []
+  const repairedSrvIds = new Set<string>()
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
+
+    // Only assistant messages need server-tool-use repair
+    if (msg.role !== 'assistant' || typeof msg.content === 'string') {
+      result.push(msg)
+      continue
+    }
+
+    const content = msg.content as Block[]
+
+    // Collect srvtoolu_ tool_use ids and existing web_search_tool_result ids
+    const serverToolUseIds: string[] = []
+    const existingResultIds = new Set<string>()
+
+    for (const block of content) {
+      if (
+        (block.type === 'server_tool_use' || block.type === 'tool_use') &&
+        typeof block.id === 'string' &&
+        block.id.startsWith(ANTHROPIC_SERVER_TOOL_PREFIX)
+      ) {
+        serverToolUseIds.push(block.id)
+      }
+      if (
+        block.type === 'web_search_tool_result' &&
+        typeof block.tool_use_id === 'string'
+      ) {
+        existingResultIds.add(block.tool_use_id)
+      }
+    }
+
+    const orphanedIds = serverToolUseIds.filter(id => !existingResultIds.has(id))
+    if (orphanedIds.length === 0) {
+      result.push(msg)
+      continue
+    }
+
+    // Build a new content array inserting error blocks after each orphaned tool_use
+    const orphanedSet = new Set(orphanedIds)
+    const newContent: Block[] = []
+    for (const block of content) {
+      newContent.push(block)
+      if (
+        (block.type === 'server_tool_use' || block.type === 'tool_use') &&
+        typeof block.id === 'string' &&
+        orphanedSet.has(block.id)
+      ) {
+        newContent.push({
+          type: 'web_search_tool_result',
+          tool_use_id: block.id,
+          content: { type: 'web_search_tool_result_error', error_code: 'unavailable' },
+        })
+        repairedSrvIds.add(block.id)
+      }
+    }
+
+    result.push({ ...msg, content: newContent })
+  }
+
+  // Strip stale tool_result blocks in user messages whose tool_use_id was repaired.
+  // LangChain emits these when it doesn't know the provider is Anthropic.
+  if (repairedSrvIds.size === 0) return result
+
+  return result.map(msg => {
+    if (msg.role !== 'user' || typeof msg.content === 'string') return msg
+    const content = msg.content as Block[]
+    const filtered = content.filter(
+      block =>
+        !(
+          block.type === 'tool_result' &&
+          typeof block.tool_use_id === 'string' &&
+          repairedSrvIds.has(block.tool_use_id)
+        )
+    )
+    if (filtered.length === content.length) return msg
+    // Keep the message even if empty — Anthropic needs strict user/assistant alternation.
+    // An empty user message is better than breaking the role sequence.
+    return { ...msg, content: filtered.length > 0 ? filtered : [{ type: 'text', text: '' }] }
+  })
+}
+
 function toOpenRouterMessages(
   messages: AnthropicMessage[],
   system?: string
@@ -134,6 +246,7 @@ export async function handleAnthropicMessages(
   adapter: StorageAdapter,
   openrouterKey: string
 ): Promise<Response> {
+  const tracer = getTracer('sci-proxy')
   const body = await c.req.json<AnthropicRequest>()
   const streaming = body.stream !== false
 
@@ -143,6 +256,24 @@ export async function handleAnthropicMessages(
   const reqId = `req_${Date.now().toString(36)}`
   const t0 = Date.now()
   process.stderr.write(`\n[${new Date().toISOString()}] ${reqId} ── incoming (${body.model}, ${body.messages.length} msgs)\n`)
+
+  const span = tracer.startSpan('sci.llm.request', {
+    attributes: {
+      'llm.model':        body.model,
+      'llm.routing_mode': ROUTING_MODE,
+      'llm.message_count': body.messages.length,
+      'sci.req_id':       reqId,
+    },
+  })
+  const endSpan = (status: 'ok' | 'error', err?: unknown) => {
+    if (status === 'error' && err) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+      span.recordException(err as Error)
+    } else {
+      span.setStatus({ code: SpanStatusCode.OK })
+    }
+    span.end()
+  }
 
   // 1. Anonymize all user messages
   let sessionTokenMap = { forward: new Map<string, string>(), reverse: new Map<string, string>() }
@@ -243,9 +374,10 @@ export async function handleAnthropicMessages(
   // ── Direct mode: forward to Anthropic with original auth ─────────────────
   if (ROUTING_MODE === 'direct') {
     // Rebuild anonymized Anthropic-format request body
+    const repairedMessages = repairServerToolUseBlocks(anonymizedMessages)
     const anonymizedBody = {
       ...body,
-      messages: anonymizedMessages,
+      messages: repairedMessages,
       system: withContext.find(m => m.role === 'system')?.content ?? body.system,
       stream: true,
     }
@@ -293,6 +425,7 @@ export async function handleAnthropicMessages(
       }
     )
 
+    endSpan('ok')
     return new Response(readable, {
       headers: {
         'Content-Type': 'text/event-stream',
@@ -317,6 +450,7 @@ export async function handleAnthropicMessages(
     deanonStream.push(chunks.join(''))
     const response = deanonStream.end()
     storeInteraction(originalUserText, response, adapter).catch(() => {})
+    endSpan('ok')
     return c.json({
       id: `msg_${Date.now()}`,
       type: 'message', role: 'assistant',
@@ -378,6 +512,7 @@ export async function handleAnthropicMessages(
     },
   })
 
+  endSpan('ok')
   return new Response(readable, {
     headers: {
       'Content-Type': 'text/event-stream',
