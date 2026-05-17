@@ -83,25 +83,29 @@ export default function useLazyHighlight(
       return;
     }
 
-    if (lowlightModule) {
-      setHighlighted(highlightCode(lowlightModule, code, lang));
-      return;
-    }
-
+    // Debounce: during streaming the code prop changes on every token, which
+    // forces a full lowlight re-parse + thousands of new DOM nodes each time.
+    // That's O(N²) total work for an N-token code block — the root cause of
+    // the 8-second UpdateLayoutTree calls visible in the performance trace.
+    //
+    // By debouncing 300ms we skip highlighting while the code is changing
+    // rapidly (streaming) and apply it once in a single pass after it settles.
+    // The block shows as plain text during streaming and lights up when done.
+    const DEBOUNCE_MS = 300;
     let cancelled = false;
-    loadLowlight()
-      .then((mod) => {
-        if (!cancelled) {
-          setHighlighted(highlightCode(mod, code, lang));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setHighlighted([code]);
-        }
-      });
+    const timer = setTimeout(() => {
+      if (lowlightModule) {
+        if (!cancelled) setHighlighted(highlightCode(lowlightModule, code, lang));
+      } else {
+        loadLowlight()
+          .then((mod) => { if (!cancelled) setHighlighted(highlightCode(mod, code, lang)); })
+          .catch(() => { if (!cancelled) setHighlighted([code]); });
+      }
+    }, DEBOUNCE_MS);
+
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [code, lang]);
 

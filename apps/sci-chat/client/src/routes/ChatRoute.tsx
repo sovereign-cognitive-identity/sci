@@ -201,7 +201,11 @@ export default function ChatRoute() {
   }
 
   if (!isAuthenticated) {
-    return null;
+    return (
+      <div className="flex h-screen items-center justify-center" aria-live="polite" role="status">
+        <Spinner className="text-text-primary" />
+      </div>
+    );
   }
 
   // if not a conversation

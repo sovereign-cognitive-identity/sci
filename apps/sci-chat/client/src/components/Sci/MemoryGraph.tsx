@@ -210,7 +210,11 @@ export default function MemoryGraph({ profile, enabled }: Props) {
     if (!el) return;
     const obs = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect;
-      if (width > 0 && height > 0) setDims({ w: width, h: height });
+      if (width > 0 && height > 0) setDims(prev =>
+        Math.abs(prev.w - width) > 2 || Math.abs(prev.h - height) > 2
+          ? { w: width, h: height }
+          : prev,
+      );
     });
     obs.observe(el);
     return () => obs.disconnect();

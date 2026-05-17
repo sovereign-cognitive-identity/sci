@@ -9,6 +9,7 @@ import { OpenSidebar, PresetsMenu } from './Menus';
 import BookmarkMenu from './Menus/BookmarkMenu';
 import { TemporaryChat } from './TemporaryChat';
 import AddMultiConvo from './AddMultiConvo';
+import ContextBar from './ContextBar';
 import { useHasAccess } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -71,6 +72,7 @@ function Header() {
 
         {!isSmallScreen && (
           <div className="flex items-center gap-2">
+            <ContextBar />
             <ExportAndShareMenu
               isSharedButtonEnabled={startupConfig?.sharedLinksEnabled ?? false}
             />

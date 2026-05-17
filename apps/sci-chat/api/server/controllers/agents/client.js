@@ -379,6 +379,14 @@ class AgentClient extends BaseClient {
      */
     const sharedRunContextParts = [];
 
+    /** Current date/time — injected so the model never has to guess or hallucinate it. */
+    sharedRunContextParts.push(
+      `Current date and time: ${new Date().toLocaleString('en-US', {
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
+      })}`,
+    );
+
     /** File context from the latest message (attachments) */
     const latestMessage = orderedMessages[orderedMessages.length - 1];
     if (latestMessage?.fileContext) {

@@ -7,7 +7,6 @@ import {
   useGetAgentsConfig,
   useToolToggle,
 } from '~/hooks';
-import { useMCPServerManager } from '~/hooks/MCP/useMCPServerManager';
 import { getTimestampedValue } from '~/utils/timestamps';
 import { useGetStartupConfig } from '~/data-provider';
 import { ephemeralAgentByConvoId } from '~/store';

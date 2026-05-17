@@ -46,7 +46,9 @@ function ChatView({ index = 0 }: { index?: number }) {
 
   // How many recent messages to render. Beyond this the DOM cost grows O(N) per frame.
   // Users can expand via the banner that appears when messages are hidden.
-  const MAX_RENDERED_MESSAGES = 40;
+  // Reduced from 40 → 20: each message can be 500+ DOM nodes after markdown/syntax
+  // highlighting. At 40 messages that's 20k+ nodes causing 300-400ms layout passes.
+  const MAX_RENDERED_MESSAGES = 20;
   const [showAllMessages, setShowAllMessages] = useState(false);
   // Reset window when navigating to a different conversation
   useEffect(() => {

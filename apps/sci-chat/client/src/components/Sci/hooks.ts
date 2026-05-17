@@ -7,7 +7,7 @@
  * - `useAuditEvents`    — SSE subscription, fires callback per event
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuditTurn } from './types';
@@ -187,7 +187,7 @@ export function useSetActiveProject() {
  * wins. Acceptable for v1 — recall preview is harmless on form
  * input.
  */
-export function useDraftText(enabled: boolean, debounceMs = 300): string {
+export function useDraftText(enabled: boolean, debounceMs = 600): string {
   const [value, setValue] = useState('');
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -201,7 +201,7 @@ export function useDraftText(enabled: boolean, debounceMs = 300): string {
       if (!target || target.tagName !== 'TEXTAREA') return;
       const v = (target as HTMLTextAreaElement).value;
       if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setValue(v), debounceMs);
+      timerRef.current = setTimeout(() => startTransition(() => setValue(v)), debounceMs);
     };
     document.addEventListener('input', onInput, true);
     return () => {
@@ -238,7 +238,7 @@ export function useHelperStatus(enabled = true) {
     queryKey: QK_STATUS,
     queryFn:  getStatus,
     enabled,
-    refetchInterval: 5_000,
+    refetchInterval: 30_000,
     refetchOnWindowFocus: false,
   });
 }

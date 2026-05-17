@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { startTransition, useState, useRef, useCallback, useEffect } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
 import useScrollToRef from '~/hooks/useScrollToRef';
@@ -58,18 +58,13 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
     };
   }, [messagesEndRef, scrollableRef, debouncedSetShowScrollButton]);
 
+  // Previously created a new IntersectionObserver on every scroll event without
+  // disconnecting the old one — a leak that accumulates across long conversations.
+  // isNearBottom() reads scrollTop/scrollHeight which are already-available layout
+  // values (no forced reflow) and serves the same purpose.
   const debouncedHandleScroll = useCallback(() => {
-    if (messagesEndRef.current && scrollableRef.current) {
-      const observer = new IntersectionObserver(
-        ([entry]) => {
-          debouncedSetShowScrollButton(!entry.isIntersecting);
-        },
-        { root: scrollableRef.current, threshold },
-      );
-      observer.observe(messagesEndRef.current);
-      return () => observer.disconnect();
-    }
-  }, [debouncedSetShowScrollButton]);
+    debouncedSetShowScrollButton(!isNearBottom());
+  }, [debouncedSetShowScrollButton, isNearBottom]);
 
   const scrollCallback = () => debouncedSetShowScrollButton(false);
 
@@ -101,12 +96,15 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
     const tick = () => {
       if (isNearBottom()) {
         // User is at (or very near) the bottom — keep following the stream.
-        setAbortScroll(false);
+        startTransition(() => setAbortScroll(false));
+        scrollToBottom();
+      } else if (!abortScroll) {
+        // Content arrived in a large chunk and pushed the viewport more than
+        // NEAR_BOTTOM_PX away from the bottom, but the user has never
+        // intentionally scrolled up — keep following anyway.
         scrollToBottom();
       }
-      // If the user has scrolled up, abortScroll is already true (set by
-      // useMessageHelpers/useMessageProcess handleScroll). We just don't
-      // force-scroll them back down.
+      // If abortScroll is true the user scrolled up on purpose; honour that.
     };
 
     // Immediate first tick so there's no visible delay when a response starts.
@@ -138,6 +136,7 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
     return () => el.removeEventListener('scroll', onScroll);
   }, [isSubmitting, isNearBottom, setAbortScroll]);
 
+  // Scroll to bottom whenever autoScroll preference fires.
   useEffect(() => {
     if (!messagesEndRef.current || !scrollableRef.current) {
       return;
@@ -147,6 +146,48 @@ export default function useMessageScrolling(messagesTree?: TMessage[] | null) {
       scrollToBottom();
     }
   }, [autoScroll, conversationId, scrollToBottom]);
+
+  /**
+   * Scroll to the bottom when navigating to an existing conversation.
+   *
+   * The effect above runs when conversationId changes, but if the messages
+   * aren't yet cached they're still loading — messagesEndRef.current is null
+   * and it bails out early. When messages finally arrive the deps haven't
+   * changed so it never re-fires, leaving the viewport wherever it was.
+   *
+   * Fix: set a "just navigated" flag when conversationId changes. A second
+   * effect watches messagesTree and, when the flag is set and messages first
+   * appear, does one scroll-to-bottom then clears the flag. Subsequent
+   * message updates (streaming tokens, etc.) leave the flag false so this
+   * never interferes with user-initiated scrolling.
+   */
+  const justNavigatedRef = useRef(false);
+
+  useEffect(() => {
+    if (conversationId && conversationId !== Constants.NEW_CONVO) {
+      justNavigatedRef.current = true;
+    }
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!justNavigatedRef.current) return;
+    if (!messagesTree || messagesTree.length === 0) return;
+    if (!scrollableRef.current) return;
+
+    justNavigatedRef.current = false;
+    const el = scrollableRef.current;
+
+    // scrollIntoView targets the element's position at paint time, which can
+    // be several hundred pixels short when lazy content (syntax-highlighted
+    // code blocks, images) expands after the first frame.
+    // Setting scrollTop = scrollHeight is always the true bottom — the browser
+    // caps it automatically. We do it twice: once after the initial paint and
+    // again after 250ms to catch anything that expanded in the interim.
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+      setTimeout(() => { el.scrollTop = el.scrollHeight; }, 250);
+    });
+  }, [messagesTree]);
 
   return {
     conversation,

@@ -7,7 +7,7 @@ import MCPServerDialog from './MCPServerDialog';
 import { getStatusDotColor } from './MCPStatusBadge';
 import MCPCardActions from './MCPCardActions';
 import { useMCPServerManagerContext } from '~/Providers/MCPServerManagerContext';
-import { useMCPServerManager, useLocalize } from '~/hooks';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface MCPServerCardProps {

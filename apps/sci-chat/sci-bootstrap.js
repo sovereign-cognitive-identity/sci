@@ -56,6 +56,61 @@ for (const key of PROVIDER_ENV_TO_RESET) {
   }
 }
 
+/**
+ * Find and terminate any mongod process that's using `dbPath`, then clean
+ * up the lock files so a fresh MongoMemoryServer instance can start cleanly.
+ *
+ * Uses `pgrep -f <dbPath>` which matches any mongod whose command line
+ * contains the absolute path — reliable regardless of whether mongod.lock
+ * actually contains the PID (it's empty in some mongod versions / crash
+ * scenarios).
+ */
+async function killStaleMongod(dbPath) {
+  const { execSync, spawnSync } = require('child_process');
+  const fs = require('fs');
+
+  // Find PIDs of any mongod referencing this dbPath in its command line.
+  // Exclude our own PID — pgrep -f matches all processes whose argv
+  // contains the pattern, which would include sci-bootstrap.js itself.
+  let pids = [];
+  try {
+    const out = execSync(`pgrep -f ${dbPath}`, { encoding: 'utf8' }).trim();
+    pids = out
+      .split('\n')
+      .map(Number)
+      .filter((pid) => !isNaN(pid) && pid > 0 && pid !== process.pid);
+  } catch (e) {
+    // pgrep exits 1 when no match — that's fine, means no stale process.
+  }
+
+  if (pids.length > 0) {
+    console.log(`[sci-bootstrap] found stale mongod(s) for ${dbPath}: PIDs ${pids.join(', ')} — killing`);
+    for (const pid of pids) {
+      try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
+    // Give processes up to 1s to exit cleanly before SIGKILL.
+    await new Promise((r) => setTimeout(r, 1000));
+    for (const pid of pids) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // Remove lock files regardless — even if no process was found, a crash
+  // may have left stale lock files that block the new instance.
+  for (const lockName of ['mongod.lock', 'WiredTiger.lock']) {
+    const lockFile = path.join(dbPath, lockName);
+    if (fs.existsSync(lockFile)) {
+      try {
+        fs.rmSync(lockFile, { force: true });
+        console.log(`[sci-bootstrap] removed stale ${lockName}`);
+      } catch (e) {
+        console.warn(`[sci-bootstrap] could not remove ${lockName}: ${e.message}`);
+      }
+    }
+  }
+}
+
 (async () => {
   console.log('[sci-bootstrap] starting…');
 
@@ -80,10 +135,22 @@ for (const key of PROVIDER_ENV_TO_RESET) {
     const dbPath = path.join(__dirname, 'data/mongo');
     fs.mkdirSync(dbPath, { recursive: true });
 
+    // Kill any stale mongod holding a lock on our dbPath before we start.
+    //
+    // Two layers of locking trip new instances on unclean shutdown:
+    //   mongod.lock  — file written by mongod with its PID
+    //   WiredTiger.lock — OS-level flock held by the running mongod
+    //
+    // Strategy:
+    //   1. Find any mongod whose command line references our dbPath.
+    //   2. Kill it (SIGTERM, then SIGKILL after 1s if still alive).
+    //   3. Remove both lock files so the new instance starts clean.
+    await killStaleMongod(dbPath);
+
     const { MongoMemoryServer } = require('mongodb-memory-server');
     const mongo = await MongoMemoryServer.create({
       instance: {
-        dbName:        'sci-chat',
+        dbName:        'test',
         dbPath,
         storageEngine: 'wiredTiger',
       },

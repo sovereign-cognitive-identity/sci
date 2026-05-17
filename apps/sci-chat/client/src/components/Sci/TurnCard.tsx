@@ -9,7 +9,7 @@
  * the summary row.
  */
 
-import { useState } from 'react';
+import { memo, useState } from 'react';
 
 import { useAuditTurn } from './hooks';
 import type { AuditTurn, AuditTurnDetail, TokenMapping } from './types';
@@ -132,7 +132,7 @@ function turnMatchesQuery(turn: AuditTurn, query: string): boolean {
 
 // ── TurnCard ──────────────────────────────────────────────────────────────────
 
-export default function TurnCard({ turn, searchQuery }: Props) {
+const TurnCard = memo(function TurnCard({ turn, searchQuery }: Props) {
   const [expanded, setExpanded] = useState(false);
   const detail = useAuditTurn(expanded ? turn.id : null);
 
@@ -301,7 +301,22 @@ export default function TurnCard({ turn, searchQuery }: Props) {
       )}
     </div>
   );
-}
+// Custom comparator: AuditTurn objects come back as fresh JSON on every
+// refetch even when data hasn't changed. Compare by the fields that actually
+// affect rendering so all 50 cards don't re-render on every turns refresh.
+}, (prev, next) =>
+  prev.searchQuery === next.searchQuery &&
+  prev.turn.id        === next.turn.id &&
+  prev.turn.status    === next.turn.status &&
+  prev.turn.createdAt === next.turn.createdAt &&
+  prev.turn.inputTokens     === next.turn.inputTokens &&
+  prev.turn.outputTokens    === next.turn.outputTokens &&
+  prev.turn.cacheReadTokens === next.turn.cacheReadTokens &&
+  prev.turn.userText        === next.turn.userText &&
+  prev.turn.assistantText   === next.turn.assistantText,
+);
+
+export default TurnCard;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (

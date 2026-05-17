@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react';
+import { startTransition, useCallback, useRef } from 'react';
 import { useRecoilCallback } from 'recoil';
 import {
   Constants,
@@ -82,6 +82,14 @@ export default function useStepHandler({
   // they trigger O(N) re-renders per token for all N messages in the conversation.
   const setMessagesRef = useRef(setMessages);
   setMessagesRef.current = setMessages;
+  // All setMessages calls go through startTransition so they are low-priority
+  // and won't block user input (keydown/keypress). Without this, any SSE event
+  // that calls setMessages directly triggers a synchronous React commit, causing
+  // the expensive O(N) layout recalculations visible in the perf trace.
+  const setMessagesDeferred = useCallback(
+    (msgs: TMessage[]) => startTransition(() => setMessagesRef.current(msgs)),
+    [],
+  );
   const pendingDeltaMessagesRef = useRef<TMessage[] | null>(null);
   const deltaRafIdRef = useRef<number | null>(null);
   const scheduleDeltaFlush = useCallback(() => {
@@ -91,7 +99,14 @@ export default function useStepHandler({
       const pending = pendingDeltaMessagesRef.current;
       if (pending !== null) {
         pendingDeltaMessagesRef.current = null;
-        setMessagesRef.current(pending);
+        // startTransition marks this update as low-priority so React won't flush
+        // it synchronously during a user input event (keydown/keypress). Without
+        // this, pressing a key while streaming forces React into SyncLane and it
+        // flushes every queued token update in one giant synchronous commit —
+        // each one triggering react-textarea-autosize's useLayoutEffect layout
+        // measurement. That's what caused the 14 × 300ms UpdateLayoutTree calls
+        // (5+ second keydown events) visible in the performance trace.
+        startTransition(() => setMessagesRef.current(pending));
       }
     });
   }, []);
@@ -504,7 +519,7 @@ export default function useStepHandler({
             updatedMessages = [...updatedMessages, userMessage as TMessage];
           }
 
-          setMessages([...updatedMessages, response]);
+          setMessagesDeferred([...updatedMessages, response]);
         }
 
         // Store tool call IDs if present
@@ -540,7 +555,7 @@ export default function useStepHandler({
             msg.messageId === responseMessageId ? updatedResponse : msg,
           );
 
-          setMessages(updatedMessages);
+          setMessagesDeferred(updatedMessages);
         }
 
         if (runStep.summary != null) {
@@ -563,7 +578,7 @@ export default function useStepHandler({
 
           messageMap.current.set(responseMessageId, updatedResponse);
           const currentMessages = getMessages() || [];
-          setMessages([...currentMessages.slice(0, -1), updatedResponse]);
+          setMessagesDeferred([...currentMessages.slice(0, -1), updatedResponse]);
         }
 
         const bufferedDeltas = pendingDeltaBuffer.current.get(runStep.id);
@@ -602,7 +617,7 @@ export default function useStepHandler({
           );
           messageMap.current.set(responseMessageId, updatedResponse);
           const currentMessages = getMessages() || [];
-          setMessages([...currentMessages.slice(0, -1), updatedResponse]);
+          setMessagesDeferred([...currentMessages.slice(0, -1), updatedResponse]);
         }
       } else if (stepEvent.event === StepEvents.ON_MESSAGE_DELTA) {
         const messageDelta = stepEvent.data;
@@ -644,9 +659,21 @@ export default function useStepHandler({
             getStepMetadata(runStep),
           );
           messageMap.current.set(responseMessageId, updatedResponse);
-          const currentMessages = getMessages() || [];
-          // RAF-throttle: ON_MESSAGE_DELTA fires on every text token — buffer and flush at 60 FPS
-          pendingDeltaMessagesRef.current = [...currentMessages.slice(0, -1), updatedResponse];
+          // RAF-throttle: ON_MESSAGE_DELTA fires on every text token — buffer and flush at 60 FPS.
+          // When a pending buffer already exists (RAF hasn't fired yet), update the last element
+          // in-place — O(1). Only rebuild from getMessages() after a flush — O(N) but at most
+          // 60×/s regardless of token rate or conversation length.
+          {
+            const pending = pendingDeltaMessagesRef.current;
+            if (pending !== null) {
+              pending[pending.length - 1] = updatedResponse;
+            } else {
+              const cur = getMessages() ?? [];
+              pendingDeltaMessagesRef.current = cur.length > 0
+                ? [...cur.slice(0, -1), updatedResponse]
+                : [updatedResponse];
+            }
+          }
           scheduleDeltaFlush();
         }
       } else if (stepEvent.event === StepEvents.ON_REASONING_DELTA) {
@@ -689,9 +716,18 @@ export default function useStepHandler({
             getStepMetadata(runStep),
           );
           messageMap.current.set(responseMessageId, updatedResponse);
-          const currentMessages = getMessages() || [];
-          // RAF-throttle: ON_REASONING_DELTA fires on every thinking token — buffer and flush at 60 FPS
-          pendingDeltaMessagesRef.current = [...currentMessages.slice(0, -1), updatedResponse];
+          // RAF-throttle: ON_REASONING_DELTA fires on every thinking token — same O(1) pattern.
+          {
+            const pending = pendingDeltaMessagesRef.current;
+            if (pending !== null) {
+              pending[pending.length - 1] = updatedResponse;
+            } else {
+              const cur = getMessages() ?? [];
+              pendingDeltaMessagesRef.current = cur.length > 0
+                ? [...cur.slice(0, -1), updatedResponse]
+                : [updatedResponse];
+            }
+          }
           scheduleDeltaFlush();
         }
       } else if (stepEvent.event === StepEvents.ON_RUN_STEP_DELTA) {
@@ -751,7 +787,7 @@ export default function useStepHandler({
             msg.messageId === responseMessageId ? updatedResponse : msg,
           );
 
-          setMessages(updatedMessages);
+          setMessagesDeferred(updatedMessages);
         }
       } else if (stepEvent.event === StepEvents.ON_RUN_STEP_COMPLETED) {
         const { result } = stepEvent.data;
@@ -794,7 +830,7 @@ export default function useStepHandler({
             msg.messageId === responseMessageId ? updatedResponse : msg,
           );
 
-          setMessages(updatedMessages);
+          setMessagesDeferred(updatedMessages);
         }
       } else if (stepEvent.event === StepEvents.ON_SUBAGENT_UPDATE) {
         applySubagentUpdate(stepEvent.data);
@@ -838,7 +874,7 @@ export default function useStepHandler({
               const latest = messageMap.current.get(responseMessageId);
               if (latest) {
                 const msgs = getMessages() || [];
-                setMessages([...msgs.slice(0, -1), latest]);
+                setMessagesDeferred([...msgs.slice(0, -1), latest]);
               }
             });
           }
@@ -871,7 +907,7 @@ export default function useStepHandler({
             if (targetIndex >= 0) {
               const updated = [...currentMessages];
               updated[targetIndex] = cleaned;
-              setMessages(updated);
+              setMessagesDeferred(updated);
             }
           }
         } else {
@@ -892,7 +928,7 @@ export default function useStepHandler({
             messageMap.current.set(completeMessageId, finalized);
             const updated = [...currentMessages];
             updated[targetIndex] = finalized;
-            setMessages(updated);
+            setMessagesDeferred(updated);
           }
         }
       } else {

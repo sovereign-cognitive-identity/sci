@@ -1,5 +1,4 @@
 import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
-import { useWatch } from 'react-hook-form';
 import { TextareaAutosize } from '@librechat/client';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { Constants, isAssistantsEndpoint, isAgentsEndpoint } from 'librechat-data-provider';
@@ -183,15 +182,21 @@ const ChatForm = memo(function ChatForm({
     ),
   });
 
-  const textValue = useWatch({ control: methods.control, name: 'text' });
-
+  // Use ResizeObserver instead of watching textValue + reading scrollHeight on every
+  // keystroke. getComputedStyle + scrollHeight forces a synchronous browser layout
+  // flush each time — the single most expensive DOM operation, and the source of
+  // typing lag on high-DPI displays. ResizeObserver fires only when the element
+  // actually changes size (after layout is already done), so there's no forced reflow.
   useEffect(() => {
-    if (textAreaRef.current) {
-      const style = window.getComputedStyle(textAreaRef.current);
-      const lineHeight = parseFloat(style.lineHeight);
-      setVisualRowCount(Math.floor(textAreaRef.current.scrollHeight / lineHeight));
-    }
-  }, [textValue]);
+    const el = textAreaRef.current;
+    if (!el) return;
+    let lineHeight = parseFloat(window.getComputedStyle(el).lineHeight) || 20;
+    const observer = new ResizeObserver(() => {
+      setVisualRowCount(Math.floor(el.scrollHeight / lineHeight));
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (isEditingBadges && backupBadges.length === 0) {
