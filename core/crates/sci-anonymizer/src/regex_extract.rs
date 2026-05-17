@@ -46,6 +46,20 @@ static PHONE_RE: Lazy<Regex> = Lazy::new(|| {
 // flow through NLP NER (SCI-123).
 static CAMEL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[A-Z][a-z]{2,}[A-Z][a-zA-Z]+\b").unwrap());
 
+// API tokens / secrets: a short lowercase prefix (1–12 chars) followed by
+// an underscore and 20+ alphanumeric characters.
+// Catches: cfut_..., sk-..., ghp_..., ATT..., xoxb-..., pat_..., etc.
+// Also catches bare long random strings (32+ chars of mixed case + digits)
+// that look like secrets even without a recognisable prefix.
+static SECRET_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:[a-zA-Z0-9]{1,12}[_\-])[A-Za-z0-9+/]{20,}|[A-Za-z0-9]{32,}").unwrap()
+});
+
+// IPv4 addresses — four octet groups separated by dots.
+static IPV4_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b").unwrap()
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Return true if the byte at `text[idx-1]` is NOT in `forbidden`.
@@ -185,6 +199,52 @@ pub fn extract_regex_entities(text: &str) -> Vec<Entity> {
         add(
             m.as_str(),
             EntityType::Phone,
+            Some(m.start()),
+            &mut entities,
+            &mut seen,
+            &mut consumed,
+        );
+    }
+
+    // 6) IPv4 addresses — must come before SECRET_RE so a bare IP like
+    // 194.238.29.36 isn't vacuumed up by the long-digit heuristic.
+    for m in IPV4_RE.find_iter(text) {
+        if consumed.contains(&m.start()) {
+            continue;
+        }
+        add(
+            m.as_str(),
+            EntityType::IpAddress,
+            Some(m.start()),
+            &mut entities,
+            &mut seen,
+            &mut consumed,
+        );
+    }
+
+    // 7) API tokens and long secrets.  Skip anything already consumed (URLs,
+    // emails, etc. can contain long alphanumeric runs we've already masked).
+    for m in SECRET_RE.find_iter(text) {
+        if consumed.contains(&m.start()) {
+            continue;
+        }
+        // Reject common false-positives: hex colours (#ffffff…), long words
+        // that are just prose, things already in the allowlist.
+        let s = m.as_str();
+        if is_allowlisted(s) {
+            continue;
+        }
+        // Require a minimum entropy signal: at least one digit AND one letter
+        // in the random portion (pure-alpha or pure-digit runs are usually
+        // prose or numbers, not secrets).
+        let has_digit  = s.bytes().any(|b| b.is_ascii_digit());
+        let has_alpha  = s.bytes().any(|b| b.is_ascii_alphabetic());
+        if !(has_digit && has_alpha) {
+            continue;
+        }
+        add(
+            s,
+            EntityType::Secret,
             Some(m.start()),
             &mut entities,
             &mut seen,

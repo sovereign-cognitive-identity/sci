@@ -21,6 +21,10 @@ pub enum EntityType {
     Phone,
     Url,
     Handle,
+    /// API keys, bearer tokens, and other long random secrets.
+    Secret,
+    /// IPv4 addresses.
+    IpAddress,
 }
 
 impl EntityType {
@@ -29,14 +33,16 @@ impl EntityType {
     /// same so token strings round-trip across the boundary identically.
     pub fn token_prefix(self) -> &'static str {
         match self {
-            EntityType::Person  => "PERSON",
-            EntityType::Place   => "PLACE",
-            EntityType::Org     => "ORG",
-            EntityType::Project => "PROJECT",
-            EntityType::Email   => "EMAIL",
-            EntityType::Phone   => "PHONE",
-            EntityType::Url     => "URL",
-            EntityType::Handle  => "HANDLE",
+            EntityType::Person    => "PERSON",
+            EntityType::Place     => "PLACE",
+            EntityType::Org       => "ORG",
+            EntityType::Project   => "PROJECT",
+            EntityType::Email     => "EMAIL",
+            EntityType::Phone     => "PHONE",
+            EntityType::Url       => "URL",
+            EntityType::Handle    => "HANDLE",
+            EntityType::Secret    => "SECRET",
+            EntityType::IpAddress => "IP",
         }
     }
 }
