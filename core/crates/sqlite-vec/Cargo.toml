@@ -1,0 +1,17 @@
+[package]
+name         = "sqlite-vec"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Bundled sqlite-vec v0.1.9 amalgamation — vendored because the crates.io alpha.3 package was published without the required generated headers."
+
+# `links` lets cargo enforce that only one copy of this native library is
+# linked per build, and exposes DEP_SQLITE_VEC0_INCLUDE to dependents.
+links = "sqlite_vec0"
+
+[dependencies]
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+[build-dependencies]
+cc = "1.0"

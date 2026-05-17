@@ -216,11 +216,11 @@ fn recall_merges_across_memory_types() {
     // Empty types slice → search all three classes.
     let hits = a
         .recall(&RecallQuery {
-            query_embedding: &emb,
-            query:           "",
-            profile_id:      &work.id,
-            limit:           10,
-            types:           &[],
+            query_embedding:   &emb,
+            query:             "",
+            profile_id:        &work.id,
+            limit:             10,
+            types:             &[],
         })
         .unwrap();
     assert_eq!(hits.len(), 3);

@@ -406,11 +406,11 @@ async fn preview_recall(
     let limit = q.limit.unwrap_or(10).min(50);
     let hits = with_storage(&s, |a| {
         a.recall(&RecallQuery {
-            query_embedding: &embedding,
-            query:           &q.query,
-            profile_id:      &profile_id,
+            query_embedding:   &embedding,
+            query:             &q.query,
+            profile_id:        &profile_id,
             limit,
-            types:           &[],
+            types:             &[],
         })
     })?;
     Ok(Json(hits))

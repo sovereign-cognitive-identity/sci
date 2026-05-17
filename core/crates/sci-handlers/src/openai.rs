@@ -259,11 +259,11 @@ async fn inject_memory_context(
         let storage = state.storage.lock()
             .map_err(|e| HandlerError::Memory(format!("storage lock poisoned: {e}")))?;
         storage.recall(&sci_memory::RecallQuery {
-            query_embedding: &query_emb,
-            query:           seed,
-            profile_id:      &profile_id,
-            limit:           5,
-            types:           &[],
+            query_embedding:   &query_emb,
+            query:             seed,
+            profile_id:        &profile_id,
+            limit:             5,
+            types:             &[],
         })?
     };
 

@@ -27,9 +27,20 @@ pub const EMBEDDING_DIM: usize = 768;
 /// — every CREATE uses `IF NOT EXISTS` so repeat connects are safe and
 /// re-opening an existing DB doesn't trip up. Profile seeds use
 /// `INSERT OR IGNORE` so callers can re-seed without UNIQUE collisions.
+/// Current schema version. Bump when applying a migration.
+pub const SCHEMA_VERSION: u32 = 2;
+
 pub const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
+
+-- Tracks the schema version so migrations can detect what's needed.
+-- Version 1: BLOB embeddings table (brute-force cosine).
+-- Version 2: vec0 virtual table (sqlite-vec ANN).
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO schema_version(version) VALUES (1);
 
 CREATE TABLE IF NOT EXISTS profiles (
     id          TEXT PRIMARY KEY,
@@ -106,20 +117,16 @@ CREATE TABLE IF NOT EXISTS consolidation_runs (
     duration_ms         INTEGER
 );
 
--- Embeddings, brute-force-search-friendly. One row per (memory_id, memory_type)
--- with the raw f32 little-endian blob. `embedding` is BLOB rather than a
--- BLOB-typed column with the float[N] hint because we never let SQLite
--- look inside it — recall reads the rows back into Rust where the cosine
--- math runs. When we swap to sqlite-vec, this table becomes a `vec0`
--- virtual table with `+memory_id` / `+memory_type` auxiliary columns,
--- and the only Rust code that changes is `recall.rs`.
+-- Schema v1: single BLOB embeddings table (brute-force cosine in Rust).
+-- Migration to v2 replaces this with three per-type vec0 virtual tables.
+-- IF NOT EXISTS means re-running SCHEMA on a v2 DB is safe — the v1 table
+-- won't exist, so this is a no-op; the v2 tables are left alone.
 CREATE TABLE IF NOT EXISTS embeddings (
     memory_id   TEXT NOT NULL,
     memory_type TEXT NOT NULL CHECK (memory_type IN ('episodic','semantic','identity')),
     embedding   BLOB NOT NULL,
     PRIMARY KEY (memory_id, memory_type)
 );
-CREATE INDEX IF NOT EXISTS idx_embeddings_type ON embeddings(memory_type);
 
 -- Helpful indexes for the most common access patterns.
 CREATE INDEX IF NOT EXISTS idx_episodic_profile_time

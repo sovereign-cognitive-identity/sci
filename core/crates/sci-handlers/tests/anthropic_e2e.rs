@@ -267,11 +267,11 @@ async fn round_trip_persists_user_message_to_episodic_memory() {
     let profile = s.get_profile("work").unwrap().unwrap();
     let query_emb = vec![0.0f32; 768]; // matches NoopEmbedder dim
     let hits = s.recall(&sci_memory::RecallQuery {
-        query_embedding: &query_emb,
-        query:           "openclaw",
-        profile_id:      &profile.id,
-        limit:           5,
-        types:           &[],
+        query_embedding:   &query_emb,
+        query:             "openclaw",
+        profile_id:        &profile.id,
+        limit:             5,
+        types:             &[],
     }).expect("recall");
     assert!(
         hits.iter().any(|h| h.content == user_text),

@@ -30,8 +30,8 @@
 //!     — audit + cron metadata, not on the hot path.
 
 use crate::error::{MemoryError, Result};
-use crate::recall::{embedding_to_bytes, recall};
-use crate::schema::{EMBEDDING_DIM, MIGRATIONS, SCHEMA, SEED_PROFILES};
+use crate::recall::{embedding_to_bytes, embedding_to_vec0_bytes, recall};
+use crate::schema::{EMBEDDING_DIM, MIGRATIONS, SCHEMA, SCHEMA_VERSION, SEED_PROFILES};
 use crate::types::{
     AuditTurn, IdentityFact, Metadata, Profile, RecallQuery, RecallResult, StorageStats,
     StoreAuditTurnInput, StoreEpisodicInput, StoreIdentityInput, StoreSemanticInput, TokenDirection,
@@ -72,6 +72,11 @@ impl LocalAdapter {
     }
 
     fn init_with_backend(conn: Connection, backend: &str) -> Result<Self> {
+        // Load sqlite-vec before applying the schema — vec0 virtual tables
+        // must be registered before any CREATE VIRTUAL TABLE statements run.
+        unsafe { sqlite_vec::load(&conn) }
+            .map_err(|e| MemoryError::Vec(format!("sqlite-vec load failed: {e}")))?;
+
         conn.execute_batch(SCHEMA)?;
         // Additive migrations — each ALTER TABLE is idempotent: SQLite
         // returns "duplicate column" on re-runs, which we swallow.
@@ -83,9 +88,102 @@ impl LocalAdapter {
                 }
             }
         }
+
         let adapter = LocalAdapter { conn, backend: backend.to_string() };
         adapter.seed_profiles()?;
+        adapter.migrate_to_current_version()?;
         Ok(adapter)
+    }
+
+    /// Run any pending schema migrations. Each migration is idempotent and
+    /// runs inside a transaction; a failure rolls back and returns an error.
+    fn migrate_to_current_version(&self) -> Result<()> {
+        let version: u32 = self.conn.query_row(
+            "SELECT version FROM schema_version",
+            [],
+            |r| r.get(0),
+        ).unwrap_or(1);
+
+        if version < SCHEMA_VERSION {
+            self.migrate_v1_to_v2()?;
+        }
+        Ok(())
+    }
+
+    /// Migrate the `embeddings` BLOB table (schema v1) to a `vec0`
+    /// virtual table (schema v2).
+    ///
+    /// Runs inside a single transaction: if anything fails the database
+    /// is left unchanged and the caller gets an error.
+    fn migrate_v1_to_v2(&self) -> Result<()> {
+        // Read all rows from the old BLOB table before touching anything.
+        let rows: Vec<(String, String, Vec<u8>)> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT memory_id, memory_type, embedding FROM embeddings"
+            )?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<std::result::Result<_, _>>()?
+        };
+
+        let tx = self.conn.unchecked_transaction()?;
+
+        // Drop old BLOB table and its index.
+        tx.execute_batch("
+            DROP TABLE IF EXISTS embeddings;
+            DROP INDEX IF EXISTS idx_embeddings_type;
+        ")?;
+
+        // Three per-type vec0 tables. Each has:
+        //   - `profile_id text partition key` — pre-filters the KNN to one
+        //     profile, which vec0 supports natively alongside MATCH.
+        //   - `+memory_id text` — auxiliary column returned in SELECT; never
+        //     used in WHERE so it doesn't trigger the aux-column-in-KNN error.
+        // Identity facts are profile-global, so their table has no profile_id.
+        tx.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE embeddings_episodic USING vec0(
+                 embedding float[{dim}],
+                 profile_id text partition key,
+                 +memory_id text
+             );
+             CREATE VIRTUAL TABLE embeddings_semantic USING vec0(
+                 embedding float[{dim}],
+                 profile_id text partition key,
+                 +memory_id text
+             );
+             CREATE VIRTUAL TABLE embeddings_identity USING vec0(
+                 embedding float[{dim}],
+                 +memory_id text
+             );",
+            dim = EMBEDDING_DIM,
+        ))?;
+
+        // Re-insert all vectors into the appropriate per-type table.
+        // For episodic/semantic we need the profile_id from the memory row.
+        let mut ep_ins = tx.prepare(
+            "INSERT INTO embeddings_episodic(embedding, profile_id, memory_id)
+             SELECT ?1, m.profile_id, ?2 FROM episodic_memories AS m WHERE m.id = ?2")?;
+        let mut se_ins = tx.prepare(
+            "INSERT INTO embeddings_semantic(embedding, profile_id, memory_id)
+             SELECT ?1, m.profile_id, ?2 FROM semantic_nodes AS m WHERE m.id = ?2")?;
+        let mut id_ins = tx.prepare(
+            "INSERT INTO embeddings_identity(embedding, memory_id) VALUES (?1, ?2)")?;
+
+        for (memory_id, memory_type, blob) in &rows {
+            let Some(vec) = crate::recall::bytes_to_embedding(blob) else { continue; };
+            let bytes = embedding_to_vec0_bytes(&vec);
+            match memory_type.as_str() {
+                "episodic" => { ep_ins.execute(params![bytes, memory_id])?; },
+                "semantic" => { se_ins.execute(params![bytes, memory_id])?; },
+                "identity" => { id_ins.execute(params![bytes, memory_id])?; },
+                _ => continue,
+            };
+        }
+        drop(ep_ins); drop(se_ins); drop(id_ins);
+
+        tx.execute("UPDATE schema_version SET version = 2", [])?;
+        tx.commit()?;
+
+        Ok(())
     }
 
     fn seed_profiles(&self) -> Result<()> {
@@ -173,9 +271,8 @@ impl LocalAdapter {
             ],
         )?;
         tx.execute(
-            "INSERT INTO embeddings (memory_id, memory_type, embedding)
-             VALUES (?1, 'episodic', ?2)",
-            params![id, embedding_to_bytes(input.embedding)],
+            "INSERT INTO embeddings_episodic(embedding, profile_id, memory_id) VALUES (?1, ?2, ?3)",
+            params![embedding_to_vec0_bytes(input.embedding), input.profile_id, id],
         )?;
         tx.commit()?;
         Ok(id)
@@ -200,9 +297,8 @@ impl LocalAdapter {
             ],
         )?;
         tx.execute(
-            "INSERT INTO embeddings (memory_id, memory_type, embedding)
-             VALUES (?1, 'semantic', ?2)",
-            params![id, embedding_to_bytes(input.embedding)],
+            "INSERT INTO embeddings_semantic(embedding, profile_id, memory_id) VALUES (?1, ?2, ?3)",
+            params![embedding_to_vec0_bytes(input.embedding), input.profile_id, id],
         )?;
         tx.commit()?;
         Ok(id)
@@ -226,9 +322,8 @@ impl LocalAdapter {
             ],
         )?;
         tx.execute(
-            "INSERT INTO embeddings (memory_id, memory_type, embedding)
-             VALUES (?1, 'identity', ?2)",
-            params![id, embedding_to_bytes(input.embedding)],
+            "INSERT INTO embeddings_identity(embedding, memory_id) VALUES (?1, ?2)",
+            params![embedding_to_vec0_bytes(input.embedding), id],
         )?;
         tx.commit()?;
         Ok(id)
@@ -529,7 +624,9 @@ impl LocalAdapter {
             episodic:    count("SELECT COUNT(*) FROM episodic_memories")?,
             semantic:    count("SELECT COUNT(*) FROM semantic_nodes")?,
             identity:    count("SELECT COUNT(*) FROM identity_facts")?,
-            embeddings:  count("SELECT COUNT(*) FROM embeddings")?,
+            embeddings:  count("SELECT COUNT(*) FROM embeddings_episodic")? +
+                         count("SELECT COUNT(*) FROM embeddings_semantic")? +
+                         count("SELECT COUNT(*) FROM embeddings_identity")?,
             audit_turns: count("SELECT COUNT(*) FROM audit_turns")?,
             backend:     self.backend.clone(),
         })

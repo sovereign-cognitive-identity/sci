@@ -2067,6 +2067,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sqlite-vec",
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
@@ -2310,6 +2311,14 @@ dependencies = [
  "nom",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "sqlite-vec"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "rusqlite",
 ]
 
 [[package]]
