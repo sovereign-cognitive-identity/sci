@@ -203,7 +203,17 @@ async function killStaleMongod(dbPath) {
   if (proxyUrl) {
     try {
       const { EnvHttpProxyAgent, setGlobalDispatcher } = require('undici');
-      setGlobalDispatcher(new EnvHttpProxyAgent());
+      const agent = new EnvHttpProxyAgent();
+      setGlobalDispatcher(agent);
+      // Node.js 26 ships undici v8 internally; the npm package is v7. They use
+      // adjacent symbol keys for the global dispatcher: v7 writes
+      // Symbol.for('undici.globalDispatcher.1') but v8's built-in fetch reads
+      // Symbol.for('undici.globalDispatcher.2'). Writing both ensures that
+      // fetch() calls from any source — including the Anthropic/OpenAI SDKs
+      // which use the native built-in fetch — all route through Sci's proxy.
+      // The v8-compatible agent object is created from the same npm package
+      // (upgraded to v8 via --legacy-peer-deps) so the internal API matches.
+      globalThis[Symbol.for('undici.globalDispatcher.2')] = agent;
       const noProxy = process.env.NO_PROXY || process.env.no_proxy || '(none)';
       console.log(`[sci-bootstrap] HTTPS via Sci helper at ${proxyUrl} (NO_PROXY: ${noProxy})`);
     } catch (e) {
