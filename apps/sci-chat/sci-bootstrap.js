@@ -223,6 +223,20 @@ async function killStaleMongod(dbPath) {
       const agent = new EnvHttpProxyAgent();
       setGlobalDispatcher(agent);           // covers v7 fetch (sym1)
       globalThis[Symbol.for('undici.globalDispatcher.2')] = agent; // covers v8 fetch (sym2)
+      // Axios 1.x auto-detects HTTPS_PROXY from the environment and builds its
+      // own internal proxy agent (an HTTP-forward agent, not an HTTPS CONNECT
+      // tunnel). This overrides any explicit httpsAgent set per-call and sends
+      // plain HTTP GET requests to the proxy, which the sci-helper rejects with
+      // 405. Setting proxy:false in axios defaults disables auto-detection so
+      // only explicit per-call httpsAgent options (set by fetchModels when
+      // process.env.PROXY is configured) are used for axios requests.
+      // The undici global dispatcher (above) handles fetch()-based SDK calls.
+      try {
+        const axiosLib = require('axios');
+        const axiosInstance = axiosLib.default ?? axiosLib;
+        axiosInstance.defaults.proxy = false;
+        console.log('[sci-bootstrap] disabled axios proxy auto-detection (fetch-based calls use undici dispatcher)');
+      } catch { /* axios not yet loaded — the defaults will be applied later via axios.create() calls */ }
       const noProxy = process.env.NO_PROXY || process.env.no_proxy || '(none)';
       console.log(`[sci-bootstrap] HTTPS via Sci helper at ${proxyUrl} (NO_PROXY: ${noProxy})`);
     } catch (e) {
