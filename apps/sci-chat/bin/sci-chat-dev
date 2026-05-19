@@ -39,6 +39,10 @@ export NODE_EXTRA_CA_CERTS="$(grep -E '^NODE_EXTRA_CA_CERTS=' "$ENV_FILE" | head
 # instantiated in sci-bootstrap.js — dotenv.config() runs later in JS
 # so process.env.NO_PROXY would be unset when the agent is created.
 export NO_PROXY="$(grep -E '^NO_PROXY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
+# PROXY is read by packages/api/src/endpoints/models.ts to set HttpsProxyAgent
+# on axios model-list calls. Without it axios sends plain HTTP GET to the proxy
+# instead of HTTPS CONNECT tunnels, causing 405 errors from the sci-helper.
+export PROXY="$(grep -E '^PROXY=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
 
 # Sanity: CA file must exist for Node's TLS to trust Sci's MITM cert.
 if [[ -n "${NODE_EXTRA_CA_CERTS:-}" && ! -f "$NODE_EXTRA_CA_CERTS" ]]; then
