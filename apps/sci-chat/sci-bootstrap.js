@@ -202,18 +202,27 @@ async function killStaleMongod(dbPath) {
   const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy;
   if (proxyUrl) {
     try {
-      const { EnvHttpProxyAgent, setGlobalDispatcher } = require('undici');
+      // Node.js 26 ships undici v8 internally; the project npm package is v7.
+      // They use adjacent symbol slots: v7 writes
+      //   Symbol.for('undici.globalDispatcher.1')
+      // but v8's built-in fetch reads
+      //   Symbol.for('undici.globalDispatcher.2')
+      // Writing a v7 agent to sym2 fails with gzip decompression corruption
+      // because v7 and v8 have incompatible response-pipeline internals.
+      //
+      // Fix: load undici@8 from an isolated shim directory that is NOT part
+      // of the npm workspace, so it doesn't affect the client's dependency
+      // resolution. The shim agent is API-compatible with the built-in fetch
+      // (same major version) and correctly handles all response transforms.
+      const shimPath = path.join(__dirname, '.proxy-shim', 'node_modules', 'undici');
+      const undici = (() => {
+        try { return require(shimPath); }
+        catch { return require('undici'); } // fallback to v7 if shim missing
+      })();
+      const { EnvHttpProxyAgent, setGlobalDispatcher } = undici;
       const agent = new EnvHttpProxyAgent();
-      setGlobalDispatcher(agent);
-      // Node.js 26 ships undici v8 internally; the npm package is v7. They use
-      // adjacent symbol keys for the global dispatcher: v7 writes
-      // Symbol.for('undici.globalDispatcher.1') but v8's built-in fetch reads
-      // Symbol.for('undici.globalDispatcher.2'). Writing both ensures that
-      // fetch() calls from any source — including the Anthropic/OpenAI SDKs
-      // which use the native built-in fetch — all route through Sci's proxy.
-      // The v8-compatible agent object is created from the same npm package
-      // (upgraded to v8 via --legacy-peer-deps) so the internal API matches.
-      globalThis[Symbol.for('undici.globalDispatcher.2')] = agent;
+      setGlobalDispatcher(agent);           // covers v7 fetch (sym1)
+      globalThis[Symbol.for('undici.globalDispatcher.2')] = agent; // covers v8 fetch (sym2)
       const noProxy = process.env.NO_PROXY || process.env.no_proxy || '(none)';
       console.log(`[sci-bootstrap] HTTPS via Sci helper at ${proxyUrl} (NO_PROXY: ${noProxy})`);
     } catch (e) {
