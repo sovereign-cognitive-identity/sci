@@ -56,6 +56,35 @@ for (const key of PROVIDER_ENV_TO_RESET) {
   }
 }
 
+// Node.js 26 ships undici v8 internally; the npm undici package in this
+// project is v7. setGlobalDispatcher() from v7 uses a different symbol
+// registry than v8's built-in fetch, so the proxy dispatcher never reaches
+// the Anthropic SDK. As a fallback, read the real key from
+// ~/.sci/credentials.env (written by the sci-helper OAuth flow) so the
+// SDK can authenticate even when the HTTPS_PROXY interception is bypassed.
+try {
+  const credPath = require('path').join(
+    process.env.HOME || require('os').homedir(),
+    '.sci', 'credentials.env',
+  );
+  const credText = require('fs').readFileSync(credPath, 'utf8');
+  for (const line of credText.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    const k = trimmed.slice(0, eq).trim();
+    const v = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+    if (k === 'ANTHROPIC_API_KEY' && v && !v.startsWith('sci_')) {
+      process.env.ANTHROPIC_API_KEY = v;
+      console.log('[sci-bootstrap] loaded ANTHROPIC_API_KEY from ~/.sci/credentials.env');
+      break;
+    }
+  }
+} catch {
+  // credentials.env absent or unreadable — proxy must inject the key instead
+}
+
 /**
  * Find and terminate any mongod process that's using `dbPath`, then clean
  * up the lock files so a fresh MongoMemoryServer instance can start cleanly.
