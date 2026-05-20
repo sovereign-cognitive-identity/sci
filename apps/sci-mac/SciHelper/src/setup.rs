@@ -1,18 +1,26 @@
-//! `sci-helper --setup` — interactive first-run wizard.
+//! `sci-helper --setup` — first-run wizard.
 //!
-//! Steps:
+//! Interactive mode (default) steps:
 //!   1. Create `~/.sci/` (mode 0700) and `~/.sci/memory/` if absent.
 //!   2. Prompt for API keys and write `~/.sci/credentials.env` (mode 0600).
 //!   3. Advise on CA generation.
 //!   4. Print shell export lines and optionally append to `~/.zshrc`.
 //!   5. Generate and write the launchd plist.
 //!   6. Print a setup summary.
+//!
+//! Non-interactive mode (`--non-interactive`, for brew `post_install`):
+//!   - Steps 1, 3, 4 run unconditionally (zshrc append is automatic).
+//!   - Step 2 is skipped — no credentials.env is written; the user runs
+//!     `sci-helper --setup` later to enter keys.
+//!   - Step 5 is skipped — brew owns service management via
+//!     `brew services`, and writing our own plist would create a
+//!     conflicting launchd entry on the same port.
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
 /// Entry point called from `main.rs` when `--setup` is passed.
-pub fn run() -> anyhow::Result<()> {
+pub fn run(non_interactive: bool) -> anyhow::Result<()> {
     let home = home_dir()?;
     let config_dir = home.join(".sci");
     let memory_dir = config_dir.join("memory");
@@ -26,7 +34,9 @@ pub fn run() -> anyhow::Result<()> {
 
     // ── Step 2: Credentials ───────────────────────────────────────────
     let creds_path = config_dir.join("credentials.env");
-    if creds_path.exists() {
+    if non_interactive {
+        println!("  Skipping credentials prompt (non-interactive). Run `sci-helper --setup` to add API keys.");
+    } else if creds_path.exists() {
         println!("✓ {} already exists — skipping key prompts", creds_path.display());
     } else {
         write_credentials(&creds_path)?;
@@ -52,12 +62,16 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     println!();
-    print!("Add to ~/.zshrc now? [Y/n]: ");
-    io::stdout().flush()?;
-
-    let answer = read_line()?;
-    let answer = answer.trim().to_lowercase();
-    if answer.is_empty() || answer == "y" || answer == "yes" {
+    let should_append = if non_interactive {
+        true
+    } else {
+        print!("Add to ~/.zshrc now? [Y/n]: ");
+        io::stdout().flush()?;
+        let answer = read_line()?;
+        let answer = answer.trim().to_lowercase();
+        answer.is_empty() || answer == "y" || answer == "yes"
+    };
+    if should_append {
         append_to_zshrc(&home, &export_lines)?;
         println!("✓ Lines appended to ~/.zshrc");
     } else {
@@ -65,31 +79,52 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     // ── Step 5: Launchd plist ──────────────────────────────────────────
-    let binary_path = current_binary_path();
-    let plist_xml = generate_launchd_plist(&binary_path, &config_dir, &home);
-    let launch_agents = home.join("Library").join("LaunchAgents");
-    std::fs::create_dir_all(&launch_agents)?;
-    let plist_path = launch_agents.join("com.sci.helper.plist");
-    std::fs::write(&plist_path, plist_xml)?;
+    //
+    // Skipped in non-interactive mode: when sci-helper is installed via
+    // brew, `brew services` already manages the launchd entry (label
+    // `homebrew.mxcl.sci`). Writing our own `com.sci.helper.plist` here
+    // would produce two agents fighting for port 3001 — the second one
+    // to start fails with EADDRINUSE.
+    let plist_path: Option<PathBuf> = if non_interactive {
+        println!();
+        println!("  Skipping launchd plist (non-interactive). Use `brew services start sci`.");
+        None
+    } else {
+        let binary_path = current_binary_path();
+        let plist_xml = generate_launchd_plist(&binary_path, &config_dir, &home);
+        let launch_agents = home.join("Library").join("LaunchAgents");
+        std::fs::create_dir_all(&launch_agents)?;
+        let path = launch_agents.join("com.sci.helper.plist");
+        std::fs::write(&path, plist_xml)?;
 
-    println!();
-    println!("Launchd plist written to {}", plist_path.display());
-    println!();
-    println!("To start Sci on login:");
-    println!("  launchctl load ~/Library/LaunchAgents/com.sci.helper.plist");
-    println!("To start now:");
-    println!("  launchctl start com.sci.helper");
+        println!();
+        println!("Launchd plist written to {}", path.display());
+        println!();
+        println!("To start Sci on login:");
+        println!("  launchctl load ~/Library/LaunchAgents/com.sci.helper.plist");
+        println!("To start now:");
+        println!("  launchctl start com.sci.helper");
+        Some(path)
+    };
 
     // ── Step 6: Summary ────────────────────────────────────────────────
     println!();
     println!("─── Setup summary ───────────────────────────────────────────────");
     println!("  Config dir     : {}", config_dir.display());
     println!("  Memory dir     : {}", memory_dir.display());
-    println!("  Credentials    : {}", creds_path.display());
-    println!("  Launchd plist  : {}", plist_path.display());
+    if !non_interactive {
+        println!("  Credentials    : {}", creds_path.display());
+    }
+    if let Some(p) = &plist_path {
+        println!("  Launchd plist  : {}", p.display());
+    }
     println!();
     println!("Next steps:");
-    if !ca_path.exists() {
+    if non_interactive {
+        println!("  1. Run `sci-helper --setup` to enter API keys when ready.");
+        println!("  2. Run `sci-helper --trust-ca` (needs sudo) to install the CA.");
+        println!("  3. Open a new terminal (or `source ~/.zshrc`) to pick up HTTPS_PROXY.");
+    } else if !ca_path.exists() {
         println!("  1. Run `sci-helper --proxy 3001` once to generate the CA certificate.");
         println!("  2. Run `sci-helper --trust-ca` to add it to your keychain.");
         println!("  3. Load the launchd agent (see command above) so sci-helper starts on login.");

@@ -114,7 +114,8 @@ fn handle_oneshot_commands() -> bool {
     }
 
     if args.iter().any(|a| a == "--setup") {
-        if let Err(e) = setup::run() {
+        let non_interactive = args.iter().any(|a| a == "--non-interactive");
+        if let Err(e) = setup::run(non_interactive) {
             eprintln!("sci-helper --setup failed: {e}");
             std::process::exit(1);
         }
@@ -149,6 +150,7 @@ fn print_usage() {
            sci-helper --proxy <port>   Start the HTTPS proxy on <port> (default: use SCI_HELPER_PROXY_PORT)\n\
            sci-helper --admin <port>   Admin HTTP API port (default: 3002)\n\
            sci-helper --setup          First-run wizard: credentials, shell config, launchd\n\
+                                       Pass --non-interactive to skip prompts (for brew post_install).\n\
            sci-helper --trust-ca       Add Sci CA to macOS system keychain\n\
            sci-helper --verify         Prove the privacy guarantee with a live request\n\
            sci-helper --help           Show this help\n\
