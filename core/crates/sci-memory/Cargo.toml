@@ -1,0 +1,32 @@
+[package]
+name         = "sci-memory"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Local SQLite + sqlite-vec memory store with recall + decay. Mirrors @sci/core's CloudAdapter."
+
+# SCI-125 — storage (rusqlite + sqlite-vec) + the StorageAdapter shape that
+# sci-handlers will consume. Embedding generation (ort + BGE) is split off
+# as SCI-125a; this crate accepts caller-provided embeddings as `Vec<f32>`.
+[dependencies]
+serde      = { workspace = true }
+thiserror  = { workspace = true }
+serde_json = { workspace = true }
+
+# rusqlite with `bundled` ships its own libsqlite — no system dep, no
+# version drift across user machines, no setup. `serde_json` is bundled
+# only if we let SQLite emit JSON columns; we do `json_extract(...)` in
+# a couple of consolidation queries, so include the json1 extension.
+rusqlite   = { version = "0.39", features = ["bundled", "blob", "limits", "uuid", "serde_json"] }
+sqlite-vec = { workspace = true }
+
+# UUIDs for primary keys — match the TS adapter's `randomUUID()` shape.
+uuid       = { version = "1", features = ["v4"] }
+
+# RFC3339 timestamps so the SQLite TEXT columns round-trip cleanly with
+# the TS side (which writes ISO-8601).
+chrono     = { version = "0.4", features = ["serde"] }
+
+[dev-dependencies]
+tempfile   = "3"

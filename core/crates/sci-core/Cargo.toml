@@ -1,0 +1,27 @@
+[package]
+name         = "sci-core"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Umbrella crate. Re-exports anonymizer/memory/handlers/tls, exposes the FFI surface platform shells bind against."
+
+# This is the single dependency a platform shell (macOS NetworkExtension,
+# Android VpnService, Windows WFP host) takes. Everything else is
+# transitive. Keeping the surface area minimal here is what makes the
+# audit trail tractable later.
+[dependencies]
+sci-anonymizer = { path = "../sci-anonymizer" }
+sci-memory     = { path = "../sci-memory"     }
+sci-handlers   = { path = "../sci-handlers"   }
+sci-tls        = { path = "../sci-tls"        }
+sci-embeddings = { path = "../sci-embeddings" }
+
+# Surface the embedding-EP feature flags through the umbrella so a
+# platform shell can opt in once instead of depending on
+# `sci-embeddings` directly.
+[features]
+default  = []
+coreml   = ["sci-embeddings/coreml"]
+cuda     = ["sci-embeddings/cuda"]
+directml = ["sci-embeddings/directml"]

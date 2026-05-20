@@ -1,0 +1,106 @@
+# sci-helper — long-running Rust binary that hosts the Sci engine.
+#
+# Architecture:
+#   The macOS .app bundle ships this binary inside Contents/MacOS/. On
+#   launch the SwiftUI app starts it as a child process; the
+#   NetworkExtension Packet Tunnel Provider connects to it over a Unix
+#   domain socket (path passed via env var) and streams intercepted AI
+#   traffic to it. The helper does:
+#
+#     1. Engine init — sci-tls::ensure_ca, sci-memory::LocalAdapter open
+#        on ~/.sci/, sci-handlers::HandlerState assembled.
+#     2. Accept on the control socket; one connection per NE session.
+#     3. Per-connection: receive (hostname, request bytes) frames, run
+#        them through pick_handler + handler dispatch, stream the
+#        deanonymized response back.
+#
+# In this v0.5 phase-1 slice the helper *boots the engine and logs
+# events* — enough to prove the seam compiles end-to-end and the .app
+# can spawn + supervise it. The full traffic round-trip (NE captures
+# → helper handles → upstream forward) is SCI-134 / phase 2 of SCI-127.
+#
+# This crate intentionally lives outside the sci/core workspace so the
+# core workspace stays platform-neutral — building sci-core never has
+# to care that there's a macOS-specific consumer in the tree.
+
+[package]
+name    = "sci-helper"
+version = "0.5.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sci-core   = { path = "../../../core/crates/sci-core" }
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "fs", "sync"] }
+tracing    = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow     = "1"
+
+# SCI-134 — per-flow protocol over Unix socket:
+#   serde_json: parse the JSON header line the NE sends per flow
+#   tokio-rustls: server-side TLS termination on top of the UnixStream
+#   httparse: tiny, audited HTTP/1.1 request line + header parser
+#   futures + bytes: stream the HandlerResponse body through to the
+#     TLS-encrypted side
+#   reqwest: production UpstreamClient wired into HandlerState
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rustls       = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+httparse     = "1"
+futures      = "0.3"
+bytes        = "1"
+async-trait  = "0.1"
+
+# SCI-141: hot-reload of `~/.sci/credentials.env` without a helper
+# restart. Reads happen in the per-flow hot path (every request calls
+# `inject_credential_for_host`) so the swap needs to be lock-free on
+# the read side. ArcSwap's load() is a single atomic, vs. RwLock's
+# parking-lot fast-path that still touches a CAS + spin loop.
+arc-swap     = "1"
+
+# `sci-tail` formats event-stream timestamps in the user's local TZ.
+# Stdlib has no timezone DB; chrono is the standard dep for this.
+chrono       = "0.4"
+
+# SCI-152: admin HTTP API + SSE event stream for sci-chat (and future
+# clients) to read flight-recorder data without touching the SQLite
+# file directly. axum gives us routing, JSON, SSE, and CORS in ~120 KB
+# of release-binary growth — the cost of hand-rolling all that
+# (alongside the existing proxy.rs raw-HTTP parsing) is more code, more
+# surface area, and worse type safety.
+#
+# Localhost-only binding makes CORS permissive safe; only same-machine
+# callers (sci-chat backend/frontend, sci-tail variants) can reach it.
+axum         = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query", "matched-path"] }
+tower-http   = { version = "0.6", features = ["cors"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+# SCI-152: integration tests for the admin API hit the in-process
+# axum server over real HTTP. reqwest is already a production dep via
+# the upstream client, but its default features pull in the rustls
+# stack — for tests we just need plain HTTP since the admin API is
+# unencrypted localhost.
+reqwest  = { version = "0.12", default-features = false, features = ["json", "stream"] }
+tokio    = { version = "1", features = ["macros", "rt-multi-thread", "time", "io-util", "net", "sync"] }
+
+[[bin]]
+name = "sci-helper"
+path = "src/main.rs"
+
+# `sci-tail` — pretty-print the event stream in real time. Run in a
+# second terminal during testing/dogfood: `sci-tail` (no args).
+[[bin]]
+name = "sci-tail"
+path = "src/bin/sci_tail.rs"
+
+[profile.release]
+# Match the workspace release profile. opt-level=z + lto+strip keeps
+# the bundled helper under ~10 MB.
+opt-level     = "z"
+lto           = "fat"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"

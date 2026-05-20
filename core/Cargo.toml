@@ -1,0 +1,72 @@
+# Sci's portable core — Rust workspace.
+#
+# Why Rust here:
+#   The TypeScript engine in packages/{core,proxy,agent} proved out the
+#   architecture (anonymize → memory recall → handler dispatch → upstream
+#   forward → deanonymize → memory store) end-to-end. But the engine has
+#   to ride along to every platform Sci runs on — macOS / iOS via Swift,
+#   Android via JNI, Windows / Linux via direct linking. Node + native
+#   addons (`better-sqlite3`, `hnswlib-node`, `onnxruntime-node`) doesn't
+#   make that trip; bun-compile doesn't bundle .node files; iOS doesn't
+#   run Node at all.
+#
+#   Rust gives us one core, one audit surface, FFI-friendly bindings into
+#   every platform shell. Same path 1Password / Mullvad / Signal Protocol
+#   walk for the same reasons.
+#
+# Layout:
+#   sci-anonymizer  entity extraction + token mapping (regex + lookup)
+#   sci-memory      SQLite + sqlite-vec recall + decay scoring
+#   sci-handlers    provider request shapes (Anthropic / OpenAI / Google)
+#   sci-tls         CA generation + per-host leaf cert + TLS termination
+#   sci-core        umbrella crate; re-exports the others; FFI surface
+#                   that platform shells (macOS NE, Android VpnService,
+#                   etc.) bind against.
+#
+# Tests live at workspace-level under `tests/` and pull fixtures
+# captured from the TypeScript reference implementation in
+# packages/core, so we can prove parity at the algorithm level before
+# the Rust core ships behind any user-visible code.
+
+[workspace]
+members  = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.95"
+license      = "BUSL-1.1"
+authors      = ["Casey Zandbergen <casey.zandbergen@gmail.com>"]
+repository   = "https://github.com/cognitive-os/sci"
+
+[workspace.dependencies]
+# Shared across most crates. Pin via `workspace = true` in member crates
+# so version bumps happen here, not scattered.
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+thiserror     = "2"
+anyhow        = "1"
+tracing       = "0.1"
+once_cell     = "1"
+regex         = "1"
+
+# Reserved — pulled in by the crates that need them. Listed here so a
+# new contributor can see the full dependency map at a glance.
+# rusqlite      = { version = "0.32", features = ["bundled"] }
+sqlite-vec    = { path = "crates/sqlite-vec" }
+# rcgen         = "0.13"
+# rustls        = "0.23"
+# tokio         = { version = "1", features = ["full"] }
+# reqwest       = { version = "0.12", features = ["rustls-tls", "stream", "json"] }
+# uuid          = { version = "1", features = ["v4"] }
+
+[profile.release]
+# Smaller binaries for the platform shells that link us in. Sci runs as a
+# helper process (or bound into the host app on iOS); LTO + strip pay off
+# more than they would for a CLI.
+opt-level     = "z"
+lto           = "fat"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"

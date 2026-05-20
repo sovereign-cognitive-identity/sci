@@ -1,0 +1,1005 @@
+//! Lexicon + grammar NER (SCI-123).
+//!
+//! Replaces the TS pipeline's compromise.js pass-2. compromise has a
+//! built-in lexicon + POS tagger; we do the same in Rust with hand-
+//! curated lexicons (`data/first_names.txt`, `data/places.txt`) plus
+//! a small set of grammatical rules:
+//!
+//!   - Honorific + Capitalized → PERSON
+//!     "Dr. Casey", "Mrs. Smith", "Prof. Adams"
+//!   - First-name + Capitalized → PERSON (compound)
+//!     "Casey Zandbergen", "Mary Stewart"
+//!   - First-name (alone) → PERSON
+//!     "Casey said …"
+//!   - Place lexicon hit → PLACE
+//!     "Tulsa", "California", "London"
+//!   - "Word, ST" or "Word, Country" → PLACE for both halves
+//!     "Tulsa, OK", "Lyon, France"
+//!   - Capitalized + (Inc|Corp|LLC|Ltd|Co.|AG|GmbH) → ORG
+//!     "Anthropic Inc", "OpenAI Corp"
+//!
+//! What this *doesn't* catch:
+//!
+//!   - Single-cap proper nouns NOT in the lexicons (e.g. someone
+//!     named "Aabbiis"). Compromise wouldn't catch them either; the
+//!     v0.5 tradeoff is "ship something that catches 90% of common
+//!     names" rather than "ship a 440 MB BERT NER model." When the
+//!     lexicon misses, the user's session feedback loop (TS pass-3,
+//!     Rust SCI-124 custom-entity loader) escalates the entity as it
+//!     accumulates appearances.
+//!   - Nuanced cases compromise gets right via deeper POS analysis
+//!     (e.g. "Hope" the proper noun vs "hope" the common noun
+//!     ambiguated by sentence context). Our lexicons exclude common-
+//!     word names (`Will`, `April`, `May`, etc.) on purpose.
+//!
+//! Allowlist: every detected entity is filtered through `is_allowlisted`
+//! after lexicon match. Pre-filtering at the lexicon level was cleaner
+//! but lookups against the allowlist are sub-microsecond, so the cost
+//! of the after-the-fact filter is negligible.
+
+use crate::allowlist::is_allowlisted;
+use crate::token_map::{Entity, EntityType};
+use once_cell::sync::Lazy;
+use std::collections::HashSet;
+
+/// SCI-203b: state abbreviations that are ALSO common English words
+/// when written in ALL-CAPS. For these, all-caps alone is not sufficient
+/// to distinguish "Portland, OR" (Oregon) from "A OR B" (logical or).
+/// The unigram PLACE rule requires geographic context for tokens
+/// whose norm is in this set.
+static AMBIGUOUS_ABBREVS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    // norm (lowercase) of the ambiguous ones — common words in all-caps:
+    //   OR = conjunction/logical   IN = preposition
+    //   OK = agreement             OH = interjection
+    //   HI = greeting              ME = pronoun
+    //   ID = identification        LA = musical/exclamation
+    //   MA = informal "mom"        PA = informal "dad"
+    //   CO = company prefix        DC = Washington DC / direct current
+    ["or", "in", "ok", "oh", "hi", "me", "id",
+     "la", "ma", "pa", "co", "dc"]
+        .into_iter().collect()
+});
+
+/// Movement/location prepositions that reliably precede a geographic
+/// destination — "driving to OK", "flying from OR", "heading into ME".
+/// When an AMBIGUOUS_ABBREVS token follows one of these, treat it as
+/// a state abbreviation rather than the common-word sense.
+static GEO_PREPOSITIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    ["to", "from", "toward", "towards", "into", "via",
+     "through", "near", "outside", "past"]
+        .into_iter().collect()
+});
+
+/// Copula verbs (lowercase) that follow a grammatical subject. When an
+/// AMBIGUOUS_ABBREVS token is immediately followed by one of these —
+/// without itself having a trailing comma — it is in subject position and
+/// likely refers to the state: "OK is my home state", "ME was the goal".
+///
+/// We restrict to LOWERCASE copulas so that "OK? Are you sure?" (where
+/// "Are" starts a new sentence and is therefore capitalised) does not
+/// falsely fire. t.is_cap == false on a copula → same sentence.
+static COPULAS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    ["is", "was", "are", "were", "has", "had", "will", "would", "can",
+     "could", "should", "must", "might", "may", "becomes", "became",
+     "seems", "remained", "stayed"]
+        .into_iter().collect()
+});
+
+// ── Lexicons ──────────────────────────────────────────────────────────────
+
+const FIRST_NAMES_RAW: &str = include_str!("data/first_names.txt");
+const PLACES_RAW:      &str = include_str!("data/places.txt");
+
+/// Set of lower-cased first names. ~500 entries.
+static FIRST_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    parse_lexicon(FIRST_NAMES_RAW)
+});
+
+/// Set of lower-cased place names. Multi-word entries like
+/// `"new york"` are present as full strings; the tokenizer slides a
+/// bigram window to match them.
+static PLACES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    parse_lexicon(PLACES_RAW)
+});
+
+/// Subset of `PLACES` containing only single-token entries — used by
+/// the unigram-token pass for fast lookup. Two-token places get a
+/// dedicated bigram pass.
+static PLACES_UNIGRAM: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    PLACES
+        .iter()
+        .filter(|s| !s.contains(' '))
+        .copied()
+        .collect()
+});
+
+static PLACES_BIGRAM: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    PLACES.iter().filter(|s| s.contains(' ')).copied().collect()
+});
+
+/// Honorifics that mark the next token(s) as PERSON regardless of
+/// whether they're in the first-names lexicon. `.` and trailing
+/// period handled by the tokenizer.
+static HONORIFICS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "mr", "mrs", "ms", "miss", "dr", "prof", "professor",
+        "sir", "madam", "ma'am", "lord", "lady", "fr", "rev", "rabbi",
+    ]
+    .into_iter()
+    .collect()
+});
+
+/// Suffixes that mark the preceding capitalized chunk as an ORG.
+/// Period-trimmed on input. Lower-cased for comparison.
+static ORG_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "inc", "corp", "llc", "co", "ltd", "ag", "gmbh", "sa", "plc",
+        "lp", "llp", "kk",
+    ]
+    .into_iter()
+    .collect()
+});
+
+fn parse_lexicon(raw: &'static str) -> HashSet<&'static str> {
+    raw.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+// ── Tokenizer ─────────────────────────────────────────────────────────────
+//
+// We keep punctuation attached to its preceding word — it's useful for
+// rule recognition (e.g. "X," signals the X-comma-state pattern). The
+// matching code strips trailing punctuation as needed.
+
+#[derive(Debug, Clone)]
+struct Token<'a> {
+    /// The original text slice, including any trailing punctuation.
+    raw:     &'a str,
+    /// Lowercased version with trailing punctuation stripped.
+    norm:    String,
+    /// Original-case version with trailing punctuation stripped.
+    /// Preserved so we can emit Entity.text in the user's casing.
+    surface: &'a str,
+    /// Was the original (untrimmed) token capitalized?
+    is_cap:  bool,
+    /// SCI-196: true if the raw token looks like an already-
+    /// anonymized placeholder (e.g. `Casey`, `In,`). We
+    /// set this at tokenization time so every compound-extension
+    /// rule has a single uniform gate to consult, rather than each
+    /// site needing to redo the regex check.
+    looks_like_placeholder: bool,
+}
+
+fn tokenize(text: &str) -> Vec<Token<'_>> {
+    let mut out = Vec::new();
+    for raw in text.split_whitespace() {
+        // Strip trailing punctuation for the canonical form, but keep
+        // the raw slice for rules that look at it (e.g. comma-aware
+        // place rule).
+        let trimmed_end = raw.trim_end_matches(|c: char| c.is_ascii_punctuation() && c != '\'');
+        // Also strip leading quotes / parens.
+        let surface = trimmed_end.trim_start_matches(['(', '[', '"', '\'']);
+        if surface.is_empty() {
+            continue;
+        }
+        let is_cap = surface.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+        let looks_like_placeholder = is_bracketed_placeholder(raw);
+        out.push(Token {
+            raw,
+            norm: surface.to_lowercase(),
+            surface,
+            is_cap,
+            looks_like_placeholder,
+        });
+    }
+    out
+}
+
+
+/// SCI-196: detect already-anonymized placeholder tokens so the
+/// compound-extension rules don't absorb them. Matches the shape
+/// `[<UPPER>+_<DIGIT>+]` with optional trailing punctuation
+/// (comma, period, quote, etc.) tolerated. Conservative — false
+/// negatives are acceptable (rule extends and we get noisy span),
+/// false positives drop tokens that look exactly like the
+/// anonymizer's own output (acceptable; the user almost never
+/// writes `[FOO_3]` literally).
+///
+/// Note we scan the *raw* token slice (which still has surrounding
+/// punctuation) rather than the trimmed `surface`, because the
+/// trimmer strips leading `[` — so by the time we look at `surface`,
+/// `Casey` has become `PERSON_1` with no bracket signal left.
+/// SCI-196b: also match *partial* placeholder shapes that lack digits
+/// or a closing bracket. Production inputs contain these forms in:
+///   • source-code comments quoting `[PLACE_` or `[PLACE_2"`
+///   • SQL tool_result output showing `[PLACE_3]|OR` rows
+///   • past-session discussion text about the bug itself
+///
+/// The original SCI-196 implementation required at least one digit
+/// AND a closing `]`. That was too strict: `[PLACE_"` (trailing quote
+/// from tokenizer splitting `"Casey [PLACE_"`) has no digit and no `]`,
+/// so it returned false, and the compound-PERSON rule absorbed it.
+///
+/// Relaxed rule: match `[UPPER+_` followed by *anything* (digits,
+/// punctuation, EOF). The pattern `[` + all-caps word + `_` is
+/// unambiguous enough in practice that false positives are negligible.
+fn is_bracketed_placeholder(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    // Minimum: `[A_` = 3 bytes.
+    if bytes.len() < 3 || bytes[0] != b'[' {
+        return false;
+    }
+    let mut i = 1usize;
+    // One or more uppercase ASCII letters.
+    let start = i;
+    while i < bytes.len() && bytes[i].is_ascii_uppercase() {
+        i += 1;
+    }
+    if i == start { return false; }
+    // Underscore immediately after the uppercase letters — required.
+    if i >= bytes.len() || bytes[i] != b'_' { return false; }
+    // Matched `[UPPER+_` — this is a placeholder shape regardless of
+    // what follows (digits, `]`, trailing punctuation, or EOF).
+    true
+}
+
+// ── Public entry ──────────────────────────────────────────────────────────
+
+/// Extract PERSON / PLACE / ORG entities from a free-text input. Mirrors
+/// the role of compromise.js's `nlp(text).people() / .places() / .organizations()`
+/// in `packages/core/src/anonymizer.ts`'s `extractNlpEntities`.
+///
+/// The output is intentionally noisy at the lexicon level — every
+/// match enters the candidate set. The final dedup + allowlist filter
+/// happens at the bottom of this function before returning.
+pub fn extract_nlp_entities(text: &str) -> Vec<Entity> {
+    let toks = tokenize(text);
+    let mut out: Vec<Entity> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let push = |entities: &mut Vec<Entity>,
+                seen: &mut HashSet<String>,
+                text: String,
+                ty: EntityType| {
+        if text.len() < 2 {
+            return;
+        }
+        let key = text.to_lowercase();
+        if seen.contains(&key) {
+            return;
+        }
+        if is_allowlisted(&text) {
+            return;
+        }
+        seen.insert(key);
+        entities.push(Entity { text, entity_type: ty });
+    };
+
+    let mut i = 0;
+    while i < toks.len() {
+        let t = &toks[i];
+
+        // ── 1. Honorific → PERSON ────────────────────────────────────────
+        // "Dr. Casey", "Mrs. Smith Jones". Strip trailing period from
+        // the honorific token for lexicon match.
+        let honorific_norm = t.norm.trim_end_matches('.');
+        if HONORIFICS.contains(honorific_norm)
+            && i + 1 < toks.len()
+            && toks[i + 1].is_cap
+            && !toks[i + 1].looks_like_placeholder
+        {
+            // Greedy: consume capitalized tokens following the honorific.
+            // Cap at 3 to avoid runaway matches. SCI-196: also stop
+            // at any already-anonymized placeholder.
+            let j = i + 1;
+            let mut end_idx = j;
+            while end_idx < toks.len()
+                && end_idx < j + 3
+                && toks[end_idx].is_cap
+                && !toks[end_idx].looks_like_placeholder
+            {
+                end_idx += 1;
+            }
+            let span = surface_span(text, &toks[j], &toks[end_idx - 1]);
+            push(&mut out, &mut seen, span, EntityType::Person);
+            i = end_idx;
+            continue;
+        }
+
+        // Skip non-cap tokens for the rest of the rules — they don't
+        // trigger any of the remaining patterns.
+        if !t.is_cap {
+            i += 1;
+            continue;
+        }
+
+        // ── 2. First-name lexicon → PERSON ───────────────────────────────
+        // "Casey said …", "Casey Zandbergen visited …".
+        if FIRST_NAMES.contains(t.norm.as_str()) && !is_allowlisted(t.surface) {
+            // Compound: if next token is also capitalized, take both.
+            // SCI-196: refuse to extend into a placeholder-shaped token.
+            if i + 1 < toks.len()
+                && toks[i + 1].is_cap
+                && !toks[i + 1].looks_like_placeholder
+                && !is_allowlisted(toks[i + 1].surface)
+            {
+                // Don't extend if the next token is itself an org
+                // suffix or place — those have their own rules below.
+                let next_norm_clean = toks[i + 1].norm.trim_end_matches('.');
+                let extends = !ORG_SUFFIXES.contains(next_norm_clean)
+                    && !PLACES_UNIGRAM.contains(toks[i + 1].norm.as_str());
+                if extends {
+                    let span = surface_span(text, t, &toks[i + 1]);
+                    push(&mut out, &mut seen, span, EntityType::Person);
+                    i += 2;
+                    continue;
+                }
+            }
+            push(&mut out, &mut seen, t.surface.to_string(), EntityType::Person);
+            i += 1;
+            continue;
+        }
+
+        // ── 3. Bigram place ─────────────────────────────────────────────
+        // "New York", "San Francisco". Two consecutive cap-cap tokens
+        // whose lowercase concatenation is in `PLACES_BIGRAM`.
+        // SCI-196: refuse to extend into a placeholder-shaped token.
+        if i + 1 < toks.len()
+            && toks[i + 1].is_cap
+            && !toks[i + 1].looks_like_placeholder
+        {
+            let bigram = format!("{} {}", t.norm, toks[i + 1].norm);
+            if PLACES_BIGRAM.contains(bigram.as_str()) {
+                let span = surface_span(text, t, &toks[i + 1]);
+                push(&mut out, &mut seen, span, EntityType::Place);
+                i += 2;
+                continue;
+            }
+        }
+
+        // ── 4. Unigram place ─────────────────────────────────────────────
+        //
+        // SCI-203: places.txt stores US state abbreviations lowercase
+        // (`or`, `ok`, `in`, `oh`, `hi`, `me`, `id`). Because the
+        // lookup uses `t.norm` (always lowercased), the rule matches
+        // regardless of input case — so the sentence-initial conjunction
+        // "Or", the preposition "in", or the lowercase "or" all hit
+        // and get tagged as Oregon/Indiana.
+        //
+        // Two-tier guard for short (≤3 char) tokens:
+        //
+        //   Tier 1 — All-caps required (SCI-203):
+        //     Real state abbreviations in prose are uniformly all-caps
+        //     ("Portland, OR", "Tulsa, OK"). Lowercase forms (`or`, `in`)
+        //     and title-case forms (`Or`, `In`) are blocked.
+        //
+        //   Tier 2 — Comma-preceding required for AMBIGUOUS abbreviations:
+        //     A second set of abbreviations (`or`, `in`, `ok`, `oh`, `hi`,
+        //     `me`, `id`) are ALSO common English words when written in
+        //     ALL-CAPS (logical "OR", pronoun "ME", greeting "HI", etc.)
+        //     and appear frequently in tool descriptions, error messages,
+        //     and system prompt text. For these, require a comma before the
+        //     token ("Portland, OR") — the canonical address form — to
+        //     distinguish state abbreviations from operators/common words.
+        //     Unambiguous codes like CA, TX, NY don't need this extra gate.
+        if PLACES_UNIGRAM.contains(t.norm.as_str())
+            && !is_allowlisted(t.surface)
+            && short_place_passes_case_guard(t)
+            && !ambiguous_abbrev_blocked(t, i, &toks)
+        {
+            push(&mut out, &mut seen, t.surface.to_string(), EntityType::Place);
+            // "X, ST" — if this token ends with comma and the next is a
+            // state abbr, push the state too. Same two-tier guard on the
+            // next token: must pass case-guard, and if it's an ambiguous
+            // abbreviation, it must follow a comma (which it does — this
+            // exact path requires the current token to end with a comma).
+            if t.raw.ends_with(',')
+                && i + 1 < toks.len()
+                && PLACES_UNIGRAM.contains(toks[i + 1].norm.as_str())
+                && short_place_passes_case_guard(&toks[i + 1])
+            {
+                push(
+                    &mut out,
+                    &mut seen,
+                    toks[i + 1].surface.to_string(),
+                    EntityType::Place,
+                );
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        // ── 5. ORG via suffix ────────────────────────────────────────────
+        // "Anthropic Inc", "OpenAI Corp" — capitalized chunk followed by
+        // an org suffix. Walk back a bit to capture multi-word org
+        // names like "Sci Cognitive Inc". SCI-196: refuse when the
+        // preceding chunk is itself a placeholder.
+        if i + 1 < toks.len() && !t.looks_like_placeholder {
+            let next_norm = toks[i + 1].norm.trim_end_matches('.');
+            if ORG_SUFFIXES.contains(next_norm) {
+                let span = surface_span(text, t, &toks[i + 1]);
+                push(&mut out, &mut seen, span, EntityType::Org);
+                i += 2;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    out
+}
+
+/// Compute the substring of `text` spanning from `start_surface`'s
+/// beginning to `end_token.surface`'s end. We do this by finding both
+/// in the original text — preserves casing + punctuation between
+/// (e.g. "Casey Zandbergen" stays as the original two-word string).
+///
+/// SCI-203: short (≤3 char) place candidates must be all-caps to
+/// match as state abbreviations. US state abbreviations in real prose
+/// are uniformly all-caps ("Portland, OR", "Tulsa, OK") — they're
+/// effectively a writing convention. The lowercase forms (`or`, `in`,
+/// `oh`, `ok`, `hi`, `me`, `id`) are common English words; the
+/// title-case forms (`Or`, `In`, `Oh`, `Hi`) are those words at
+/// sentence start. Only the all-caps form should ever resolve as a
+/// place. Full state names (≥4 chars: "Iowa", "Ohio" — wait, "Ohio"
+/// is 4 chars and unambiguous as a place name; this guard fires only
+/// at len ≤ 3 to keep "Ohio" / "Iowa" / "Utah" / etc. case-insensitive).
+fn short_place_passes_case_guard(t: &Token<'_>) -> bool {
+    if t.norm.len() > 3 {
+        return true;
+    }
+    !t.surface.is_empty()
+        && t.surface.chars().all(|c| !c.is_ascii_alphabetic() || c.is_ascii_uppercase())
+}
+
+/// Returns true when an ambiguous abbreviation should be BLOCKED —
+/// i.e. it does not have sufficient geographic context to distinguish
+/// it from its common-word meaning.
+///
+/// Decision table (checked in priority order):
+///
+///  ALLOW — geo-preposition precedes:  "driving to OK", "flying from OR"
+///  ALLOW — comma precedes:            "Portland, OR is nice"
+///  BLOCK — token itself has trailing comma: "OK, let's go", "OK, sure"
+///           (acknowledgment form — comma follows, not precedes)
+///  ALLOW — lowercase copula follows:  "OK is my home", "ME was the plan"
+///           (subject position; copula must be lower-case so that
+///           "OK? Are you sure?" — where "Are" starts a new sentence —
+///           does not falsely fire)
+///  BLOCK — everything else:  "A OR B", "sounds OK", "say HI", etc.
+fn ambiguous_abbrev_blocked(t: &Token<'_>, i: usize, toks: &[Token<'_>]) -> bool {
+    if !AMBIGUOUS_ABBREVS.contains(t.norm.as_str()) {
+        return false; // not ambiguous — all-caps check alone is sufficient
+    }
+
+    // 1. Geo-preposition preceding — highest priority, overrides trailing comma
+    //    e.g. "I'm from OK, and from TX" — "OK," still tagged
+    if i > 0 && GEO_PREPOSITIONS.contains(toks[i - 1].norm.as_str()) {
+        return false;
+    }
+
+    // 2. Comma-preceding — address form "Portland, OR"
+    if i > 0 && toks[i - 1].raw.ends_with(',') {
+        return false;
+    }
+
+    // 3. Token itself has a trailing comma → acknowledgment form
+    //    "OK, let's go",  "Sure, OK, whatever"
+    //    (geo-preposition already handled above, so this is safe)
+    if t.raw.ends_with(',') {
+        return true;
+    }
+
+    // 4. Lowercase copula immediately follows → subject position
+    //    "OK is my home",  "ME was the original plan"
+    //    Lowercase gate: "OK? Are you sure?" — "Are" is sentence-initial
+    //    (capitalised), so it does NOT trigger this rule.
+    if i + 1 < toks.len() {
+        let next = &toks[i + 1];
+        if !next.is_cap && COPULAS.contains(next.norm.as_str()) {
+            return false;
+        }
+    }
+
+    // 5. Default: not enough context — block
+    true
+}
+
+/// Falls back to `start_surface + " " + end_surface` if locating
+/// either fails — matches the user's intent even if the slicing fails.
+/// Byte offset of `slice` within its parent `text`, or `None` if
+/// `slice` is not actually a sub-slice of `text`'s allocation.
+///
+/// Casting `&str::as_ptr()` to `usize` is SAFE — no `unsafe` block
+/// needed because we never dereference the raw pointer; we just
+/// compare addresses as integers. The result is only meaningful when
+/// `slice` was produced by an operation that returns a sub-slice of
+/// `text` (e.g. `text.split_whitespace()`, `&text[a..b]`). The
+/// bounds check below catches the case where the slice came from a
+/// different allocation entirely.
+fn offset_in(text: &str, slice: &str) -> Option<usize> {
+    let text_start  = text.as_ptr() as usize;
+    let text_end    = text_start + text.len();
+    let slice_start = slice.as_ptr() as usize;
+    let slice_end   = slice_start + slice.len();
+    (slice_start >= text_start && slice_end <= text_end)
+        .then_some(slice_start - text_start)
+}
+
+/// Capture the slice of `text` spanning from `start_token` through
+/// `end_token`, trimmed of surrounding punctuation.
+///
+/// SCI-194 fix: previously this used `text.find(start.surface)`, which
+/// returns the FIRST occurrence in the entire text. When the same
+/// surface appeared multiple times (e.g. "Casey" early + "Casey
+/// Zandbergen" later in the same input), the function paired the
+/// earlier "Casey" with the later capitalized token and slurped
+/// everything between them into the entity's `original`. That
+/// polluted `token_mappings.original` with multi-sentence chunks that
+/// included bracketed tokens from prior anonymization passes,
+/// producing cascading nested-token garbage in model output.
+///
+/// `Token::raw` is always a sub-slice of the input `text` (built by
+/// `tokenize` via `text.split_whitespace()`), so pointer arithmetic
+/// gives the true byte position of each token without ambiguity.
+fn surface_span(text: &str, start_token: &Token<'_>, end_token: &Token<'_>) -> String {
+    let (Some(s), Some(e_start)) =
+        (offset_in(text, start_token.raw), offset_in(text, end_token.raw))
+    else {
+        // Tokens not from this `text` — should be impossible for
+        // in-crate callers (all four call sites pass tokens from the
+        // same `toks` vector built by `tokenize(text)`), but synthesize
+        // defensively rather than return a wrong-span string.
+        return format!("{} {}", start_token.surface, end_token.surface);
+    };
+    let e = e_start + end_token.raw.len();
+    debug_assert!(
+        s <= e && e <= text.len(),
+        "surface_span: range [{s}..{e}] escapes text (len {})",
+        text.len(),
+    );
+    // Promote the debug-assert to a release-safe fallback so we never
+    // panic in production on a corrupted Token.
+    if s > e || e > text.len() {
+        return format!("{} {}", start_token.surface, end_token.surface);
+    }
+    text[s..e]
+        .trim_matches(|c: char| c.is_ascii_punctuation() && c != '\'' && c != '"')
+        .to_string()
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entities_of_kind(text: &str, ty: EntityType) -> Vec<String> {
+        extract_nlp_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == ty)
+            .map(|e| e.text)
+            .collect()
+    }
+
+    #[test]
+    fn first_name_alone() {
+        let out = entities_of_kind("Casey said hello", EntityType::Person);
+        assert_eq!(out, vec!["Casey"]);
+    }
+
+    #[test]
+    fn first_name_compound() {
+        let out = entities_of_kind("Casey Zandbergen ships sci", EntityType::Person);
+        assert_eq!(out, vec!["Casey Zandbergen"]);
+    }
+
+    #[test]
+    fn honorific_compound() {
+        let out = entities_of_kind("Met with Dr. Smith yesterday", EntityType::Person);
+        // "Dr." doesn't extend further because "yesterday" is lowercase.
+        assert_eq!(out, vec!["Smith"]);
+    }
+
+    #[test]
+    fn place_unigram() {
+        let out = entities_of_kind("Visiting Tulsa next week", EntityType::Place);
+        assert_eq!(out, vec!["Tulsa"]);
+    }
+
+    #[test]
+    fn place_bigram() {
+        let out = entities_of_kind("Flying to New York tomorrow", EntityType::Place);
+        assert_eq!(out, vec!["New York"]);
+    }
+
+    #[test]
+    fn place_with_state() {
+        let out = entities_of_kind("Live in Tulsa, OK these days", EntityType::Place);
+        assert!(out.contains(&"Tulsa".to_string()));
+        assert!(out.contains(&"OK".to_string()));
+    }
+
+    #[test]
+    fn org_suffix() {
+        let out = entities_of_kind("Anthropic Inc shipped Claude", EntityType::Org);
+        assert_eq!(out, vec!["Anthropic Inc"]);
+    }
+
+    #[test]
+    fn allowlist_blocks_known_brand() {
+        // `Apple` is allowlisted as a known brand. Even though "Apple"
+        // appears in the place list... wait, it doesn't. Use a real
+        // overlap: `Casey` would be a person name, but if we somehow
+        // allowlisted it (we don't, just for this test), it'd be filtered.
+        // Instead use Slack — allowlisted, never appear as PERSON/etc.
+        let out = extract_nlp_entities("We use Slack at work");
+        assert!(
+            out.iter().all(|e| e.text != "Slack"),
+            "Slack is allowlisted: should not be tagged as ORG/PERSON",
+        );
+    }
+
+    #[test]
+    fn realistic_session_prompt_catches_person() {
+        // The prompt that motivated SCI-123. Before this ticket the
+        // pipeline only caught sci.com via the bare-domain regex; now
+        // it also catches "Casey Zandbergen" as PERSON.
+        let prompt = "Hi! My name is Casey Zandbergen and I work on Sci, \
+                      a sovereign cognitive identity layer at sci.com.";
+        let out = extract_nlp_entities(prompt);
+        let people: Vec<_> = out
+            .iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(
+            people.contains(&"Casey Zandbergen"),
+            "expected Casey Zandbergen in {:?}", people,
+        );
+    }
+
+    #[test]
+    fn allowlisted_first_word_doesnt_extend() {
+        // "Apple Vision" — "Apple" is allowlisted; the second word
+        // "Vision" is capitalized but it's not a name. Expect no
+        // PERSON match.
+        let out = entities_of_kind("Apple Vision Pro launches today", EntityType::Person);
+        assert!(out.is_empty(), "got: {:?}", out);
+    }
+
+    #[test]
+    fn does_not_double_count_compound() {
+        // A compound name should produce one Entity, not two (one for
+        // the full + one for the first half).
+        let out = extract_nlp_entities("Casey Zandbergen and Casey worked together");
+        let casey_entries: Vec<_> = out
+            .iter()
+            .filter(|e| e.text.starts_with("Casey"))
+            .collect();
+        // "Casey Zandbergen" once + plain "Casey" once = 2 distinct entries.
+        assert_eq!(casey_entries.len(), 2, "got: {:?}", casey_entries);
+    }
+
+    // ── SCI-194 regression tests ──────────────────────────────────────────
+    //
+    // Pre-fix, `surface_span` used `text.find(start_surface)` which
+    // returns the FIRST byte offset of the surface in the full input.
+    // Repeated surfaces would alias to an earlier occurrence and the
+    // returned span would cover everything between that earlier hit
+    // and the current end-token — producing multi-sentence "originals"
+    // that polluted the token_mappings table.
+
+    #[test]
+    fn repeated_surface_does_not_grab_intervening_text() {
+        // "Casey" appears early; compound rule fires on the LATER
+        // "Casey Zandbergen". The bug paired the early Casey with the
+        // late Zandbergen and captured everything between.
+        let text = "Hey Casey, before we discussed that, \
+                    we talked about Casey Zandbergen yesterday.";
+        let persons: Vec<String> = extract_nlp_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == EntityType::Person)
+            .map(|e| e.text)
+            .collect();
+        assert!(
+            persons.contains(&"Casey".to_string()),
+            "missing standalone Casey; got {persons:?}",
+        );
+        assert!(
+            persons.contains(&"Casey Zandbergen".to_string()),
+            "missing compound Casey Zandbergen; got {persons:?}",
+        );
+        for p in &persons {
+            assert!(
+                !p.contains("discussed") && !p.contains("before") && !p.contains(","),
+                "entity text grabbed intervening prose: {p:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn triple_repeat_surface_stays_local() {
+        // Three "Casey"s across three sentences. None of the entity
+        // texts should span sentence boundaries.
+        let text = "Casey said hi. Then Casey said goodbye. \
+                    Finally Casey Zandbergen arrived.";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains('.'),
+                "entity text spans a sentence boundary: {:?}", e.text,
+            );
+            assert!(
+                e.text.len() <= 30,
+                "entity text suspiciously long: {:?} ({} chars)",
+                e.text, e.text.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn bracketed_tokens_not_absorbed_into_entity_text() {
+        // Mimics text from recall injection: prior anonymization
+        // produced `[PLACE_2]` embedded in the prose. The new pass
+        // should NOT slurp the bracketed token into the original of a
+        // new entity span.
+        let text = "Casey moved to [PLACE_2] and then Casey Zandbergen followed.";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_") && !e.text.contains("[PERSON_"),
+                "entity text absorbed a bracketed token: {:?}", e.text,
+            );
+        }
+    }
+
+    // ── SCI-196b: incomplete-placeholder gate ─────────────────────────
+    // The original SCI-196 fix required a closing `]`. Production inputs
+    // (source-code comments, SQL output, discussion of the bug) contain
+    // *partial* placeholder shapes like `[PLACE_` with no closing bracket.
+    // These bypassed the gate and were absorbed by the compound-PERSON rule,
+    // producing `"Casey [PLACE_"` (15 chars) as a poisoned original.
+    // All inputs below must produce ZERO entity texts containing `[PLACE_`.
+
+    #[test]
+    fn incomplete_placeholder_bare_stem_not_absorbed() {
+        // Exact production-failure shape: `[PLACE_` with no digits, no `]`
+        let text = r#"the pattern "Casey [PLACE_" appears in poison rows"#;
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed bare-stem incomplete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_placeholder_with_digits_not_absorbed() {
+        // `[PLACE_2` — digits present, closing `]` stripped by tokenizer
+        let text = "Casey [PLACE_2 was still being extended before this fix";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed digit-form incomplete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn incomplete_placeholder_quoted_source_not_absorbed() {
+        // Quoted in source-code comment: `Casey [PLACE_2"` (closing quote, no bracket)
+        let text = r#"entity.original was "Casey [PLACE_2" which is wrong"#;
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed quoted incomplete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn complete_placeholder_still_gated() {
+        // Original SCI-196 case must still work — complete `[PLACE_2]`
+        let text = "Casey moved to [PLACE_2] last week";
+        for e in extract_nlp_entities(text) {
+            assert!(
+                !e.text.contains("[PLACE_"),
+                "absorbed complete placeholder: {:?}", e.text
+            );
+        }
+    }
+
+    #[test]
+    fn org_repeated_surface_stays_local() {
+        // Same bug class applied to the ORG-suffix rule. "Anthropic"
+        // appears twice. The compound match should stay local to the
+        // second occurrence + "Inc".
+        let text = "Anthropic is great. Later, Anthropic Inc shipped Claude.";
+        let orgs: Vec<String> = extract_nlp_entities(text)
+            .into_iter()
+            .filter(|e| e.entity_type == EntityType::Org)
+            .map(|e| e.text)
+            .collect();
+        assert!(
+            orgs.contains(&"Anthropic Inc".to_string()),
+            "missing Anthropic Inc; got {orgs:?}",
+        );
+        for o in &orgs {
+            assert!(
+                !o.contains("great") && !o.contains("Later"),
+                "ORG text grabbed intervening prose: {o:?}",
+            );
+        }
+    }
+
+    // ── SCI-203 regression tests ──────────────────────────────────────────
+    //
+    // Short (≤3 char) place tokens must be all-caps to match. This stops
+    // common English words ("or", "in", "oh", "ok", "hi", "me", "id")
+    // from being mis-tagged as state abbreviations when they appear in
+    // their normal lowercase or sentence-initial title-case forms.
+
+    #[test]
+    fn lowercase_conjunction_not_tagged_as_oregon() {
+        let out = entities_of_kind("apples or oranges, please", EntityType::Place);
+        assert!(out.is_empty(), "tagged conjunction as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn sentence_initial_conjunction_not_tagged() {
+        let out = entities_of_kind("Or maybe we should reconsider.", EntityType::Place);
+        assert!(out.is_empty(), "tagged sentence-initial Or as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn allcaps_state_abbrev_still_tagged() {
+        // "Portland, OR is nice" — "OR" after comma is a valid match.
+        let out = entities_of_kind("Portland, OR is nice", EntityType::Place);
+        assert!(out.contains(&"OR".to_string()),
+            "expected OR after comma to remain tagged as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn allcaps_or_without_comma_not_tagged() {
+        // "A OR B" — all-caps OR without a preceding comma is a logical
+        // operator, not the Oregon state abbreviation.
+        let out = entities_of_kind("PACKAGES ARE INSTALLED OR ABLE TO BE IMPORTED", EntityType::Place);
+        assert!(!out.contains(&"OR".to_string()),
+            "all-caps OR without comma context tagged as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn librechat_artifact_or_not_tagged() {
+        // Reproduction of the production failure: LibreChat artifact
+        // instructions contain "OR" as a logical operator in all-caps.
+        let text = r#"imports like `import { useState } from 'react'` OR `import React from 'react'` are NOT needed"#;
+        let out = entities_of_kind(text, EntityType::Place);
+        assert!(!out.contains(&"OR".to_string()),
+            "logical OR in artifact instructions tagged as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn unambiguous_state_code_still_tagged() {
+        // CA and TX are unambiguous — all-caps alone should be sufficient.
+        let ca_out = entities_of_kind("Visiting CA next week", EntityType::Place);
+        assert!(ca_out.contains(&"CA".to_string()),
+            "CA not tagged; got {ca_out:?}");
+        let tx_out = entities_of_kind("Moving to TX in spring", EntityType::Place);
+        assert!(tx_out.contains(&"TX".to_string()),
+            "TX not tagged; got {tx_out:?}");
+    }
+
+    #[test]
+    fn geo_preposition_triggers_ambiguous_abbrev() {
+        // "I am driving to OK today" — Casey's exact example.
+        // "to" is a geo-preposition, so OK should tag as Oklahoma.
+        let out = entities_of_kind("I am driving to OK today", EntityType::Place);
+        assert!(out.contains(&"OK".to_string()),
+            "expected OK after 'to' to tag as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn geo_preposition_from_tags_state() {
+        // "flying from OR" — movement preposition before Oregon.
+        let out = entities_of_kind("I am flying from OR to TX", EntityType::Place);
+        assert!(out.contains(&"OR".to_string()),
+            "expected OR after 'from' to tag as PLACE; got {out:?}");
+        assert!(out.contains(&"TX".to_string()),
+            "expected TX to tag as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn non_geo_context_blocks_ambiguous_abbrev() {
+        // "sounds OK", "I OR you", "say HI" — no geographic context.
+        let ok_out = entities_of_kind("That sounds OK to me", EntityType::Place);
+        assert!(!ok_out.contains(&"OK".to_string()),
+            "non-geo OK tagged: {ok_out:?}");
+        let or_out = entities_of_kind("you OR me should go", EntityType::Place);
+        assert!(!or_out.contains(&"OR".to_string()),
+            "non-geo OR tagged: {or_out:?}");
+        let hi_out = entities_of_kind("Say HI to everyone", EntityType::Place);
+        assert!(!hi_out.contains(&"HI".to_string()),
+            "non-geo HI tagged: {hi_out:?}");
+    }
+
+    #[test]
+    fn acknowledgment_form_not_tagged() {
+        // "OK, let's go" — OK followed by comma = agreement, not Oklahoma.
+        let out = entities_of_kind("OK, let's go to the store", EntityType::Place);
+        assert!(!out.contains(&"OK".to_string()),
+            "acknowledgment OK, should not tag: {out:?}");
+    }
+
+    #[test]
+    fn subject_position_tagged() {
+        // "OK is my home" — Casey's exact example. OK as grammatical
+        // subject followed by a copula verb = state, not "okay".
+        let out = entities_of_kind("OK is my home state", EntityType::Place);
+        assert!(out.contains(&"OK".to_string()),
+            "subject-position OK should tag as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn sentence_boundary_copula_not_triggered() {
+        // "OK? Are you sure?" — "Are" starts a new sentence (capitalised),
+        // so the copula rule must NOT fire. OK is a question/acknowledgment.
+        let out = entities_of_kind("OK? Are you sure?", EntityType::Place);
+        assert!(!out.contains(&"OK".to_string()),
+            "sentence-boundary copula must not trigger state tag: {out:?}");
+    }
+
+    #[test]
+    fn full_state_name_still_tags() {
+        // Full state names are longer than 3 chars so the case-guard
+        // doesn't apply. The broader non-cap skip at line 266 still
+        // requires capitalization — title-case "Oregon" should tag.
+        let out = entities_of_kind("Visit Oregon next week", EntityType::Place);
+        assert!(out.contains(&"Oregon".to_string()),
+            "expected Oregon to tag as PLACE; got {out:?}");
+    }
+
+    #[test]
+    fn preposition_in_not_tagged_as_indiana() {
+        let out = entities_of_kind("Files in the home directory", EntityType::Place);
+        assert!(out.is_empty(), "tagged preposition 'in' as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn sentence_initial_in_not_tagged() {
+        let out = entities_of_kind("In other news, hello.", EntityType::Place);
+        assert!(out.is_empty(), "tagged sentence-initial 'In' as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn lowercase_hi_not_tagged_as_hawaii() {
+        let out = entities_of_kind("hi everyone, welcome", EntityType::Place);
+        assert!(out.is_empty(), "tagged greeting 'hi' as PLACE: {out:?}");
+    }
+
+    #[test]
+    fn comma_extension_also_case_guarded() {
+        // "Tulsa, Ok we'll see" — "Tulsa" tags as PLACE; the extension
+        // rule must NOT pick up sentence-initial "Ok" as Oklahoma.
+        let out = entities_of_kind("Tulsa, Ok we'll see", EntityType::Place);
+        assert!(out.contains(&"Tulsa".to_string()),
+            "expected Tulsa to be tagged; got {out:?}");
+        assert!(!out.contains(&"Ok".to_string()),
+            "title-case 'Ok' should not extend as Oklahoma; got {out:?}");
+    }
+
+    #[test]
+    fn mixed_real_and_fake_abbrevs() {
+        // CA is unambiguous (not a common English word) and tags standalone.
+        // HI, OR, IN are ambiguous (greeting/logical-or/preposition) and
+        // require comma context — they should NOT tag standalone.
+        let out = entities_of_kind("HI in CA, then or what", EntityType::Place);
+        assert!(out.contains(&"CA".to_string()), "CA should tag; got {out:?}");
+        assert!(!out.contains(&"HI".to_string()), "HI without comma should not tag; got {out:?}");
+        assert!(!out.contains(&"in".to_string()), "lowercase 'in' should not tag; got {out:?}");
+        assert!(!out.contains(&"or".to_string()), "lowercase 'or' should not tag; got {out:?}");
+    }
+}

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App sandbox is OFF in this v0.5 phase: we ship a child process
+         (sci-helper) that talks Unix sockets and writes ~/.sci/, both
+         operations the strict sandbox blocks without an XPC bridge we
+         haven't built yet. The plan for Mac App Store distribution is
+         a sandboxed app + a separate XPC service hosting the helper —
+         that's SCI-137. v0.5 ships outside the App Store as a notarized
+         .dmg, same model 1Password 8 uses for direct distribution. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- The NetworkExtension framework needs this entitlement on the
+         containing app to load + manage the bundled provider. SCI-134
+         swapped to transparent-proxy-provider; both halves (this
+         entitlement and the .appex's matching one) must agree. The
+         entitlement requires a paid Apple Developer membership; the
+         project builds without code-signing for development but needs
+         a valid signing identity for the NE to actually load. -->
+    <key>com.apple.developer.networking.networkextension</key>
+    <array>
+        <string>transparent-proxy-provider</string>
+    </array>
+</dict>
+</plist>

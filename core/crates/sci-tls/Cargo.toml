@@ -1,0 +1,42 @@
+[package]
+name         = "sci-tls"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = { workspace = true }
+description  = "Sci CA generation + per-host leaf cert + TLS termination. Mirrors @sci/agent's cert.ts."
+
+# SCI-126: CA generation + per-host leaf cert + rustls server config.
+# Reference: packages/agent/src/cert.ts (node-forge in TS; rcgen here —
+# smaller dep, audited, same RSA-2048 / SHA-256 / 10-year-CA shape).
+[dependencies]
+thiserror     = { workspace = true }
+once_cell     = { workspace = true }
+
+# rcgen builds the X.509 certs (CA + leaves). `pem` feature gives us
+# `Certificate::serialize_pem` so we can write `ca.crt` in the same
+# format the TS agent does — drop-in compatible on disk.
+rcgen         = { version = "0.13", features = ["pem", "x509-parser"] }
+
+# rustls is the TLS server side — wraps an already-accepted socket and
+# does the handshake using whatever cert the SNI resolver returns.
+# `ring` rather than aws-lc-rs so the build doesn't need cmake on every
+# user's machine. Ring is mature, FIPS isn't a v0.5 requirement.
+rustls        = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+
+# x509-parser lets us read existing CA certs back from disk (when the
+# user already has a Sci CA from the TS agent) and pull out the
+# subject/issuer name for SAN matching. rcgen has limited parsing.
+x509-parser   = "0.18"
+
+# Time arithmetic for cert validity windows.
+time          = "0.3"
+
+[dev-dependencies]
+# Test-only client side of the TLS handshake — we use rustls-as-client
+# in unit tests to prove our server-side certs validate. Same crate,
+# different role, so we don't accidentally test "the client we picked
+# trusts itself."
+rustls-pki-types = "1"
+tempfile         = "3"

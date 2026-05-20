@@ -17,6 +17,8 @@ services:
       POSTGRES_DB:       sci
       POSTGRES_USER:     sci_admin
       POSTGRES_PASSWORD: sci_local
+    ports:
+      - "5432:5432"
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - sci_data:/var/lib/postgresql/data

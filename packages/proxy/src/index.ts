@@ -19,6 +19,10 @@ import { execSync } from 'child_process'
 import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { createStorageAdapter } from '@sci/core'
+import { startTelemetry, getTracer, SpanStatusCode } from '@sci/telemetry'
+
+// Must be called before any instrumented code runs
+startTelemetry({ service: 'sci-proxy', version: '0.1.0' })
 import { handleAnthropicMessages } from './handlers/anthropic.js'
 import { handleOpenAIChat } from './handlers/openai.js'
 import { startHTTPSServer, VPN_PORT } from './server-https.js'
@@ -69,15 +73,35 @@ app.get('/health', async (c) => {
 
 // ── Anthropic Messages API ────────────────────────────────────────────────────
 
-app.post('/v1/messages', (c) =>
-  handleAnthropicMessages(c, adapter, OPENROUTER_KEY)
-)
+app.post('/v1/messages', (c) => {
+  const tracer = getTracer('sci-proxy')
+  return tracer.startActiveSpan('http.request', (span) => {
+    span.setAttributes({
+      'http.method': 'POST',
+      'http.route': '/v1/messages',
+      'http.target': '/v1/messages',
+    })
+    return handleAnthropicMessages(c, adapter, OPENROUTER_KEY)
+      .then((res) => { span.setStatus({ code: SpanStatusCode.OK }); span.end(); return res })
+      .catch((err) => { span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) }); span.recordException(err); span.end(); throw err })
+  })
+})
 
 // ── OpenAI Chat Completions API ───────────────────────────────────────────────
 
-app.post('/v1/chat/completions', (c) =>
-  handleOpenAIChat(c, adapter, OPENROUTER_KEY)
-)
+app.post('/v1/chat/completions', (c) => {
+  const tracer = getTracer('sci-proxy')
+  return tracer.startActiveSpan('http.request', (span) => {
+    span.setAttributes({
+      'http.method': 'POST',
+      'http.route': '/v1/chat/completions',
+      'http.target': '/v1/chat/completions',
+    })
+    return handleOpenAIChat(c, adapter, OPENROUTER_KEY)
+      .then((res) => { span.setStatus({ code: SpanStatusCode.OK }); span.end(); return res })
+      .catch((err) => { span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) }); span.recordException(err); span.end(); throw err })
+  })
+})
 
 // ── Models list (pass-through stub) ──────────────────────────────────────────
 

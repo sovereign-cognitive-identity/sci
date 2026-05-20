@@ -17,6 +17,7 @@ import { streamFromOpenRouter } from '../openrouter.js'
 import type { OpenRouterMessage } from '../openrouter.js'
 import { injectMemoryContext, storeInteraction } from '../middleware/memory.js'
 import { selectModel } from '../router.js'
+import { getTracer, SpanStatusCode } from '@sci/telemetry'
 
 interface OpenAIRequest {
   model: string
@@ -31,11 +32,29 @@ export async function handleOpenAIChat(
   adapter: StorageAdapter,
   openrouterKey: string
 ): Promise<Response> {
+  const tracer = getTracer('sci-proxy')
   const body = await c.req.json<OpenAIRequest>()
   const streaming = body.stream !== false
 
   const lastUserMsg = [...body.messages].reverse().find(m => m.role === 'user')
   const originalUserText = lastUserMsg?.content ?? ''
+
+  const span = tracer.startSpan('sci.llm.request', {
+    attributes: {
+      'llm.model': body.model,
+      'llm.routing_mode': 'openrouter',
+      'llm.message_count': body.messages.length,
+    },
+  })
+  const endSpan = (status: 'ok' | 'error', err?: unknown) => {
+    if (status === 'error' && err) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+      span.recordException(err as Error)
+    } else {
+      span.setStatus({ code: SpanStatusCode.OK })
+    }
+    span.end()
+  }
 
   // 1. Anonymize user messages
   let sessionTokenMap = { forward: new Map<string, string>(), reverse: new Map<string, string>() }
@@ -65,6 +84,7 @@ export async function handleOpenAIChat(
     deanonStream.push(chunks.join(''))
     const response = deanonStream.end()
     storeInteraction(originalUserText, response, adapter).catch(() => {})
+    endSpan('ok')
     return c.json({
       id: `chatcmpl-${Date.now()}`,
       object: 'chat.completion',
@@ -113,6 +133,7 @@ export async function handleOpenAIChat(
     },
   })
 
+  endSpan('ok')
   return new Response(readable, {
     headers: {
       'Content-Type': 'text/event-stream',
