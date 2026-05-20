@@ -90,8 +90,6 @@ brew services start sci
 If it was started but immediately crashed, check the logs:
 
 ```bash
-brew services log sci
-# or
 tail -50 ~/Library/Logs/sci/sci-helper.log
 ```
 
@@ -120,7 +118,7 @@ INFO  loading embedding model (first run will download ~110 MB)
 **Fix:** Wait. The download progress is visible in the logs:
 
 ```bash
-brew services log sci
+tail -f ~/Library/Logs/sci/sci-helper.log
 ```
 
 Once you see `INFO  embedding model ready`, the proxy is fully up and the first request will go through.

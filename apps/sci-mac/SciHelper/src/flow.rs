@@ -229,7 +229,7 @@ async fn handle_flow(stream: UnixStream, header: FlowHeader, state: SharedState)
 }
 
 /// Post-TLS-accept dispatch. Shared between the NE-flow path
-/// (`handle_flow`) and the SCI-148 dev-proxy path (`proxy::handle_proxy_connection`).
+/// (`handle_flow`) and the SCI-148 proxy path (`proxy::handle_proxy_connection`).
 /// Both transports do the same thing once the TLS handshake is up:
 /// parse one HTTP request, inject Sci-side credentials, run the
 /// provider handler, stream the response back. This function emits

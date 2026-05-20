@@ -44,7 +44,7 @@ pub type Handler = Box<
         + Send,
 >;
 
-/// True iff `hostname` is one Sci has handlers for. The dev-proxy
+/// True iff `hostname` is one Sci has handlers for. The proxy
 /// (SCI-148) uses this BEFORE TLS termination to decide whether to
 /// MITM the connection or run a plain CONNECT tunnel: hosts we don't
 /// recognize get tunneled byte-for-byte without inspection.

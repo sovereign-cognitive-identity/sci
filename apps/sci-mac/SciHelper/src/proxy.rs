@@ -43,7 +43,7 @@ pub async fn serve_proxy(addr: SocketAddr, state: SharedState) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("bind proxy listener on {addr}"))?;
-    tracing::info!(%addr, "dev-proxy listening (CONNECT-only HTTPS proxy)");
+    tracing::info!(%addr, "proxy listening (CONNECT-only HTTPS proxy)");
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(t) => t,
@@ -87,13 +87,37 @@ async fn handle_proxy_connection(stream: TcpStream, state: SharedState) -> Resul
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let req_line = line.trim_end_matches(['\r', '\n']);
+
+    // Operator smoke-test endpoint. `curl http://localhost:3001/healthz`
+    // is a reasonable thing for someone diagnosing the service to try;
+    // returning the CONNECT-only 405 there is technically correct but
+    // unfriendly. Drain headers and reply 200 with a tiny status body.
+    if req_line.starts_with("GET /healthz ") || req_line.starts_with("GET /_status ") {
+        drain_request_headers(&mut reader).await?;
+        let body = format!(
+            "{{\"status\":\"ok\",\"version\":\"{}\"}}\n",
+            env!("CARGO_PKG_VERSION"),
+        );
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        let mut stream = reader.into_inner();
+        let _ = stream.write_all(resp.as_bytes()).await;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
     let target = match parse_connect_target(req_line) {
         Ok(t) => t,
         Err(e) => {
             // Write a real 405 back to the client so curl/Postman/etc.
             // see an actionable message instead of a closed connection.
             let body = format!(
-                "Sci dev-proxy supports HTTPS via CONNECT only.\n\
+                "Sci proxy supports HTTPS via CONNECT only.\n\
                  Got: {req_line}\n\
                  If you set HTTP_PROXY=… instead of HTTPS_PROXY=…, swap them.\n\
                  If you set ANTHROPIC_BASE_URL=http://…:3001 (treating Sci\n\
@@ -209,6 +233,28 @@ async fn run_connect_tunnel(client: TcpStream, target: &ConnectTarget) -> Result
     Ok(())
 }
 
+/// Read header lines from `reader` until a blank line, discarding
+/// content. Bound at 64 KiB so a buggy or hostile client can't make us
+/// buffer unbounded data on a `/healthz` smoke test.
+async fn drain_request_headers(
+    reader: &mut BufReader<TcpStream>,
+) -> Result<()> {
+    let mut header_bytes_seen = 0usize;
+    loop {
+        let mut hdr = String::new();
+        let n = reader.read_line(&mut hdr).await?;
+        if n == 0 {
+            return Err(anyhow!("client closed before request headers complete"));
+        }
+        header_bytes_seen += n;
+        if header_bytes_seen > 64 * 1024 {
+            return Err(anyhow!("request headers exceed 64 KiB"));
+        }
+        if hdr == "\r\n" || hdr == "\n" { break; }
+    }
+    Ok(())
+}
+
 #[derive(Debug, PartialEq)]
 struct ConnectTarget {
     hostname: String,
@@ -216,7 +262,7 @@ struct ConnectTarget {
 }
 
 /// Parse `CONNECT host:port HTTP/1.1` into a hostname + port. Rejects
-/// any other method — a dev-proxy that forwarded plain HTTP would be
+/// any other method — a proxy that forwarded plain HTTP would be
 /// a credential-leak vector (the client would have stamped its API
 /// key on the wire in plaintext to a non-AI host).
 fn parse_connect_target(req_line: &str) -> Result<ConnectTarget> {

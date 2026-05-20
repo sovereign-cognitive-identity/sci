@@ -288,7 +288,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("bind unix socket {}", socket_path.display()))?;
     tracing::info!(socket = %socket_path.display(), "helper listening");
 
-    // ── 4b. (SCI-148) Optional dev-proxy listener ─────────────────────────
+    // ── 4b. (SCI-148) Optional proxy listener ─────────────────────────────
     // `--proxy <port>` or `SCI_HELPER_PROXY_PORT=<port>` exposes the
     // engine as an explicit HTTPS proxy. Used for dogfood + CI
     // testing without the macOS NE entitlement, and as the
@@ -298,7 +298,7 @@ async fn main() -> Result<()> {
         let s = shared.clone();
         tokio::spawn(async move {
             if let Err(e) = proxy::serve_proxy(addr, s).await {
-                tracing::error!(error = %e, "dev-proxy listener exited");
+                tracing::error!(error = %e, "proxy listener exited");
             }
         });
     }
