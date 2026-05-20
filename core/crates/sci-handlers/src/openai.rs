@@ -63,7 +63,6 @@ pub async fn handle_openai_chat(
             if let Some(msgs) = body.get_mut("messages") {
                 *msgs = messages_snapshot;
             }
-            session_map = TokenMap::default();
             let err_body = Box::pin(futures::stream::once(async {
                 Ok::<_, std::io::Error>(bytes::Bytes::from_static(
                     b"anonymizer cascade detected; request rolled back",

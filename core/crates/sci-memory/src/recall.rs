@@ -37,10 +37,6 @@ pub(crate) fn embedding_to_vec0_bytes(v: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Legacy alias kept so the v1→v2 migration in `adapter.rs` can read the
-/// old BLOB rows without a separate code path.
-pub(crate) use embedding_to_vec0_bytes as embedding_to_bytes;
-
 /// Deserialise a little-endian byte blob back to `Vec<f32>`.
 /// Returns `None` for corrupt blobs (length not a multiple of 4).
 pub(crate) fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {

@@ -30,7 +30,7 @@
 //!     — audit + cron metadata, not on the hot path.
 
 use crate::error::{MemoryError, Result};
-use crate::recall::{embedding_to_bytes, embedding_to_vec0_bytes, recall};
+use crate::recall::{embedding_to_vec0_bytes, recall};
 use crate::schema::{EMBEDDING_DIM, MIGRATIONS, SCHEMA, SCHEMA_VERSION, SEED_PROFILES};
 use crate::types::{
     AuditTurn, IdentityFact, Metadata, Profile, RecallQuery, RecallResult, StorageStats,

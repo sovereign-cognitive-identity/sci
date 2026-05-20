@@ -193,7 +193,6 @@ pub async fn handle_anthropic_messages(
             if let Some(msgs) = body.get_mut("messages") {
                 *msgs = messages_snapshot;
             }
-            session_map = TokenMap::default();
             let err_body: BodyStream = Box::pin(futures::stream::once(async {
                 Ok::<_, std::io::Error>(bytes::Bytes::from_static(
                     b"anonymizer cascade detected; request rolled back \
@@ -2226,7 +2225,9 @@ fn merge_recall_into_system(body: &mut Value, recall: &str) {
             if has_claude_code_marker(s) {
                 // Append at end. Ensure a paragraph break separates
                 // the existing content from our injected block.
-                let separator = if s.ends_with("\n\n") || s.is_empty() { "" } else { "\n\n" };
+                // SCI-146: use the shared separator constant so the paragraph
+                // break between the prefix and injected recall is consistent.
+                let separator = if s.ends_with(CLAUDE_CODE_PREFIX_SEPARATOR) || s.is_empty() { "" } else { CLAUDE_CODE_PREFIX_SEPARATOR };
                 *s = format!("{s}{separator}{recall}");
             } else {
                 *s = format!("{recall}{s}");

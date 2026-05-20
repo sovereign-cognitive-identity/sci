@@ -22,6 +22,9 @@ mod credentials;
 mod events;
 mod flow;
 mod proxy;
+mod setup;
+mod trust_ca;
+mod verify;
 
 use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
@@ -98,8 +101,77 @@ fn parse_port_flag(flag: &str, env_var: &str) -> Option<u16> {
     std::env::var(env_var).ok().and_then(|s| s.parse().ok())
 }
 
+/// Check for one-shot CLI sub-commands (`--setup`, `--trust-ca`, `--verify`)
+/// that must run before the tokio runtime starts. Returns `true` if a command
+/// was handled and the process should exit.
+fn handle_oneshot_commands() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+
+    // Print help / usage for --help / -h, including the new commands.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return true;
+    }
+
+    if args.iter().any(|a| a == "--setup") {
+        if let Err(e) = setup::run() {
+            eprintln!("sci-helper --setup failed: {e}");
+            std::process::exit(1);
+        }
+        return true;
+    }
+
+    if args.iter().any(|a| a == "--trust-ca") {
+        if let Err(e) = trust_ca::run() {
+            eprintln!("sci-helper --trust-ca failed: {e}");
+            std::process::exit(1);
+        }
+        return true;
+    }
+
+    if args.iter().any(|a| a == "--verify") {
+        if let Err(e) = verify::run() {
+            eprintln!("sci-helper --verify failed: {e}");
+            std::process::exit(1);
+        }
+        return true;
+    }
+
+    false
+}
+
+fn print_usage() {
+    eprintln!(
+        "sci-helper — Sci privacy proxy\n\
+         \n\
+         USAGE:\n\
+         \n\
+           sci-helper --proxy <port>   Start the HTTPS proxy on <port> (default: use SCI_HELPER_PROXY_PORT)\n\
+           sci-helper --admin <port>   Admin HTTP API port (default: 3002)\n\
+           sci-helper --setup          First-run wizard: credentials, shell config, launchd\n\
+           sci-helper --trust-ca       Add Sci CA to macOS system keychain\n\
+           sci-helper --verify         Prove the privacy guarantee with a live request\n\
+           sci-helper --help           Show this help\n\
+         \n\
+         ENVIRONMENT:\n\
+         \n\
+           SCI_CONFIG_DIR         Override ~/.sci config directory\n\
+           SCI_HELPER_SOCKET      Override Unix socket path\n\
+           SCI_HELPER_PROXY_PORT  Override proxy port\n\
+           SCI_HELPER_ADMIN_PORT  Override admin API port\n\
+           RUST_LOG               Logging filter (e.g. debug, info)\n"
+    );
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
+    // Handle one-shot commands (--setup, --trust-ca, --verify, --help)
+    // before the tokio runtime does any real work. These are sync and
+    // exit the process when done.
+    if handle_oneshot_commands() {
+        return Ok(());
+    }
+
     // Plain stderr logger — Console.app picks stderr up under the
     // helper's subsystem when launched from inside the .app, which is
     // the only audit channel the user has for what the engine is
