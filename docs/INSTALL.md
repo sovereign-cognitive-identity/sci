@@ -52,23 +52,33 @@ curl -v https://api.anthropic.com/v1/models 2>&1 | grep "SSL connection"
 curl: (7) Failed to connect to 127.0.0.1 port 3001 after 0 ms: Connection refused
 ```
 
-or Claude Code returns a network error immediately.
+or `brew update` / `brew install` fails with:
 
-**Cause:** `HTTPS_PROXY` is set in your shell, but `sci-helper` is not running.
+```
+Error: fetching /opt/homebrew failed on port 3001
+```
+
+**Cause:** `HTTPS_PROXY` is set in your shell, but `sci-helper` is not running. This also affects `brew` itself — if sci-helper isn't up yet when `brew update` runs, brew's git fetch fails.
 
 **Fix:**
 
-Check whether the proxy is running:
+Ensure `NO_PROXY` excludes brew and git hosting from the proxy. Add this to your `~/.zshrc` (or run `sci-helper --setup` again — it now writes this automatically):
 
 ```bash
-brew services list | grep sci
-# Should show: sci  started  ...
+export NO_PROXY=localhost,127.0.0.1,*.brew.sh,formulae.brew.sh,raw.githubusercontent.com,objects.githubusercontent.com
 ```
 
-If it shows `stopped` or `error`:
+Then start the proxy and re-run brew:
 
 ```bash
 brew services start sci
+brew update && brew upgrade sci
+```
+
+If brew commands still fail before the service is running, temporarily bypass:
+
+```bash
+unset HTTPS_PROXY && brew update && export HTTPS_PROXY=http://localhost:3001
 ```
 
 If it was never started:

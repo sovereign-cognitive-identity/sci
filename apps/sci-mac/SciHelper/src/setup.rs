@@ -210,6 +210,10 @@ fn shell_export_lines() -> Vec<String> {
     vec![
         "export HTTPS_PROXY=http://localhost:3001".to_string(),
         "export NODE_EXTRA_CA_CERTS=$HOME/.sci/ca.crt".to_string(),
+        // Exclude brew, git hosting, and local services from the proxy.
+        // Without this, `brew update` routes through sci-helper before it
+        // is running and fails with a connection-refused error.
+        "export NO_PROXY=localhost,127.0.0.1,*.brew.sh,formulae.brew.sh,raw.githubusercontent.com,objects.githubusercontent.com".to_string(),
     ]
 }
 
