@@ -285,3 +285,31 @@ echo $ANTHROPIC_BASE_URL
 ```
 
 It should print `http://127.0.0.1:3001`. If it prints nothing, the environment is not being inherited. In that case, set the variables in `~/.profile` or `~/.zprofile` (which are sourced for login shells and GUI-launched apps on macOS) in addition to `~/.zshrc`.
+
+---
+
+## Upgrading from 0.5.0
+
+**Who this applies to:** anyone who ran `sci-helper --setup` while on Sci 0.5.0 or earlier and now has an outdated `NO_PROXY` line in `~/.zshrc`.
+
+**Symptom:** `brew update` or `brew tap` fails with `Failed to connect to localhost port 3001` whenever the Sci service is stopped (between reboots, after `brew services stop sci`, etc.). The 0.5.0 `NO_PROXY` line covers `*.brew.sh` and `*.githubusercontent.com` but **not** `github.com` itself, so brew's git fetches against the tap repo still route through the (non-listening) proxy.
+
+**Fix:** re-run setup. It rewrites the Sci-managed block in `~/.zshrc` in place:
+
+```bash
+sci-helper --setup
+```
+
+From 0.5.1 onward, the setup writer is idempotent — re-running it does not leave duplicate `export` lines. The Sci-managed block is delimited by these markers:
+
+```
+# >>> sci-helper --setup >>>
+export HTTPS_PROXY=...
+export NODE_EXTRA_CA_CERTS=...
+export NO_PROXY=...
+# <<< sci-helper --setup <<<
+```
+
+If you have local edits between those markers, move them outside the block before re-running setup — anything inside the markers gets replaced.
+
+**Manual alternative:** if you'd rather not re-run setup, edit `~/.zshrc` directly. Find the `export NO_PROXY=...` line that begins with `localhost,127.0.0.1,` and add `github.com,api.github.com,` right after `127.0.0.1,`. Then `source ~/.zshrc` (or open a new terminal).

@@ -72,8 +72,8 @@ pub fn run(non_interactive: bool) -> anyhow::Result<()> {
         answer.is_empty() || answer == "y" || answer == "yes"
     };
     if should_append {
-        append_to_zshrc(&home, &export_lines)?;
-        println!("✓ Lines appended to ~/.zshrc");
+        upsert_setup_block(&home, &export_lines)?;
+        println!("✓ Sci-managed block written to ~/.zshrc");
     } else {
         println!("  Skipped — add them manually when ready.");
     }
@@ -254,18 +254,110 @@ fn shell_export_lines() -> Vec<String> {
     ]
 }
 
-fn append_to_zshrc(home: &Path, lines: &[String]) -> anyhow::Result<()> {
+/// Paired markers delimit the sci-managed block in `~/.zshrc`. Anything
+/// between them is owned by `--setup` and gets replaced on re-run.
+const BEGIN_MARKER:  &str = "# >>> sci-helper --setup >>>";
+const END_MARKER:    &str = "# <<< sci-helper --setup <<<";
+
+/// Pre-0.5.1 marker. Single line, no paired terminator. When we see
+/// it, the lines immediately after it that match our known exports
+/// (HTTPS_PROXY, NODE_EXTRA_CA_CERTS, NO_PROXY) are removed too.
+const LEGACY_MARKER: &str = "# Added by sci-helper --setup";
+
+/// Write the sci-managed export block to `~/.zshrc`. Idempotent:
+///
+/// - If a `# >>> sci-helper --setup >>>` / `# <<< sci-helper --setup <<<`
+///   block already exists, it is replaced in place (preserving any
+///   user content outside the markers).
+/// - If a legacy `# Added by sci-helper --setup` block exists (one
+///   marker line followed by our HTTPS_PROXY/NODE_EXTRA_CA_CERTS/NO_PROXY
+///   exports), it is removed before the new paired block is appended.
+/// - If neither exists, the new block is appended at the end.
+///
+/// Anything the user added inside the markers gets overwritten; the
+/// migration section of docs/INSTALL.md tells them to move local edits
+/// outside the markers before re-running setup.
+fn upsert_setup_block(home: &Path, lines: &[String]) -> anyhow::Result<()> {
     let zshrc = home.join(".zshrc");
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&zshrc)?;
-    writeln!(file)?;
-    writeln!(file, "# Added by sci-helper --setup")?;
-    for line in lines {
-        writeln!(file, "{line}")?;
+
+    let existing = match std::fs::read_to_string(&zshrc) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let cleaned = strip_existing_setup_blocks(&existing);
+
+    let mut out = cleaned.trim_end().to_string();
+    if !out.is_empty() {
+        out.push_str("\n\n");
     }
+    out.push_str(BEGIN_MARKER);
+    out.push('\n');
+    for line in lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(END_MARKER);
+    out.push('\n');
+
+    std::fs::write(&zshrc, out)?;
     Ok(())
+}
+
+/// Remove any existing sci-managed block(s) from `content`. Handles
+/// both the paired-marker (0.5.1+) and legacy single-marker (0.5.0)
+/// formats. Anything outside the blocks is preserved verbatim,
+/// including trailing newline semantics.
+fn strip_existing_setup_blocks(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let had_trailing_newline = content.ends_with('\n');
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+
+        if line.trim_end() == BEGIN_MARKER {
+            // Paired block: drop everything through END_MARKER.
+            i += 1;
+            while i < lines.len() && lines[i].trim_end() != END_MARKER {
+                i += 1;
+            }
+            if i < lines.len() {
+                i += 1; // consume END_MARKER itself
+            }
+            continue;
+        }
+
+        if line.trim_end() == LEGACY_MARKER {
+            // Legacy block: drop the marker and any immediately
+            // following lines that match our known exports. Stops at
+            // the first line that isn't one of ours, so unrelated
+            // user content following the block is preserved.
+            i += 1;
+            while i < lines.len() {
+                let l = lines[i].trim_start();
+                if l.starts_with("export HTTPS_PROXY=")
+                    || l.starts_with("export NODE_EXTRA_CA_CERTS=")
+                    || l.starts_with("export NO_PROXY=")
+                {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        out.push(line);
+        i += 1;
+    }
+
+    let mut result = out.join("\n");
+    if had_trailing_newline && !result.is_empty() {
+        result.push('\n');
+    }
+    result
 }
 
 /// Returns the path to the currently-running binary, falling back to
@@ -279,4 +371,150 @@ fn read_line() -> anyhow::Result<String> {
     let mut line = String::new();
     stdin.lock().read_line(&mut line)?;
     Ok(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_empty_input_returns_empty() {
+        assert_eq!(strip_existing_setup_blocks(""), "");
+    }
+
+    #[test]
+    fn strip_no_markers_preserves_content_and_trailing_newline() {
+        let input = "export FOO=bar\nexport BAZ=qux\n";
+        assert_eq!(strip_existing_setup_blocks(input), input);
+    }
+
+    #[test]
+    fn strip_no_markers_preserves_lack_of_trailing_newline() {
+        let input = "export FOO=bar\nexport BAZ=qux";
+        assert_eq!(strip_existing_setup_blocks(input), input);
+    }
+
+    #[test]
+    fn strip_paired_block_removes_only_the_block() {
+        let input = "\
+export USER_VAR=keep
+# >>> sci-helper --setup >>>
+export HTTPS_PROXY=http://localhost:3001
+export NO_PROXY=localhost
+# <<< sci-helper --setup <<<
+export ANOTHER_USER_VAR=keep
+";
+        let expected = "\
+export USER_VAR=keep
+export ANOTHER_USER_VAR=keep
+";
+        assert_eq!(strip_existing_setup_blocks(input), expected);
+    }
+
+    #[test]
+    fn strip_legacy_block_removes_marker_and_known_exports() {
+        let input = "\
+export USER_VAR=keep
+
+# Added by sci-helper --setup
+export HTTPS_PROXY=http://localhost:3001
+export NODE_EXTRA_CA_CERTS=$HOME/.sci/ca.crt
+export NO_PROXY=localhost,127.0.0.1,*.brew.sh
+export USER_VAR_AFTER=keep
+";
+        let expected = "\
+export USER_VAR=keep
+
+export USER_VAR_AFTER=keep
+";
+        assert_eq!(strip_existing_setup_blocks(input), expected);
+    }
+
+    #[test]
+    fn strip_legacy_block_stops_at_unrelated_export() {
+        // User added their own export immediately after the legacy
+        // marker — only the marker and our known exports are removed;
+        // the user's export is preserved.
+        let input = "\
+# Added by sci-helper --setup
+export HTTPS_PROXY=http://localhost:3001
+export USER_EXPORT=keep
+export NO_PROXY=localhost
+";
+        let expected = "\
+export USER_EXPORT=keep
+export NO_PROXY=localhost
+";
+        assert_eq!(strip_existing_setup_blocks(input), expected);
+    }
+
+    #[test]
+    fn strip_handles_both_legacy_and_paired_blocks() {
+        let input = "\
+# Added by sci-helper --setup
+export HTTPS_PROXY=http://localhost:3001
+
+# >>> sci-helper --setup >>>
+export HTTPS_PROXY=http://localhost:3001
+# <<< sci-helper --setup <<<
+export USER=keep
+";
+        let expected = "\
+
+export USER=keep
+";
+        assert_eq!(strip_existing_setup_blocks(input), expected);
+    }
+
+    #[test]
+    fn strip_paired_block_with_missing_end_marker_consumes_to_eof() {
+        // Defensive: a truncated file with begin but no end marker.
+        // Better to consume to EOF than leave a dangling begin marker.
+        let input = "\
+export USER=keep
+# >>> sci-helper --setup >>>
+export HTTPS_PROXY=http://localhost:3001
+";
+        let expected = "\
+export USER=keep
+";
+        assert_eq!(strip_existing_setup_blocks(input), expected);
+    }
+
+    #[test]
+    fn upsert_round_trip_is_stable() {
+        // Writing the same exports twice produces the same file
+        // contents — the core idempotency guarantee.
+        let tmp = std::env::temp_dir().join(format!(
+            "sci-setup-upsert-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let zshrc = tmp.join(".zshrc");
+        std::fs::write(&zshrc, "export USER_VAR=keep\n").unwrap();
+
+        let exports = vec![
+            "export HTTPS_PROXY=http://localhost:3001".to_string(),
+            "export NO_PROXY=localhost,127.0.0.1,github.com".to_string(),
+        ];
+
+        upsert_setup_block(&tmp, &exports).unwrap();
+        let first = std::fs::read_to_string(&zshrc).unwrap();
+        upsert_setup_block(&tmp, &exports).unwrap();
+        let second = std::fs::read_to_string(&zshrc).unwrap();
+
+        assert_eq!(first, second, "upsert should be idempotent");
+        assert!(first.contains("export USER_VAR=keep"), "user content preserved");
+        assert_eq!(
+            first.matches(BEGIN_MARKER).count(),
+            1,
+            "exactly one begin marker after re-upsert"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
