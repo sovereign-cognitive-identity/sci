@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# sci-undo — fully revert any local Sci dev-proxy state.
+# sci-undo — recover from a confused local Sci dev environment.
 #
-# Run this if Sci is in a confused state and Claude Code / your daily
-# tools have stopped working. It's safe to run any time — every step
-# is idempotent and prints what it did.
+# Run this when sci-helper is misbehaving and your daily tools have
+# stopped working but you're NOT trying to uninstall Sci. For a clean
+# test-reset (brew uninstall, untap, wipe zshrc, etc.) use the
+# companion script `sci-uninstall.sh` instead.
 #
 # Usage:
 #     ./scripts/sci-undo.sh
