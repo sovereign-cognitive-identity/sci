@@ -2,19 +2,18 @@ import pg from 'pg'
 
 const { Pool } = pg
 
-function requireEnv(name: string): string {
-  const val = process.env[name]
-  if (!val) throw new Error(`Missing required env var: ${name}`)
-  return val
-}
-
+// Pools are created at module load but connection strings default to '' when
+// env vars are absent — the Pool constructor does not connect eagerly, so
+// processes that never touch the DB (e.g. `sci --version`, agent commands
+// that use only SQLite) load this module without throwing. The first actual
+// query will fail fast with a clear pg error if the vars are unset.
 export const reader = new Pool({
-  connectionString: requireEnv('SCI_DB_READER_URL'),
+  connectionString: process.env['SCI_DB_READER_URL'] ?? '',
   max: 5,
 })
 
 export const writer = new Pool({
-  connectionString: requireEnv('SCI_DB_WRITER_URL'),
+  connectionString: process.env['SCI_DB_WRITER_URL'] ?? '',
   max: 3,
 })
 

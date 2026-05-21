@@ -16,8 +16,9 @@ import { startAgent } from './agent.js';
 import { runDoctor } from './doctor.js';
 import { generateEncKey } from './storage-sqlite.js';
 import { spawnSync } from 'child_process';
-import { existsSync, homedir } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 
 async function runSetup(config, extraArgs) {
     const { mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync } = await import('fs');
@@ -231,7 +232,7 @@ async function runTrustCA(configDir) {
         // Exit 0 — this is a soft failure; the agent still works via NODE_EXTRA_CA_CERTS.
     }
 }
-const VERSION = '0.5.0-dev';
+const VERSION = '0.6.0';
 function printUsage() {
     process.stdout.write(`
 sci — local AI traffic anonymization + memory agent  (v${VERSION})

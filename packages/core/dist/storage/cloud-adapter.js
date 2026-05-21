@@ -1,19 +1,5 @@
-/**
- * CloudAdapter — SQLite + hnswlib base class for cloud storage backends.
- *
- * All user data lives in two files:
- *   sci.db    — SQLite database (memories, profiles, identity facts)
- *   sci.idx   — hnswlib HNSW index (vector embeddings for recall)
- *
- * These files are stored locally and synced to the user's chosen
- * cloud storage by concrete subclasses (Dropbox, S3, iCloud).
- *
- * Data ownership: the user controls the storage. Sci never has credentials.
- */
-import Database from 'better-sqlite3';
 import { createRequire } from 'module';
-const _require = createRequire(import.meta.url);
-const { HierarchicalNSW } = _require('hnswlib-node');
+import { dirname } from 'path';
 import { mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
@@ -36,7 +22,25 @@ export class CloudAdapter {
             mkdirSync(this.localDir, { recursive: true });
         // Pull latest from cloud before opening
         await this._downloadIfNeeded();
-        this.db = new Database(this.dbPath);
+        // Load native addons lazily. In Bun compiled binaries, import.meta.url is
+        // a virtual /$bunfs/ path, so createRequire can't find real node_modules.
+        // In that case, use a file:// URL relative to the binary's actual location.
+        const { _Database, HierarchicalNSW } = await (async () => {
+            if (import.meta.url.includes('$bunfs')) {
+                const base = 'file://' + dirname(process.execPath) + '/node_modules/';
+                const sqlite = await import(base + 'better-sqlite3/lib/index.js');
+                const hnswlib = await import(base + 'hnswlib-node/lib/index.js');
+                return { _Database: sqlite.default, HierarchicalNSW: hnswlib.HierarchicalNSW };
+            }
+            else {
+                const _require = createRequire(import.meta.url);
+                return {
+                    _Database: _require('better-sqlite3'),
+                    HierarchicalNSW: _require('hnswlib-node').HierarchicalNSW,
+                };
+            }
+        })();
+        this.db = new _Database(this.dbPath);
         this.db.pragma('journal_mode = WAL');
         this.db.pragma('foreign_keys = ON');
         this._initSchema();

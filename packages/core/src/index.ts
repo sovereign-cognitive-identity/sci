@@ -6,6 +6,7 @@ export {
 } from './auth.js'
 export type { AgentTier, AgentContext, RegisteredAgent, ConnectCode } from './auth.js'
 export { createStorageAdapter } from './storage/index.js'
+export { CloudAdapter } from './storage/cloud-adapter.js'
 export type { StorageAdapter, Profile, SemanticNode, IdentityFact, RecallResult, StorageStats } from './storage/index.js'
 export { calculateDecay, runDecayPass } from './decay.js'
 export { runPromotionPass, runGraphPass } from './consolidator.js'

@@ -10,10 +10,9 @@
  *
  * Data ownership: the user controls the storage. Sci never has credentials.
  */
-import Database from 'better-sqlite3'
+import type Database from 'better-sqlite3'
 import { createRequire } from 'module'
-const _require = createRequire(import.meta.url)
-const { HierarchicalNSW } = _require('hnswlib-node') as typeof import('hnswlib-node')
+import { dirname } from 'path'
 import { mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { randomUUID } from 'crypto'
@@ -53,7 +52,25 @@ export abstract class CloudAdapter implements StorageAdapter {
     // Pull latest from cloud before opening
     await this._downloadIfNeeded()
 
-    this.db = new Database(this.dbPath)
+    // Load native addons lazily. In Bun compiled binaries, import.meta.url is
+    // a virtual /$bunfs/ path, so createRequire can't find real node_modules.
+    // In that case, use a file:// URL relative to the binary's actual location.
+    const { _Database, HierarchicalNSW } = await (async () => {
+      if (import.meta.url.includes('$bunfs')) {
+        const base = 'file://' + dirname(process.execPath) + '/node_modules/'
+        const sqlite = await import(base + 'better-sqlite3/lib/index.js') as { default: typeof Database }
+        const hnswlib = await import(base + 'hnswlib-node/lib/index.js') as typeof import('hnswlib-node')
+        return { _Database: sqlite.default, HierarchicalNSW: hnswlib.HierarchicalNSW }
+      } else {
+        const _require = createRequire(import.meta.url)
+        return {
+          _Database: _require('better-sqlite3') as typeof Database,
+          HierarchicalNSW: (_require('hnswlib-node') as typeof import('hnswlib-node')).HierarchicalNSW,
+        }
+      }
+    })()
+
+    this.db = new _Database(this.dbPath)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('foreign_keys = ON')
     this._initSchema()

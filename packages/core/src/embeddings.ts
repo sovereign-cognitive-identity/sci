@@ -1,4 +1,4 @@
-import { FlagEmbedding, EmbeddingModel } from 'fastembed'
+import type { FlagEmbedding } from 'fastembed'
 
 // BGEBaseENV15: 768-dim, matches schema. Nomic requires fastembed >=2.x.
 export const MODEL_ID = process.env['SCI_EMBED_MODEL'] ?? 'BAAI/bge-base-en-v1.5'
@@ -8,6 +8,9 @@ let _model: FlagEmbedding | null = null
 
 async function getModel(): Promise<FlagEmbedding> {
   if (_model) return _model
+  // Dynamic import so Bun compiled binaries resolve fastembed from the real
+  // filesystem (process.cwd() / binary dir) rather than the virtual $bunfs.
+  const { FlagEmbedding, EmbeddingModel } = await import('fastembed')
   // Where to put the BGE model files. Defaults to fastembed's `./local_cache`
   // relative to CWD — fine on developer laptops, broken inside Docker
   // containers where the working dir is owned by root and the process runs

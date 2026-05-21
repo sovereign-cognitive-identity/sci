@@ -10,7 +10,7 @@
  *
  * Data ownership: the user controls the storage. Sci never has credentials.
  */
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import type { StorageAdapter, Profile, SemanticNode, IdentityFact, RecallResult, StorageStats } from './interface.js';
 interface VectorEntry {
     index: number;

@@ -12,7 +12,7 @@
  * Offline behaviour: failed pushes are buffered to ~/.sci/pending-sync.ndjson
  * and retried on the next sync cycle.
  */
-import { CloudAdapter } from '@sci/core';
+import { CloudAdapter } from '../../core/dist/storage/cloud-adapter.js';
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
