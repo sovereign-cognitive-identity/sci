@@ -325,7 +325,10 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
                 : { 'x-api-key': authHeader ?? '' }),
         };
         const deanonStream = new DeanonymizingStreamV2(sessionTokenMap);
-        const readable = await streamDirectAnthropic('/v1/messages', anonymizedBody, originalHeaders, (text) => deanonStream.push(text), () => deanonStream.end(), () => {
+        // Preserve the original request URL including query params (e.g. ?beta=true)
+        // so Anthropic returns the expected response format for extended features.
+        const forwardPath = c.req.raw.url ?? '/v1/messages';
+        const readable = await streamDirectAnthropic(forwardPath, anonymizedBody, originalHeaders, (text) => deanonStream.push(text), () => deanonStream.end(), () => {
             const ms = Date.now() - t0;
             process.stderr.write(`[${reqId}] ✓  complete in ${ms}ms, storing to memory\n`);
             storeInteraction(originalUserText, deanonStream.fullResponse, adapter).catch(() => { });
