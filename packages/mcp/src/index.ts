@@ -6,6 +6,7 @@ import { createStorageAdapter } from '@sci/core'
 import type { StorageAdapter } from '@sci/core'
 import { memoryStatus } from './tools/status.js'
 import { memoryStore } from './tools/store.js'
+import { memoryStoreIdentity } from './tools/store-identity.js'
 import { memoryIdentity } from './tools/identity.js'
 import { memoryRecall } from './tools/recall.js'
 import { messageAnonymize, messageDeanonymize, sessionInspect } from './tools/anonymize.js'
@@ -106,6 +107,26 @@ server.tool(
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      return { content: [{ type: 'text', text: JSON.stringify({ error: msg }) }], isError: true }
+    }
+  }
+)
+
+server.tool(
+  'memory_store_identity',
+  'Store a durable identity fact about the user (preference, value, skill, relationship, project, context). Only store facts clearly supported by evidence — not inferred.',
+  {
+    content: z.string().describe('One concise sentence stating the identity fact'),
+    category: z.string().optional().describe('Category: preference, value, skill, relationship, project, context'),
+    confidence: z.number().optional().describe('Confidence 0.0–1.0: 0.9+ = explicitly stated, 0.7 = strongly implied, 0.5 = weakly implied'),
+  },
+  async (args) => {
+    try {
+      assertCan(agentCtx, 'write')
+      const result = await memoryStoreIdentity(args, adapter)
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+    } catch (err) {
+      const msg = err instanceof AuthError ? `Access denied: ${err.message}` : (err instanceof Error ? err.message : String(err))
       return { content: [{ type: 'text', text: JSON.stringify({ error: msg }) }], isError: true }
     }
   }

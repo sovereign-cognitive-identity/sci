@@ -10,9 +10,11 @@ import { createStorageAdapter } from './storage/index.js'
 import { embed } from './embeddings.js'
 
 const OPENROUTER_KEY = requireEnv('SCI_OPENROUTER_KEY')
-const MODEL = process.env['SCI_EXTRACT_MODEL'] ?? 'google/gemini-flash-1.5'
+const MODEL = process.env['SCI_EXTRACT_MODEL'] ?? 'google/gemini-2.0-flash-001'
 const BATCH_SIZE = 25
 const CONCURRENCY = 3  // parallel batches in flight
+const MAX_RETRIES = 3
+const RETRY_DELAY_MS = 5000
 
 
 // ── Prompt ────────────────────────────────────────────────────────────────────
@@ -47,7 +49,7 @@ interface IdentityFact {
   confidence: number
 }
 
-async function extractFacts(messages: string[]): Promise<IdentityFact[]> {
+async function extractFacts(messages: string[], attempt = 0): Promise<IdentityFact[]> {
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -66,6 +68,16 @@ async function extractFacts(messages: string[]): Promise<IdentityFact[]> {
       max_tokens: 1024,
     }),
   })
+
+  if (res.status === 429 || res.status === 504) {
+    if (attempt < MAX_RETRIES) {
+      const delay = RETRY_DELAY_MS * (attempt + 1)
+      await new Promise(r => setTimeout(r, delay))
+      return extractFacts(messages, attempt + 1)
+    }
+    const err = await res.text()
+    throw new Error(`OpenRouter error ${res.status}: ${err}`)
+  }
 
   if (!res.ok) {
     const err = await res.text()
