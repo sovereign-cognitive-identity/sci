@@ -284,6 +284,7 @@ GRANT SELECT, INSERT, UPDATE ON gateway_state TO db_writer;
 GRANT SELECT, INSERT ON exposure_events TO db_writer;
 GRANT SELECT, INSERT, UPDATE ON device_invites TO db_writer;
 GRANT SELECT, INSERT, DELETE ON memory_blobs TO db_writer;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO db_writer;
 
 -- ── Seed ──────────────────────────────────────────────────────────────────────
 
