@@ -14,17 +14,58 @@
 import { loadConfig } from './config.js';
 import { startAgent } from './agent.js';
 import { runDoctor } from './doctor.js';
+import { spawnSync } from 'child_process';
+import { existsSync, homedir } from 'fs';
+import { join } from 'path';
+
+async function runTrustCA(configDir) {
+    const caPath = join(configDir, 'ca.crt');
+    if (!existsSync(caPath)) {
+        process.stderr.write(`CA not found at ${caPath}\nRun: sci up (once, to generate the CA), then retry.\n`);
+        process.exit(1);
+    }
+    if (process.platform !== 'darwin') {
+        process.stdout.write(`Non-macOS: add CA manually.\n`);
+        process.stdout.write(`  NODE_EXTRA_CA_CERTS=${caPath} is already set by sci --setup and covers\n`);
+        process.stdout.write(`  Claude Code and most Node/Python tools without keychain trust.\n`);
+        process.stdout.write(`\nFor system-wide trust on Linux:\n`);
+        process.stdout.write(`  sudo cp ${caPath} /usr/local/share/ca-certificates/sci-ca.crt\n`);
+        process.stdout.write(`  sudo update-ca-certificates\n`);
+        return;
+    }
+    const keychain = join(homedir(), 'Library', 'Keychains', 'login.keychain-db');
+    // Try unlocking the login keychain first (needed in headless/SSH sessions).
+    spawnSync('security', ['unlock-keychain', keychain], { stdio: 'ignore' });
+    const result = spawnSync('security', [
+        'add-trusted-cert', '-r', 'trustRoot', '-k', keychain, caPath,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    if (result.status === 0) {
+        process.stdout.write(`✓ Sci CA trusted in login keychain.\n`);
+        process.stdout.write(`  HTTPS interception will work for curl, Safari, and system tools.\n`);
+    } else {
+        const stderr = result.stderr?.toString().trim();
+        if (stderr) process.stderr.write(`${stderr}\n`);
+        process.stderr.write(`\nKeychain trust failed (common in SSH sessions without a GUI).\n`);
+        process.stderr.write(`This is OK — Claude Code uses NODE_EXTRA_CA_CERTS, not the keychain.\n`);
+        process.stderr.write(`NODE_EXTRA_CA_CERTS is already written to ~/.zshrc by sci --setup.\n`);
+        process.stderr.write(`\nFor GUI apps (Safari, curl), trust the CA from a desktop session:\n`);
+        process.stderr.write(`  security add-trusted-cert -r trustRoot \\\n`);
+        process.stderr.write(`    -k ~/Library/Keychains/login.keychain-db ${caPath}\n`);
+        // Exit 0 — this is a soft failure; the agent still works via NODE_EXTRA_CA_CERTS.
+    }
+}
 const VERSION = '0.5.0-dev';
 function printUsage() {
     process.stdout.write(`
 sci — local AI traffic anonymization + memory agent  (v${VERSION})
 
 Usage:
-  sci up           Start the agent (HTTPS_PROXY listener + memory store)
-  sci doctor       Self-test a running agent (CA, memory, creds, TLS path)
-  sci status       Print runtime state if running
-  sci config       Show credential file location + env-var summary
-  sci --help       This message
+  sci up              Start the agent (HTTPS_PROXY listener + memory store)
+  sci doctor          Self-test a running agent (CA, memory, creds, TLS path)
+  sci --trust-ca      Add Sci CA to system keychain (macOS)
+  sci status          Print runtime state if running
+  sci config          Show credential file location + env-var summary
+  sci --help          This message
 
 Configuration (env vars):
   SCI_PROXY_PORT   localhost port to bind to (default 8080)
@@ -35,7 +76,7 @@ Once running, point any tool at it:
   claude --print "test"
 
 Source / docs / issues:
-  https://github.com/<TBD>/sci
+  https://github.com/sovereign-cognitive-identity/sci
 
 `);
 }
@@ -82,6 +123,11 @@ async function main() {
             process.stdout.write(`                          OPENROUTER_API_KEY, GEMINI_API_KEY (or\n`);
             process.stdout.write(`                          GOOGLE_GENERATIVE_AI_API_KEY)\n`);
             process.stdout.write(`\ncurrently resolved: ${summarizeCredentials(creds)}\n`);
+            return;
+        }
+        case '--trust-ca':
+        case 'trust-ca': {
+            await runTrustCA(config.configDir);
             return;
         }
         case '--version':

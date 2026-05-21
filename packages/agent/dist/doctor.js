@@ -96,14 +96,23 @@ function checkCredentials(config) {
     const creds = loadCredentials(config.configDir);
     const summary = summarizeCredentials(creds);
     const any = Object.keys(creds).length > 0;
+    // Check for Claude Code OAuth token — if present, no API key is needed.
+    const oauthPath = join(homedir(), '.claude', 'credentials.json');
+    const sciOauthPath = join(config.configDir, 'oauth.json');
+    const hasOAuth = existsSync(oauthPath) || existsSync(sciOauthPath);
+    if (any) {
+        return { pass: true, name: 'credentials', detail: summary };
+    }
+    if (hasOAuth) {
+        return { pass: true, name: 'credentials', detail: 'Claude Code OAuth — no API key needed' };
+    }
     return {
-        pass: any,
-        name: 'BYO keys configured',
-        detail: any
-            ? summary
-            : `${summary}; without keys the agent only pass-through-forwards what your tool sent`,
+        pass: true, // soft pass — agent still forwards whatever auth the client sends
+        name: 'credentials',
+        detail: 'no keys or OAuth found; agent will pass through client auth headers',
     };
 }
+import { homedir } from 'os';
 /**
  * End-to-end check: do a real CONNECT through the agent and verify the
  * agent's TLS-MITM + handler dispatch fires. We pin the local Sci CA into
