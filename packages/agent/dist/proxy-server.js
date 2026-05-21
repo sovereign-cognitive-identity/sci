@@ -196,14 +196,16 @@ async function handleAIRequest(req, res) {
     // tool — `claude`, raw curl, an SDK with stale creds — works as long as
     // Sci itself has the right key.
     injectCredentialForHost(hostname, req.headers, credentials);
-    // If Anthropic host and no API key was injected, try the OAuth token.
-    // getAccessTokenSafe() reads ~/.sci/oauth.json and refreshes proactively
-    // when within 60s of expiry, so the token is always fresh here.
-    if (ANTHROPIC_HOSTS.has(hostname) && !credentials.anthropic && readCache()) {
+    // Only inject the sci OAuth token when the client has NO auth of its own.
+    // If the client already sends a Bearer token (e.g. Claude Code's subscription
+    // token), pass it through completely unchanged — don't modify any headers.
+    // We only need oauth-2025-04-20 when WE supply the Bearer, because Anthropic
+    // requires that beta flag for tokens issued by the sci client_id.
+    if (ANTHROPIC_HOSTS.has(hostname) && !credentials.anthropic &&
+        !req.headers['authorization'] && !req.headers['x-api-key'] && readCache()) {
         try {
             const token = await getAccessTokenSafe();
             req.headers['authorization'] = `Bearer ${token}`;
-            delete req.headers['x-api-key'];
             const existing = req.headers['anthropic-beta'];
             req.headers['anthropic-beta'] = existing
                 ? `${existing},${ANTHROPIC_OAUTH_BETA}`
@@ -270,7 +272,11 @@ async function passthroughForward(req, body, hostname, res) {
         method: req.method,
         headers: upstreamHeaders,
     }, (upstreamRes) => {
-        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        // Sanitize response headers too — remove hop-by-hop headers that
+        // Node.js handles automatically when piping (transfer-encoding, connection).
+        // Forwarding them causes double-encoding and confuses HTTP clients.
+        const responseHeaders = sanitizeHeaders(upstreamRes.headers, hostname);
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
         upstreamRes.pipe(res);
     });
     upstream.on('error', (err) => {

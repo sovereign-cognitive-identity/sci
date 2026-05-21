@@ -125,71 +125,110 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
 /**
  * Re-stream a direct Anthropic response as Anthropic SSE with deanonymization.
  *
- * `extra.prelude` is emitted as raw SSE bytes BEFORE message_start. We use
- * this to surface Sci-specific transparency events (`sci.anonymized`, etc.)
- * that downstream Anthropic-compatible clients ignore. Standards-compliant
- * SSE parsers skip events whose `event:` name they don't recognise.
+ * Passes through the raw Anthropic SSE stream verbatim, only patching
+ * `content_block_delta` events with `text_delta` type to deanonymize text.
+ * All other events (tool_use, input_json_delta, message_start with real IDs,
+ * token counts, stop_reason, etc.) are forwarded unchanged.
  *
- * `extra.postlude` is called once the deanonymizer has fully drained — its
- * return value is emitted before content_block_stop. This is where we put
- * `sci.deanonymized` since the replacement counts only exist after the
- * stream completes.
+ * `extra.prelude` is emitted BEFORE the first Anthropic event.
+ * `extra.postlude` is emitted AFTER message_stop.
  */
 export async function streamDirectAnthropic(path, requestBody, originalHeaders, deanonPush, deanonEnd, onComplete, extra) {
     const encoder = new TextEncoder();
     return new ReadableStream({
         async start(controller) {
-            const msgId = `msg_${Date.now()}`;
-            const emit = (event, data) => {
-                controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-            };
-            // Sci transparency events first (clients that don't know them ignore them).
+            // Sci transparency events first (clients that don't recognise them ignore them).
             if (extra?.prelude) {
                 controller.enqueue(encoder.encode(extra.prelude));
             }
-            emit('message_start', {
-                type: 'message_start',
-                message: { id: msgId, type: 'message', role: 'assistant', content: [], stop_reason: null },
-            });
-            emit('content_block_start', {
-                type: 'content_block_start', index: 0,
-                content_block: { type: 'text', text: '' },
-            });
             try {
-                for await (const delta of streamFromAnthropic(path, requestBody, originalHeaders)) {
-                    const safe = deanonPush(delta);
-                    if (safe) {
-                        emit('content_block_delta', {
-                            type: 'content_block_delta', index: 0,
-                            delta: { type: 'text_delta', text: safe },
-                        });
+                // Get raw SSE bytes from Anthropic.
+                let asyncStream;
+                if (TUN_MODE || VPN_MODE) {
+                    asyncStream = await requestViaRealIP(path, requestBody, originalHeaders);
+                }
+                else {
+                    const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
+                        method: 'POST',
+                        headers: { ...originalHeaders, 'content-type': 'application/json' },
+                        body: JSON.stringify(requestBody),
+                    });
+                    if (!response.ok) {
+                        const err = await response.text();
+                        throw new Error(`Anthropic ${response.status}: ${err}`);
+                    }
+                    if (!response.body)
+                        throw new Error('No response body from Anthropic');
+                    const reader = response.body.getReader();
+                    asyncStream = {
+                        [Symbol.asyncIterator]() {
+                            return {
+                                async next() {
+                                    const { done, value } = await reader.read();
+                                    return done ? { done: true, value: undefined } : { done: false, value: Buffer.from(value) };
+                                }
+                            };
+                        }
+                    };
+                }
+                // Parse SSE events (split on double-newline) and forward,
+                // patching only text_delta events for deanonymization.
+                const decoder = new TextDecoder();
+                let buf = '';
+                for await (const chunk of asyncStream) {
+                    buf += decoder.decode(chunk, { stream: true });
+                    // SSE events are separated by \n\n
+                    const events = buf.split('\n\n');
+                    buf = events.pop() ?? '';
+                    for (const rawEvent of events) {
+                        if (!rawEvent.trim())
+                            continue;
+                        // Extract event type and data line
+                        let eventType = '';
+                        let dataStr = '';
+                        for (const line of rawEvent.split('\n')) {
+                            if (line.startsWith('event: '))
+                                eventType = line.slice(7);
+                            else if (line.startsWith('data: '))
+                                dataStr = line.slice(6);
+                        }
+                        if (!dataStr || dataStr === '[DONE]') {
+                            controller.enqueue(encoder.encode(rawEvent + '\n\n'));
+                            continue;
+                        }
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.type === 'content_block_delta' &&
+                                data.delta?.type === 'text_delta' &&
+                                typeof data.delta.text === 'string') {
+                                // Deanonymize in-place; fall back to original if deanon buffers
+                                const deanon = deanonPush(data.delta.text);
+                                data.delta.text = deanon ?? data.delta.text;
+                                const patched = (eventType ? `event: ${eventType}\n` : '') +
+                                    `data: ${JSON.stringify(data)}\n\n`;
+                                controller.enqueue(encoder.encode(patched));
+                            }
+                            else {
+                                controller.enqueue(encoder.encode(rawEvent + '\n\n'));
+                            }
+                        }
+                        catch {
+                            controller.enqueue(encoder.encode(rawEvent + '\n\n'));
+                        }
                     }
                 }
-                const final = deanonEnd();
-                if (final) {
-                    emit('content_block_delta', {
-                        type: 'content_block_delta', index: 0,
-                        delta: { type: 'text_delta', text: final },
-                    });
-                }
+                // Flush any remaining deanon buffer
+                deanonEnd();
             }
             catch (err) {
-                emit('error', { type: 'error', error: { type: 'api_error', message: String(err) } });
+                controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: String(err) } })}\n\n`));
             }
-            // Postlude fires after deanonymization fully drains, before message_stop.
-            // Stats like `replacementCount` are now known.
+            // Postlude (sci.deanonymized stats) after the Anthropic stream ends.
             if (extra?.postlude) {
                 const post = extra.postlude();
                 if (post)
                     controller.enqueue(encoder.encode(post));
             }
-            emit('content_block_stop', { type: 'content_block_stop', index: 0 });
-            emit('message_delta', {
-                type: 'message_delta',
-                delta: { stop_reason: 'end_turn', stop_sequence: null },
-                usage: { output_tokens: 0 },
-            });
-            emit('message_stop', { type: 'message_stop' });
             controller.close();
             onComplete();
         },
