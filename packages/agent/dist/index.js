@@ -88,7 +88,7 @@ async function runSetup(config, extraArgs) {
     } else {
         // Browser OAuth flow — authenticate with Anthropic subscription.
         process.stdout.write(`\nOpening browser for Anthropic login...\n`);
-        const { login } = await import('../../ui/dist/index.js');
+        const { login } = await import('./oauth.js');
         let tokenInfo;
         try {
             tokenInfo = await login({

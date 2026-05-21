@@ -32,7 +32,7 @@ import { mkdirSync, existsSync } from 'fs';
 import { handleAnthropicMessages, handleOpenAIChat, handleGoogleGemini, makeHandlerContext, pipeResponse, ANONYMOUS_AGENT, } from '@sci/proxy/handlers';
 import { SqliteStorageAdapter } from './storage-sqlite.js';
 import { loadCredentials, summarizeCredentials, injectCredentialForHost, } from './credentials.js';
-import { getAccessTokenSafe, readCache, ANTHROPIC_OAUTH_BETA } from '../../ui/dist/index.js';
+import { getAccessTokenSafe, readCache, ANTHROPIC_OAUTH_BETA } from './oauth.js';
 // Handler routing: hostname → which provider format. Path-level routing
 // happens inside dispatchToHandler so each provider's path quirks (e.g.
 // /v1/messages vs /v1/messages?beta=true vs /v1/chat/completions vs
