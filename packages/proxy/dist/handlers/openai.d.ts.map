@@ -1,0 +1,1 @@
+{"version":3,"file":"openai.d.ts","sourceRoot":"","sources":["../../src/handlers/openai.ts"],"names":[],"mappings":"AAAA;;;;;;;;;GASG;AAEH,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,MAAM,CAAA;AAEnC,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,WAAW,CAAA;AAgB/C,wBAAsB,gBAAgB,CACpC,CAAC,EAAE,OAAO,EACV,OAAO,EAAE,cAAc,EACvB,aAAa,EAAE,MAAM,GACpB,OAAO,CAAC,QAAQ,CAAC,CA+GnB"}

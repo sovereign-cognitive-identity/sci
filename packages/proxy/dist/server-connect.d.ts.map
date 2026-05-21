@@ -1,0 +1,1 @@
+{"version":3,"file":"server-connect.d.ts","sourceRoot":"","sources":["../src/server-connect.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;GAmBG;AAEH,OAAO,KAAK,EAAE,MAAM,IAAI,UAAU,EAAmB,MAAM,MAAM,CAAA;AAIjE,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,WAAW,CAAA;AAqB/C;;;GAGG;AACH,wBAAgB,oBAAoB,CAClC,MAAM,EAAE,UAAU,EAClB,OAAO,EAAE,cAAc,EACvB,aAAa,EAAE,MAAM,GACpB,IAAI,CAwBN"}

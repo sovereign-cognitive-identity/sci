@@ -1,0 +1,1 @@
+{"version":3,"file":"server-tls.d.ts","sourceRoot":"","sources":["../src/server-tls.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;GA0BG;AACH,OAAO,KAAK,MAAM,OAAO,CAAA;AAGzB,OAAO,KAAK,EAAE,cAAc,EAAgB,MAAM,WAAW,CAAA;AAc7D,eAAO,MAAM,kBAAkB,QAA4D,CAAA;AA6K3F,wBAAgB,uBAAuB,CACrC,OAAO,EAAE,cAAc,EACvB,aAAa,EAAE,MAAM,GACpB,KAAK,CAAC,MAAM,CA6Fd"}

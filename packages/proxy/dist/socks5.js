@@ -1,0 +1,399 @@
+/**
+ * SOCKS5 server for TUN-mode interception.
+ *
+ * sing-box intercepts traffic from the fake IP range (198.18.0.0/15) via
+ * the utun device. With TLS sniffing enabled, sing-box extracts the domain
+ * name from the TLS ClientHello SNI and sends it here as a SOCKS5 CONNECT
+ * request with ATYP=0x03 (domain name).
+ *
+ * For AI hostnames: TLS intercept → anonymize → memory inject → forward.
+ * For everything else: direct TCP passthrough.
+ *
+ * Loop prevention: outbound connections from THIS server use the real
+ * hostname (resolved via real DNS), which returns the REAL IP. The real
+ * IP is NOT in 198.18.0.0/15, so it is NOT routed through the TUN.
+ */
+import net from 'net';
+import tls from 'tls';
+import https from 'https';
+import { ensureCACert, makeSNICallback } from './tls.js';
+import { lookupByFakeIP } from './fake-ip.js';
+import { handleAnthropicMessages } from './handlers/anthropic.js';
+import { handleOpenAIChat } from './handlers/openai.js';
+import { makeHonoContext } from './connect-context.js';
+import { resolveRealDirect, lookupHostnameByRealIP } from './dns-resolver.js';
+import { getPhysicalInterfaceIP } from './physical-iface.js';
+import { peekClientHello } from './sni-sniff.js';
+import { PrefixedSocket } from './prefixed-socket.js';
+export const SOCKS5_PORT = parseInt(process.env['SCI_SOCKS5_PORT'] ?? '1080');
+const SOCKS5_VERSION = 0x05;
+const SOCKS5_NO_AUTH = 0x00;
+const SOCKS5_CMD_CONNECT = 0x01;
+const ATYP_IPV4 = 0x01;
+const ATYP_DOMAIN = 0x03;
+const ATYP_IPV6 = 0x04;
+const AI_PATH_HANDLERS = {
+    'api.anthropic.com': 'anthropic',
+    'api.openai.com': 'openai',
+    'openrouter.ai': 'openai',
+    'generativelanguage.googleapis.com': 'openai',
+};
+// ── Server entry ──────────────────────────────────────────────────────────────
+export function startSOCKS5Server(adapter, openrouterKey) {
+    const ca = ensureCACert();
+    const server = net.createServer((socket) => {
+        socket.on('error', (err) => {
+            process.stderr.write(`[socks5] socket error: ${err.message}\n`);
+        });
+        handleHandshake(socket, ca, adapter, openrouterKey);
+    });
+    server.listen(SOCKS5_PORT, '127.0.0.1', () => {
+        process.stderr.write(`[socks5] Listening on 127.0.0.1:${SOCKS5_PORT}\n`);
+    });
+    server.on('error', (err) => {
+        process.stderr.write(`[socks5] server error: ${err.message}\n`);
+    });
+    return server;
+}
+// ── SOCKS5 handshake ──────────────────────────────────────────────────────────
+function handleHandshake(socket, ca, adapter, openrouterKey) {
+    socket.once('data', (buf) => {
+        // VER(1) NMETHODS(1) METHODS(n)
+        if (buf[0] !== SOCKS5_VERSION || buf.length < 2) {
+            socket.destroy();
+            return;
+        }
+        // Respond: version 5, no auth required
+        socket.write(Buffer.from([SOCKS5_VERSION, SOCKS5_NO_AUTH]));
+        // Wait for CONNECT request
+        socket.once('data', (req) => {
+            parseConnect(req, socket, ca, adapter, openrouterKey);
+        });
+    });
+}
+function parseConnect(req, socket, ca, adapter, openrouterKey) {
+    // VER(1) CMD(1) RSV(1) ATYP(1) DST.ADDR DST.PORT(2)
+    if (req.length < 7 || req[0] !== SOCKS5_VERSION || req[1] !== SOCKS5_CMD_CONNECT) {
+        socket.write(Buffer.from([SOCKS5_VERSION, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+        socket.destroy();
+        return;
+    }
+    const atyp = req[3];
+    let hostname;
+    let port;
+    let headerEnd; // byte offset where the CONNECT header ends
+    if (atyp === ATYP_DOMAIN) {
+        const len = req[4];
+        hostname = req.slice(5, 5 + len).toString('ascii');
+        port = req.readUInt16BE(5 + len);
+        headerEnd = 5 + len + 2;
+    }
+    else if (atyp === ATYP_IPV4) {
+        hostname = `${req[4]}.${req[5]}.${req[6]}.${req[7]}`;
+        port = req.readUInt16BE(8);
+        headerEnd = 10;
+        // Reverse-map: try fake IP first, then real IP (caught by TUN route for
+        // clients that bypass /etc/hosts — Chromium with internal DNS cache, etc.)
+        const fakeMapped = lookupByFakeIP(hostname);
+        if (fakeMapped)
+            hostname = fakeMapped;
+        else {
+            const realMapped = lookupHostnameByRealIP(hostname);
+            if (realMapped)
+                hostname = realMapped;
+        }
+    }
+    else if (atyp === ATYP_IPV6) {
+        const ipv6 = Array.from({ length: 8 }, (_, i) => req.readUInt16BE(4 + i * 2).toString(16)).join(':');
+        hostname = `[${ipv6}]`;
+        port = req.readUInt16BE(20);
+        headerEnd = 22;
+    }
+    else {
+        socket.write(Buffer.from([SOCKS5_VERSION, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+        socket.destroy();
+        return;
+    }
+    // SOCKS5 success response
+    socket.write(Buffer.from([SOCKS5_VERSION, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
+    // The TLS ClientHello may have arrived in the same TCP segment as the CONNECT
+    // request. Push any piggy-backed bytes onto the socket so SNI sniffing sees them.
+    const tail = req.length > headerEnd ? req.slice(headerEnd) : null;
+    if (tail?.length)
+        socket.unshift(tail);
+    // Decide intercept vs passthrough based on TLS SNI, not just IP.
+    // sing-box can route many hosts to the same IP (api.anthropic.com, claude.ai,
+    // assets-proxy.anthropic.com all share 160.79.104.10), so we have to peek at
+    // the ClientHello to know which one the client actually wants.
+    void routeBasedOnSNI(socket, hostname, port, ca, adapter, openrouterKey);
+}
+async function routeBasedOnSNI(socket, socksHostname, port, ca, adapter, openrouterKey) {
+    // Only TLS (443) gets SNI sniffing. Other ports go straight to passthrough.
+    if (port !== 443) {
+        process.stderr.write(`[socks5] passthrough ${socksHostname}:${port}\n`);
+        directTunnel(socket, socksHostname, port, null);
+        return;
+    }
+    const { buffer, sni } = await peekClientHello(socket, 3000);
+    // Decision: TLS-intercept only api.anthropic.com (/v1/messages anonymization).
+    // Everything else (claude.ai, assets-proxy.anthropic.com, OpenAI, etc.) is
+    // raw-tunneled — we route through the TUN so we know the traffic exists, but
+    // don't crack open the TLS.
+    const target = sni ?? socksHostname;
+    const shouldIntercept = sni === 'api.anthropic.com';
+    if (shouldIntercept) {
+        process.stderr.write(`[socks5] intercept ${target}:${port} (sni=${sni})\n`);
+        interceptTLS(socket, target, ca, adapter, openrouterKey, buffer);
+    }
+    else {
+        process.stderr.write(`[socks5] tunnel ${target}:${port} (sni=${sni ?? 'n/a'}, ${buffer.length}b buffered)\n`);
+        directTunnel(socket, target, port, buffer.length > 0 ? buffer : null);
+    }
+}
+// ── TLS interception (for AI endpoints) ──────────────────────────────────────
+function interceptTLS(clientSocket, hostname, ca, adapter, openrouterKey, initialData = null) {
+    // Use tls.createServer + socket injection — more robust than tls.TLSSocket wrapping.
+    // The server properly handles socket resume/pause and handshake timing.
+    const sniCallback = makeSNICallback(ca);
+    const tlsServer = tls.createServer({
+        SNICallback: sniCallback,
+        ALPNProtocols: ['http/1.1'],
+    });
+    tlsServer.on('secureConnection', (tlsSocket) => {
+        process.stderr.write(`[socks5] TLS ok ${hostname} proto=${tlsSocket.getProtocol()} alpn=${tlsSocket.alpnProtocol ?? 'none'}\n`);
+        let buf = Buffer.alloc(0);
+        let headersParsed = false;
+        let firstChunk = true;
+        tlsSocket.on('data', (chunk) => {
+            if (firstChunk) {
+                firstChunk = false;
+                // Log full request line (up to first \r\n)
+                const requestLine = chunk.toString('utf-8').split('\r\n')[0] ?? '';
+                process.stderr.write(`[socks5] ${hostname} → ${requestLine}\n`);
+            }
+            buf = Buffer.concat([buf, chunk]);
+            if (headersParsed)
+                return;
+            const headerEnd = buf.indexOf('\r\n\r\n');
+            if (headerEnd === -1)
+                return;
+            headersParsed = true;
+            const headerStr = buf.slice(0, headerEnd).toString('utf-8');
+            const body = buf.slice(headerEnd + 4);
+            handleDecryptedRequest(hostname, headerStr, body, tlsSocket, adapter, openrouterKey);
+        });
+        tlsSocket.on('error', (err) => {
+            process.stderr.write(`[socks5] TLS error for ${hostname}: ${err.message}\n`);
+        });
+    });
+    tlsServer.on('tlsClientError', (err) => {
+        process.stderr.write(`[socks5] TLS client error ${hostname}: ${err.message}\n`);
+    });
+    // If we peeked the ClientHello during SNI sniffing, wrap the socket so the
+    // peeked bytes are replayed to the TLS server as the first read. unshift()
+    // alone doesn't work reliably with tls.Server because TLS internals don't
+    // always read via the standard Readable API.
+    const stream = initialData && initialData.length > 0
+        ? new PrefixedSocket(clientSocket, initialData)
+        : clientSocket;
+    tlsServer.emit('connection', stream);
+    if (!initialData)
+        clientSocket.resume();
+}
+async function handleDecryptedRequest(hostname, headerStr, initialBody, tlsSocket, adapter, openrouterKey) {
+    const lines = headerStr.split('\r\n');
+    const requestLine = lines[0] ?? '';
+    const [method, path] = requestLine.split(' ');
+    const headers = {};
+    for (const line of lines.slice(1)) {
+        const colon = line.indexOf(':');
+        if (colon === -1)
+            continue;
+        headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+    }
+    // Use the actual Host header from the HTTP request, not the hostname guessed
+    // from the IP. claude.ai, assets-proxy.anthropic.com, and api.anthropic.com
+    // all share IP 160.79.104.10 — we only know the real intended host from the
+    // Host header (which we set with the right SNI when the cert was generated).
+    const actualHost = (headers['host'] ?? hostname).split(':')[0] ?? hostname;
+    const contentLength = parseInt(headers['content-length'] ?? '0', 10);
+    let bodyBuf = initialBody;
+    // Collect remaining body if needed
+    if (bodyBuf.length < contentLength) {
+        await new Promise((resolve) => {
+            tlsSocket.on('data', (chunk) => {
+                bodyBuf = Buffer.concat([bodyBuf, chunk]);
+                if (bodyBuf.length >= contentLength)
+                    resolve();
+            });
+        });
+    }
+    let bodyJson;
+    try {
+        bodyJson = JSON.parse(bodyBuf.toString('utf-8'));
+    }
+    catch {
+        bodyJson = {};
+    }
+    const ctx = makeHonoContext(method ?? 'POST', path ?? '/', headers, bodyJson);
+    // Only api.anthropic.com /v1/messages goes through anonymization. Everything
+    // else on api.anthropic.com (or any other Anthropic host like claude.ai) is
+    // passed through unchanged — they're internal app APIs we don't anonymize.
+    const isAnthropicMessages = actualHost === 'api.anthropic.com' && path === '/v1/messages';
+    const isOpenAIChat = AI_PATH_HANDLERS[actualHost] === 'openai' && (path?.startsWith('/v1/chat') ?? false);
+    let response;
+    try {
+        if (isAnthropicMessages) {
+            response = await handleAnthropicMessages(ctx, adapter, openrouterKey);
+        }
+        else if (isOpenAIChat) {
+            response = await handleOpenAIChat(ctx, adapter, openrouterKey);
+        }
+        else {
+            // Forward to the actual host (not the IP-mapped hostname)
+            response = await forwardToUpstream(method ?? 'GET', actualHost, path ?? '/', headers, bodyBuf);
+        }
+        await writeResponseToSocket(response, tlsSocket);
+    }
+    catch (err) {
+        const errBody = JSON.stringify({ error: String(err) });
+        tlsSocket.write(`HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: ${errBody.length}\r\n\r\n${errBody}`);
+        tlsSocket.destroy();
+    }
+}
+const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true';
+/**
+ * Forward to real upstream.
+ *
+ * In TUN mode: /etc/hosts maps AI hostnames to fake IPs. We must use
+ * resolveRealDirect (8.8.8.8) to get the real IP, then https.request with
+ * host=realIP + servername=hostname so TLS validates against the hostname.
+ * fetch() can't separate TCP host from TLS SNI, so we use https.request.
+ */
+function forwardToUpstream(method, hostname, path, headers, body) {
+    if (TUN_MODE) {
+        return forwardViaRealIP(method, hostname, path, headers, body);
+    }
+    return fetch(`https://${hostname}${path}`, {
+        method,
+        headers: { ...headers, host: hostname },
+        body: body.length > 0 ? body : undefined,
+        signal: AbortSignal.timeout(30_000),
+    });
+}
+async function forwardViaRealIP(method, hostname, path, headers, body) {
+    const realIP = await resolveRealDirect(hostname).catch(() => hostname);
+    const localAddress = getPhysicalInterfaceIP() ?? undefined;
+    return new Promise((resolve, reject) => {
+        const req = https.request({
+            host: realIP, // TCP: connect to real IP (bypasses /etc/hosts)
+            servername: hostname, // TLS SNI: validate cert against original hostname
+            localAddress, // Source IP: bypasses TUN route for outbound
+            port: 443,
+            path,
+            method,
+            headers: { ...headers, host: hostname },
+            rejectUnauthorized: true,
+        }, async (res) => {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+                const buf = Buffer.concat(chunks);
+                const respHeaders = {};
+                for (const [k, v] of Object.entries(res.headers)) {
+                    if (v === undefined)
+                        continue;
+                    // Strip hop-by-hop headers — we've dechunked, we close after each response,
+                    // so transfer-encoding/connection from upstream don't apply to our response.
+                    const lower = k.toLowerCase();
+                    if (lower === 'transfer-encoding' || lower === 'connection' ||
+                        lower === 'keep-alive' || lower === 'content-length')
+                        continue;
+                    respHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
+                }
+                const status = res.statusCode ?? 502;
+                // Response constructor rejects body for null-body status codes (204/205/304)
+                const body = (status === 204 || status === 205 || status === 304 || buf.length === 0) ? null : buf;
+                // Set accurate content-length and connection: close (we close after each response)
+                if (body)
+                    respHeaders['content-length'] = String(buf.length);
+                respHeaders['connection'] = 'close';
+                process.stderr.write(`[socks5] ↩ ${status} ${method} ${hostname}${path} (${buf.length}b)\n`);
+                resolve(new Response(body, { status, headers: respHeaders }));
+            });
+            res.on('error', reject);
+        });
+        req.on('error', reject);
+        if (body.length > 0)
+            req.write(body);
+        req.end();
+    });
+}
+/** Write to a socket and wait for drain if the kernel buffer is full. */
+function writeAndDrain(socket, data) {
+    return new Promise((resolve, reject) => {
+        if (socket.write(data))
+            return resolve();
+        socket.once('drain', () => resolve());
+        socket.once('error', reject);
+    });
+}
+async function writeResponseToSocket(response, socket) {
+    const statusLine = `HTTP/1.1 ${response.status} ${response.statusText || 'OK'}`;
+    const headerLines = [statusLine];
+    response.headers.forEach((value, name) => headerLines.push(`${name}: ${value}`));
+    headerLines.push('', '');
+    try {
+        await writeAndDrain(socket, headerLines.join('\r\n'));
+        if (response.body) {
+            const reader = response.body.getReader();
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done)
+                    break;
+                await writeAndDrain(socket, value);
+            }
+        }
+        // socket.end() flushes pending writes then sends FIN. Wait briefly for
+        // the data to drain before returning, but don't hang forever.
+        await new Promise((resolve) => {
+            let resolved = false;
+            const done = () => { if (!resolved) {
+                resolved = true;
+                resolve();
+            } };
+            socket.once('finish', done);
+            socket.once('close', done);
+            socket.once('error', done);
+            socket.end();
+            setTimeout(done, 2000); // safety net — 2s max wait
+        });
+    }
+    catch (err) {
+        process.stderr.write(`[socks5] write error: ${err}\n`);
+        socket.destroy();
+    }
+}
+// ── Direct passthrough (non-AI endpoints) ─────────────────────────────────────
+function directTunnel(clientSocket, hostname, port, initialData = null) {
+    // localAddress = en0 IP — bypasses TUN routes for our outbound connection,
+    // so passthrough to AI-routed IPs (e.g. claude.ai's CDN) doesn't loop.
+    const localAddress = TUN_MODE ? (getPhysicalInterfaceIP() ?? undefined) : undefined;
+    const upstream = net.connect({ port, host: hostname, localAddress }, () => {
+        // If we peeked bytes during SNI sniffing, send them upstream first so the
+        // server sees the original ClientHello before any subsequent data.
+        if (initialData && initialData.length > 0) {
+            upstream.write(initialData);
+        }
+        clientSocket.pipe(upstream);
+        upstream.pipe(clientSocket);
+    });
+    upstream.on('error', (err) => {
+        process.stderr.write(`[socks5] tunnel error ${hostname}:${port}: ${err.message}\n`);
+        clientSocket.destroy();
+    });
+    clientSocket.on('error', () => upstream.destroy());
+    clientSocket.on('close', () => upstream.destroy());
+    upstream.on('close', () => clientSocket.destroy());
+}
+//# sourceMappingURL=socks5.js.map
