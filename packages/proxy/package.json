@@ -4,6 +4,14 @@
   "private": true,
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js"
+    },
+    "./handlers": {
+      "import": "./dist/handlers/index.js"
+    }
+  },
   "bin": {
     "sci-proxy": "dist/index.js"
   },

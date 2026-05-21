@@ -9,6 +9,7 @@ dist/
 !packages/control/dist/
 !packages/agent/dist/
 !packages/gateway/dist/
+!packages/proxy/dist/handlers/index.js
 .env
 .env.local
 # fastembed model cache — downloaded at runtime, not committed
