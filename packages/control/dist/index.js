@@ -607,6 +607,114 @@ app.post('/api/gateway/external-endpoint', async (c) => {
     await setExternalEndpoint(body.endpoint);
     return c.json({ ok: true });
 });
+// ── Memory API (EP3) ────────────────────────────────────────────────────────
+// Encrypted blobs are written by the device before upload and decrypted after
+// download. The control plane stores ciphertext only — no plaintext content.
+//
+// Schema: memory_blobs table (added to db/init.sql separately)
+//   id UUID, user_id UUID, device_id UUID, blob_type TEXT,
+//   profile_id UUID, encrypted_blob TEXT, created_at TIMESTAMPTZ
+//
+// Sync protocol: push-on-write + pull-on-startup.
+//   POST /api/memories       — device writes a new blob after local store
+//   GET  /api/memories       — device pulls blobs since ?since=<timestamp>
+//   GET  /api/memories/stats — count per type for debugging
+//   DELETE /api/memories/:id — device-initiated delete (rare)
+
+authed.post('/api/memories', async (c) => {
+    const u = c.get('user');
+    const body = await c.req.json().catch(() => ({}));
+    if (!body.encryptedBlob)
+        return c.json({ error: 'encryptedBlob required' }, 400);
+    if (!body.blobType || !['episodic', 'semantic', 'identity'].includes(body.blobType))
+        return c.json({ error: 'blobType must be episodic | semantic | identity' }, 400);
+    // Resolve device from bearer token (agent token → agent → device)
+    const deviceRow = await resolveDeviceFromSession(u.id, c.req.header('authorization'));
+    const deviceId = deviceRow?.id ?? null;
+    const profileId = body.profileId ?? null;
+    const { rows } = await writer.query(`INSERT INTO memory_blobs
+        (user_id, device_id, profile_id, blob_type, encrypted_blob)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id::text, created_at`, [u.id, deviceId, profileId, body.blobType, body.encryptedBlob]);
+    return c.json({ id: rows[0].id, createdAt: rows[0].created_at }, 201);
+});
+
+authed.get('/api/memories', async (c) => {
+    const u = c.get('user');
+    const since = c.req.query('since');
+    const limit = Math.min(parseInt(c.req.query('limit') ?? '1000'), 5000);
+    const profileId = c.req.query('profileId');
+    const blobType = c.req.query('blobType');
+    const params = [u.id];
+    const conditions = ['user_id = $1'];
+    if (since) {
+        params.push(new Date(since));
+        conditions.push(`created_at > $${params.length}`);
+    }
+    if (profileId) {
+        params.push(profileId);
+        conditions.push(`profile_id = $${params.length}`);
+    }
+    if (blobType) {
+        params.push(blobType);
+        conditions.push(`blob_type = $${params.length}`);
+    }
+    params.push(limit);
+    const where = conditions.join(' AND ');
+    const { rows } = await reader.query(`SELECT id::text, device_id::text, profile_id::text,
+            blob_type, encrypted_blob, created_at
+       FROM memory_blobs
+       WHERE ${where}
+       ORDER BY created_at ASC
+       LIMIT $${params.length}`, params);
+    return c.json({
+        blobs: rows.map(r => ({
+            id: r.id, deviceId: r.device_id, profileId: r.profile_id,
+            blobType: r.blob_type, encryptedBlob: r.encrypted_blob, createdAt: r.created_at,
+        })),
+        count: rows.length,
+        hasMore: rows.length === limit,
+    });
+});
+
+authed.get('/api/memories/stats', async (c) => {
+    const u = c.get('user');
+    const { rows } = await reader.query(`SELECT blob_type, COUNT(*)::int AS c, MAX(created_at) AS last_sync
+       FROM memory_blobs WHERE user_id = $1 GROUP BY blob_type`, [u.id]);
+    return c.json({ stats: rows });
+});
+
+authed.delete('/api/memories/:id', async (c) => {
+    const u = c.get('user');
+    const id = c.req.param('id');
+    const { rowCount } = await writer.query(`DELETE FROM memory_blobs WHERE id = $1 AND user_id = $2`, [id, u.id]);
+    if (rowCount === 0)
+        return c.json({ error: 'not found' }, 404);
+    return c.json({ ok: true });
+});
+
+// Resolve the device row for the authenticated user from their session.
+// The authed middleware validates the session cookie/bearer token against
+// user_sessions. For device-specific attribution we additionally look up
+// the device associated with the request's agent token, if present.
+async function resolveDeviceFromSession(userId, authHeader) {
+    if (!authHeader?.startsWith('Bearer '))
+        return null;
+    const token = authHeader.slice(7);
+    if (!token.startsWith('sci_'))
+        return null; // session token, not agent token — can't resolve device
+    try {
+        const { validateToken } = await import('@sci/core');
+        const agent = await validateToken(token);
+        if (!agent)
+            return null;
+        const { rows } = await reader.query(`SELECT id FROM devices WHERE agent_id = $1 AND user_id = $2 LIMIT 1`, [agent.agentId, userId]);
+        return rows[0] ?? null;
+    } catch {
+        return null;
+    }
+}
+
 // Mount authed routes
 app.route('/', authed);
 async function reloadGateway() {

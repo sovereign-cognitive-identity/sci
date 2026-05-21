@@ -228,6 +228,23 @@ CREATE INDEX exposure_events_created_at_idx ON exposure_events (created_at DESC)
 -- Add user_id to profiles for multi-tenant scoping (nullable: NULL = orphan/legacy)
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id);
 
+-- ── Memory blob store (EP3) ──────────────────────────────────────────────────
+-- Encrypted memory blobs synced from devices. The control plane stores
+-- ciphertext only — decryption happens on the device using enc.key.
+
+CREATE TABLE memory_blobs (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id      UUID REFERENCES devices(id),
+  profile_id     UUID REFERENCES profiles(id),
+  blob_type      TEXT NOT NULL CHECK (blob_type IN ('episodic', 'semantic', 'identity')),
+  encrypted_blob TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX memory_blobs_user_id_idx    ON memory_blobs (user_id);
+CREATE INDEX memory_blobs_created_at_idx ON memory_blobs (created_at ASC);
+
 -- ── Grants ────────────────────────────────────────────────────────────────────
 
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO db_reader;
@@ -253,6 +270,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON devices TO db_writer;
 GRANT SELECT, INSERT ON audit_log TO db_writer;
 GRANT SELECT, INSERT, UPDATE ON gateway_state TO db_writer;
 GRANT SELECT, INSERT ON exposure_events TO db_writer;
+GRANT SELECT, INSERT, DELETE ON memory_blobs TO db_writer;
 
 -- ── Seed ──────────────────────────────────────────────────────────────────────
 
