@@ -14,6 +14,7 @@
 import { loadConfig } from './config.js';
 import { startAgent } from './agent.js';
 import { runDoctor } from './doctor.js';
+import { generateEncKey } from './storage-sqlite.js';
 import { spawnSync } from 'child_process';
 import { existsSync, homedir } from 'fs';
 import { join } from 'path';
@@ -79,6 +80,9 @@ async function runSetup(config, extraArgs) {
         // Persist the control plane URL so future agent runs know where to sync.
         writeFileSync(join(configDir, 'control-plane'), controlPlane + '\n', { mode: 0o644 });
         process.stdout.write(`✓ Control plane URL saved (${controlPlane})\n`);
+        // Generate per-device encryption key for memory blobs (idempotent — skips if already exists).
+        generateEncKey(configDir);
+        process.stdout.write(`✓ Encryption key ready at ${configDir}/enc.key\n`);
         process.stdout.write(`✓ Device enrolled: ${enrollResp.device?.name ?? hostname()}\n\n`);
     }
     // 2. Shell exports

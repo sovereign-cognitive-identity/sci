@@ -65,7 +65,10 @@ export async function startProxyServer(config) {
     if (!existsSync(config.memoryDir)) {
         mkdirSync(config.memoryDir, { recursive: true, mode: 0o700 });
     }
-    const sqliteAdapter = new SqliteStorageAdapter(config.memoryDir);
+    const sqliteAdapter = new SqliteStorageAdapter(config.memoryDir, {
+        configDir: config.configDir,
+        controlPlaneUrl: config.controlPlaneUrl,
+    });
     await sqliteAdapter.connect();
     adapter = sqliteAdapter;
     process.stderr.write(`[sci-agent] memory store ready: ${config.memoryDir}\n`);
