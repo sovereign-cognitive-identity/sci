@@ -18,6 +18,106 @@ import { spawnSync } from 'child_process';
 import { existsSync, homedir } from 'fs';
 import { join } from 'path';
 
+async function runSetup(config, extraArgs) {
+    const { mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync } = await import('fs');
+    const { homedir } = await import('os');
+    const { join } = await import('path');
+    const home = homedir();
+    const configDir = config.configDir;
+    // 1. Create ~/.sci/
+    mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    process.stdout.write(`✓ ${configDir} ready\n`);
+    // 2. Shell exports
+    const zshrc = join(home, '.zshrc');
+    const exportBlock = [
+        '',
+        '# Added by sci --setup',
+        `export HTTPS_PROXY=http://localhost:${config.proxyPort}`,
+        `export NODE_EXTRA_CA_CERTS=$HOME/.sci/ca.crt`,
+        `export NO_PROXY=localhost,127.0.0.1,*.brew.sh,formulae.brew.sh,raw.githubusercontent.com,objects.githubusercontent.com`,
+    ].join('\n');
+    const zshrcExists = existsSync(zshrc);
+    const alreadySet = zshrcExists && readFileSync(zshrc, 'utf-8').includes('Added by sci --setup');
+    if (!alreadySet) {
+        appendFileSync(zshrc, exportBlock + '\n');
+        process.stdout.write(`✓ Shell exports written to ~/.zshrc\n`);
+    } else {
+        process.stdout.write(`✓ Shell exports already present in ~/.zshrc\n`);
+    }
+    // 3. Launchd plist (macOS only)
+    if (process.platform === 'darwin') {
+        const launchAgentsDir = join(home, 'Library', 'LaunchAgents');
+        mkdirSync(launchAgentsDir, { recursive: true });
+        const sciExe = process.execPath; // path to the compiled sci binary
+        const plistPath = join(launchAgentsDir, 'com.sci.agent.plist');
+        const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.sci.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${sciExe}</string>
+    <string>up</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SCI_CONFIG_DIR</key><string>${configDir}</string>
+    <key>HOME</key><string>${home}</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>${configDir}/sci.log</string>
+  <key>StandardOutPath</key><string>${configDir}/sci.log</string>
+</dict>
+</plist>
+`;
+        writeFileSync(plistPath, plist);
+        process.stdout.write(`✓ Launchd plist written to ${plistPath}\n`);
+    }
+    // 4. MCP registration in ~/.claude.json
+    const claudeJsonPath = join(home, '.claude.json');
+    if (existsSync(claudeJsonPath)) {
+        try {
+            const existing = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
+            if (!existing.mcpServers) existing.mcpServers = {};
+            existing.mcpServers['sci'] = {
+                type: 'stdio',
+                command: process.execPath,
+                args: ['mcp'],
+                env: {
+                    SCI_CONFIG_DIR: configDir,
+                    HOME: home,
+                },
+            };
+            writeFileSync(claudeJsonPath, JSON.stringify(existing, null, 2) + '\n');
+            process.stdout.write(`✓ Claude Code MCP registered in ~/.claude.json\n`);
+        } catch (e) {
+            process.stderr.write(`  Could not update ~/.claude.json: ${e.message}\n`);
+        }
+    } else {
+        process.stdout.write(`  Claude Code not detected — skipping MCP registration\n`);
+    }
+    // 5. Next steps — copy-paste ready
+    process.stdout.write(`
+─── Next steps ──────────────────────────────────────────────────
+`);
+    if (process.platform === 'darwin') {
+        process.stdout.write(`  launchctl load ~/Library/LaunchAgents/com.sci.agent.plist
+  sci --trust-ca
+  sci doctor
+`);
+    } else {
+        process.stdout.write(`  sci up &
+  sci --trust-ca
+  sci doctor
+`);
+    }
+    process.stdout.write(`─────────────────────────────────────────────────────────────────
+`);
+}
+
 async function runTrustCA(configDir) {
     const caPath = join(configDir, 'ca.crt');
     if (!existsSync(caPath)) {
@@ -60,6 +160,7 @@ function printUsage() {
 sci — local AI traffic anonymization + memory agent  (v${VERSION})
 
 Usage:
+  sci --setup         First-run wizard: shell config, launchd, MCP registration
   sci up              Start the agent (HTTPS_PROXY listener + memory store)
   sci doctor          Self-test a running agent (CA, memory, creds, TLS path)
   sci --trust-ca      Add Sci CA to system keychain (macOS)
@@ -128,6 +229,11 @@ async function main() {
         case '--trust-ca':
         case 'trust-ca': {
             await runTrustCA(config.configDir);
+            return;
+        }
+        case '--setup':
+        case 'setup': {
+            await runSetup(config, args.slice(1));
             return;
         }
         case '--version':
