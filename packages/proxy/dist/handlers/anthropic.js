@@ -190,7 +190,8 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     const originalUserText = lastUserMsg ? extractText(lastUserMsg.content) : '';
     const reqId = `req_${Date.now().toString(36)}`;
     const t0 = Date.now();
-    process.stderr.write(`\n[${new Date().toISOString()}] ${reqId} ── incoming (${body.model}, ${body.messages.length} msgs)\n`);
+    const clientReqId = (c.req.header('x-client-request-id') ?? c.req.header('x-stainless-session-id') ?? 'unknown').slice(0, 8);
+    process.stderr.write(`\n[${new Date().toISOString()}] ${reqId} ── incoming (${body.model}, ${body.messages.length} msgs) client:${clientReqId}\n`);
     const span = tracer.startSpan('sci.llm.request', {
         attributes: {
             'llm.model': body.model,
@@ -308,22 +309,22 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
             system: withContext.find(m => m.role === 'system')?.content ?? body.system,
             stream: true,
         };
-        // Extract original auth headers to forward to Anthropic.
-        //
-        // `anthropic-beta` matters for OAuth-authenticated requests: Sci-native UI
-        // sends `anthropic-beta: oauth-2025-04-20` so Anthropic accepts the OAuth
-        // Bearer at the inference layer. Stripping it would cause Anthropic to
-        // treat the request as a missing-API-key error. We forward whatever the
-        // client sent (could also be e.g. `prompt-caching-2024-07-31`).
-        const authHeader = c.req.header('authorization') ?? c.req.header('x-api-key');
-        const betaHeader = c.req.header('anthropic-beta');
-        const originalHeaders = {
-            'anthropic-version': c.req.header('anthropic-version') ?? '2023-06-01',
-            ...(betaHeader ? { 'anthropic-beta': betaHeader } : {}),
-            ...(authHeader?.startsWith('Bearer ')
-                ? { 'authorization': authHeader }
-                : { 'x-api-key': authHeader ?? '' }),
-        };
+        // Forward all original request headers to Anthropic.
+        // Headers like x-app, x-claude-code-session-id, user-agent, x-stainless-*
+        // are used by Anthropic to authorize features (e.g. context-1m requires
+        // x-app: cli to signal an authorized Claude Code session). Stripping them
+        // causes "Usage credits are required" errors for extended features.
+        const HOP_BY_HOP_REQ = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate',
+            'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
+            'proxy-connection', 'content-length', 'content-type']);
+        const originalHeaders = {};
+        for (const [k, v] of Object.entries(c.req.raw.headers ?? {})) {
+            if (!HOP_BY_HOP_REQ.has(k.toLowerCase()) && v)
+                originalHeaders[k] = v;
+        }
+        // Ensure version is always present
+        if (!originalHeaders['anthropic-version'])
+            originalHeaders['anthropic-version'] = '2023-06-01';
         const deanonStream = new DeanonymizingStreamV2(sessionTokenMap);
         // Preserve the original request URL including query params (e.g. ?beta=true)
         // so Anthropic returns the expected response format for extended features.

@@ -154,8 +154,15 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
                         body: JSON.stringify(requestBody),
                     });
                     if (!response.ok) {
-                        const err = await response.text();
-                        throw new Error(`Anthropic ${response.status}: ${err}`);
+                        // Forward the original Anthropic error as a proper SSE error event
+                        // so the SDK can parse the error type (rate_limit, auth_error, etc.)
+                        const errText = await response.text();
+                        let errData;
+                        try { errData = JSON.parse(errText); } catch { errData = { type: 'error', error: { type: 'api_error', message: errText } }; }
+                        controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(errData)}\n\n`));
+                        controller.close();
+                        onComplete();
+                        return;
                     }
                     if (!response.body)
                         throw new Error('No response body from Anthropic');

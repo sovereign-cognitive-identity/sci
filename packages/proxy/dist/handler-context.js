@@ -29,6 +29,7 @@ export function makeHandlerContext(req, body, agent) {
     // can be wired through if a handler needs it.
     const rawShim = {
         url: req.url ?? '/',
+        headers: req.headers,   // expose full headers for forwarding to upstream
         signal: { addEventListener: () => { } },
     };
     const ctx = {
@@ -72,12 +73,19 @@ export async function pipeResponse(result, res) {
         res.writeHead(result.status, headers);
         if (result.body) {
             const reader = result.body.getReader();
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done)
-                    break;
-                if (value)
-                    res.write(Buffer.from(value));
+            let totalBytes = 0;
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done)
+                        break;
+                    if (value) {
+                        totalBytes += value.length;
+                        res.write(Buffer.from(value));
+                    }
+                }
+            } catch (pipeErr) {
+                process.stderr.write(`[sci-pipe] write error after ${totalBytes}b: ${pipeErr.message}\n`);
             }
         }
         res.end();

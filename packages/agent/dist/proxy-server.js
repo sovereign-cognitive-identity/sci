@@ -277,6 +277,9 @@ async function passthroughForward(req, body, hostname, res) {
         // Forwarding them causes double-encoding and confuses HTTP clients.
         const responseHeaders = sanitizeHeaders(upstreamRes.headers, hostname);
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+        upstreamRes.on('error', err => {
+            process.stderr.write(`[sci-agent] passthrough ${req.method} ${req.url} error: ${err.message}\n`);
+        });
         upstreamRes.pipe(res);
     });
     upstream.on('error', (err) => {
