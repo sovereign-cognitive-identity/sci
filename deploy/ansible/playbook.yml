@@ -85,14 +85,35 @@
         direction: incoming
 
     # ── Deploy ────────────────────────────────────────────────────────────────
+    - name: Remove stale git lock if present
+      tags: [deploy]
+      file:
+        path: "{{ sci_repo_dir }}/.git/index.lock"
+        state: absent
+
     - name: Clone or update repo
       tags: [deploy]
       git:
         repo: "{{ sci_repo_url }}"
         dest: "{{ sci_repo_dir }}"
         version: main
-        force: false
+        force: true
+        update: true
       become_user: "{{ ansible_user }}"
+
+    - name: Force pull latest from origin
+      tags: [deploy]
+      shell: |
+        git fetch origin && git reset --hard origin/main
+      args:
+        chdir: "{{ sci_repo_dir }}"
+
+    - name: Ensure deploy dir exists
+      tags: [deploy]
+      file:
+        path: "{{ sci_repo_dir }}/deploy"
+        state: directory
+        mode: "0755"
 
     - name: Write .env.prod
       tags: [deploy]
