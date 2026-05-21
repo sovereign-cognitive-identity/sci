@@ -138,6 +138,96 @@ CREATE TABLE consolidation_runs (
   duration_ms         INT
 );
 
+-- ── Control plane tables ─────────────────────────────────────────────────────
+
+CREATE TABLE users (
+  id             UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  email          TEXT NOT NULL UNIQUE,
+  password_hash  TEXT NOT NULL,
+  display_name   TEXT,
+  is_admin       BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_login_at  TIMESTAMPTZ
+);
+
+CREATE TABLE user_sessions (
+  id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL UNIQUE,
+  user_agent   TEXT,
+  ip_address   TEXT,
+  last_used_at TIMESTAMPTZ,
+  expires_at   TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days'),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX user_sessions_user_id_idx ON user_sessions (user_id);
+
+CREATE TABLE devices (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  profile_id      UUID REFERENCES profiles(id),
+  agent_id        UUID REFERENCES agents(id),
+  name            TEXT NOT NULL,
+  platform        TEXT,
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+  wg_public_key   TEXT,
+  wg_preshared_key TEXT,
+  wg_assigned_ip  TEXT,
+  last_seen_at    TIMESTAMPTZ,
+  revoked_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX devices_user_id_idx ON devices (user_id);
+
+CREATE TABLE audit_log (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    UUID REFERENCES users(id),
+  agent_id   UUID REFERENCES agents(id),
+  device_id  UUID REFERENCES devices(id),
+  action     TEXT NOT NULL,
+  target     TEXT,
+  outcome    TEXT NOT NULL DEFAULT 'ok',
+  metadata   JSONB NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX audit_log_user_id_idx    ON audit_log (user_id);
+CREATE INDEX audit_log_created_at_idx ON audit_log (created_at DESC);
+
+CREATE TABLE gateway_state (
+  id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  wg_private_key    TEXT NOT NULL,
+  wg_public_key     TEXT NOT NULL,
+  wg_listen_port    INT NOT NULL DEFAULT 51820,
+  wg_subnet         TEXT NOT NULL DEFAULT '10.13.13.0/24',
+  wg_server_ip      TEXT NOT NULL DEFAULT '10.13.13.1',
+  proxy_ip          TEXT NOT NULL DEFAULT '10.13.13.1',
+  external_endpoint TEXT,
+  next_peer_octet   INT NOT NULL DEFAULT 2,
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE exposure_events (
+  id          BIGSERIAL PRIMARY KEY,
+  user_id     UUID REFERENCES users(id),
+  device_id   UUID REFERENCES devices(id),
+  hostname    TEXT NOT NULL,
+  vendor_id   TEXT,
+  query_type  TEXT,
+  resolved_ip TEXT,
+  metadata    JSONB NOT NULL DEFAULT '{}',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX exposure_events_user_id_idx    ON exposure_events (user_id);
+CREATE INDEX exposure_events_created_at_idx ON exposure_events (created_at DESC);
+
+-- Add user_id to profiles for multi-tenant scoping (nullable: NULL = orphan/legacy)
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id);
+
 -- ── Grants ────────────────────────────────────────────────────────────────────
 
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO db_reader;
@@ -157,7 +247,14 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON agents TO db_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON agent_tokens TO db_writer;
 GRANT SELECT, INSERT, UPDATE, DELETE ON connect_requests TO db_writer;
 
+GRANT SELECT, INSERT, UPDATE ON users TO db_writer;
+GRANT SELECT, INSERT, UPDATE, DELETE ON user_sessions TO db_writer;
+GRANT SELECT, INSERT, UPDATE, DELETE ON devices TO db_writer;
+GRANT SELECT, INSERT ON audit_log TO db_writer;
+GRANT SELECT, INSERT, UPDATE ON gateway_state TO db_writer;
+GRANT SELECT, INSERT ON exposure_events TO db_writer;
+
 -- ── Seed ──────────────────────────────────────────────────────────────────────
 
-INSERT INTO profiles (name) VALUES ('work'), ('personal');
--- Run `sci setup` after first start to generate your trusted token.
+INSERT INTO profiles (name) VALUES ('work'), ('personal') ON CONFLICT (name) DO NOTHING;
+-- Run POST /api/setup/init after first start to create your account.

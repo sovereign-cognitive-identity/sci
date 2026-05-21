@@ -1,8 +1,11 @@
 # Sci — full local stack for running and sharing.
 #
 # Quickstart for first-time setup:
-#   docker compose --profile setup run --rm sci-auth
 #   docker compose up -d
+#   curl http://localhost:3003/api/setup/status   # should say {initialized: false}
+#   curl -X POST http://localhost:3003/api/setup/init \
+#     -H 'Content-Type: application/json' \
+#     -d '{"email":"you@example.com","password":"changeme"}'
 #   open http://localhost:3002
 #
 # `sci-auth` is on a `setup` profile so it doesn't start with `docker compose
@@ -27,6 +30,31 @@ services:
       interval: 5s
       timeout:  5s
       retries:  10
+
+  # Control plane — accounts, devices, profiles, audit, gateway peer sync.
+  # First run: POST /api/setup/init to create the owner account.
+  sci-control:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SCI_DB_READER_URL:    postgresql://sci_reader:sci_reader_local@postgres:5432/sci
+      SCI_DB_WRITER_URL:    postgresql://sci_writer:sci_writer_local@postgres:5432/sci
+      SCI_CONTROL_PORT:     "3003"
+      SCI_COOKIE_SECURE:    "false"
+      SCI_CA_CERT_PATH:     /home/sci/.sci/ca.crt
+      SCI_INTERNAL_TOKEN:   ${SCI_INTERNAL_TOKEN:-sci-internal-dev}
+      SCI_PROXY_API_BASE:   http://sci-proxy:3001
+    volumes:
+      - sci_config:/home/sci/.sci
+    command: ["node", "packages/control/dist/index.js"]
+    ports:
+      - "3003:3003"
+    restart: unless-stopped
 
   # Anonymizer + memory pipeline. Receives /v1/messages and proxies to
   # Anthropic with masking, recall, and inspector events.
@@ -54,8 +82,8 @@ services:
     volumes:
       - sci_fastembed_cache:/home/sci/.cache/fastembed
     command: ["node", "packages/proxy/dist/index.js"]
-    expose:
-      - "3001"
+    ports:
+      - "3010:3001"
     restart: unless-stopped
 
   # Chat UI server. Talks to sci-proxy on the internal docker network and

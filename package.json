@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/core && npm run build -w packages/mcp && npm run build -w packages/cli && npm run build -w packages/proxy && npm run build -w packages/ui",
+    "build": "npm run build -w packages/core && npm run build -w packages/telemetry && npm run build -w packages/mcp && npm run build -w packages/cli && npm run build -w packages/proxy && npm run build -w packages/ui",
     "proxy": "PORT=3003 OTEL_EXPORTER_OTLP_ENDPOINT=http://194.238.29.36:4318 SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 SCI_OPENROUTER_KEY=unused-direct-mode node packages/proxy/dist/index.js",
     "ui": "SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node packages/ui/dist/server.js",
     "ui:auth": "node packages/ui/dist/oauth-cli.js",

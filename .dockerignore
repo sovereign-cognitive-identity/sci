@@ -6,6 +6,13 @@ dist/
 **/*.tsbuildinfo
 **/*.map
 
+# Exceptions: pre-compiled packages without TypeScript source in this repo.
+# These are committed as dist-only and must be included in the build context.
+!packages/core/dist/
+!packages/control/dist/
+!packages/agent/dist/
+!packages/gateway/dist/
+
 # Source control + editor + OS
 .git/
 .gitignore

@@ -1,6 +1,14 @@
 node_modules/
 dist/
 *.js.map
+
+# Exceptions: packages whose TypeScript source lives in a separate private repo.
+# These dist files are committed so the Docker build and collaborators can use
+# the compiled output without needing the private source.
+!packages/core/dist/
+!packages/control/dist/
+!packages/agent/dist/
+!packages/gateway/dist/
 .env
 .env.local
 # fastembed model cache — downloaded at runtime, not committed

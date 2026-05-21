@@ -1,0 +1,139 @@
+/**
+ * CloudAdapter — SQLite + hnswlib base class for cloud storage backends.
+ *
+ * All user data lives in two files:
+ *   sci.db    — SQLite database (memories, profiles, identity facts)
+ *   sci.idx   — hnswlib HNSW index (vector embeddings for recall)
+ *
+ * These files are stored locally and synced to the user's chosen
+ * cloud storage by concrete subclasses (Dropbox, S3, iCloud).
+ *
+ * Data ownership: the user controls the storage. Sci never has credentials.
+ */
+import Database from 'better-sqlite3';
+import type { StorageAdapter, Profile, SemanticNode, IdentityFact, RecallResult, StorageStats } from './interface.js';
+interface VectorEntry {
+    index: number;
+    id: string;
+    type: 'episodic' | 'semantic' | 'identity';
+}
+export declare abstract class CloudAdapter implements StorageAdapter {
+    abstract readonly backend: string;
+    protected localDir: string;
+    protected db: Database.Database;
+    protected index: import('hnswlib-node').HierarchicalNSW;
+    protected vectorMap: VectorEntry[];
+    protected nextVectorIndex: number;
+    constructor(localDir: string);
+    get dbPath(): string;
+    get idxPath(): string;
+    connect(): Promise<void>;
+    disconnect(): Promise<void>;
+    private _initSchema;
+    private _loadVectorMap;
+    private _addToIndex;
+    private _searchIndex;
+    getProfiles(): Promise<Profile[]>;
+    getProfile(name: string): Promise<Profile | null>;
+    createProfile(name: string): Promise<Profile>;
+    storeEpisodic(input: {
+        profileId: string;
+        content: string;
+        embedding: number[];
+        source?: string;
+        agentId?: string;
+        metadata?: Record<string, unknown>;
+    }): Promise<{
+        id: string;
+    }>;
+    storeSemantic(input: {
+        profileId: string;
+        content: string;
+        embedding: number[];
+        category?: string;
+        confidence?: number;
+        metadata?: Record<string, unknown>;
+    }): Promise<{
+        id: string;
+    }>;
+    reinforceSemantic(id: string): Promise<void>;
+    updateDecayScore(id: string, score: number, flagged: boolean): Promise<void>;
+    getSemanticNodes(profileId: string, options?: {
+        minConfidence?: number;
+        minDecay?: number;
+        limit?: number;
+    }): Promise<SemanticNode[]>;
+    storeIdentityFact(input: {
+        content: string;
+        embedding: number[];
+        category?: string;
+        confidence?: number;
+        metadata?: Record<string, unknown>;
+    }): Promise<{
+        id: string;
+    }>;
+    recall(input: {
+        queryEmbedding: number[];
+        query: string;
+        profileId: string;
+        limit: number;
+        types: Array<'episodic' | 'semantic' | 'identity'>;
+    }): Promise<RecallResult[]>;
+    queryIdentityFacts(options?: {
+        query?: string;
+        queryEmbedding?: number[];
+        category?: string;
+        limit?: number;
+    }): Promise<IdentityFact[]>;
+    getEpisodicMemoriesInWindow(options: {
+        profileId: string;
+        windowStart: Date;
+        windowEnd: Date;
+        minLength?: number;
+        excludeDigests?: boolean;
+        limit?: number;
+    }): Promise<Array<{
+        id: string;
+        content: string;
+    }>>;
+    countEpisodicMemoriesInWindow(windowStart: Date, windowEnd: Date): Promise<number>;
+    findSimilarSemanticNode(embedding: number[], profileId: string, threshold?: number): Promise<{
+        id: string;
+        content: string;
+    } | null>;
+    getSemanticNodesForGraph(profileId: string, options?: {
+        minConfidence?: number;
+        minDecay?: number;
+        limit?: number;
+    }): Promise<Array<{
+        id: string;
+        content: string;
+    }>>;
+    getLastEpisodicWrite(): Promise<Date | null>;
+    insertSemanticEdge(sourceId: string, targetId: string, relationship: string, confidence: number): Promise<void>;
+    getStats(): Promise<StorageStats>;
+    recordWrite(operation: string, payload: Record<string, unknown>): Promise<void>;
+    getLastConsolidationRun(): Promise<Date | null>;
+    recordConsolidationRun(data: {
+        windowStart: Date;
+        windowEnd: Date;
+        episodicProcessed: number;
+        semanticPromoted: number;
+        semanticReinforced: number;
+        nodesDecayed: number;
+        digestId?: string;
+        modelUsed?: string;
+        durationMs: number;
+    }): Promise<void>;
+    sync(): Promise<{
+        uploaded: number;
+        downloaded: number;
+    }>;
+    protected abstract _sync(): Promise<{
+        uploaded: number;
+        downloaded: number;
+    }>;
+    protected abstract _downloadIfNeeded(): Promise<void>;
+}
+export {};
+//# sourceMappingURL=cloud-adapter.d.ts.map

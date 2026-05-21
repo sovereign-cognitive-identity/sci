@@ -9,6 +9,14 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./wireguard": {
+      "import": "./dist/wireguard.js",
+      "types": "./dist/wireguard.d.ts"
+    },
+    "./exposure-services": {
+      "import": "./dist/exposure-services.js",
+      "types": "./dist/exposure-services.d.ts"
     }
   },
   "scripts": {

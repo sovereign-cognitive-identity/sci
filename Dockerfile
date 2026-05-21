@@ -20,11 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-COPY packages/core/package.json   ./packages/core/
-COPY packages/mcp/package.json    ./packages/mcp/
-COPY packages/cli/package.json    ./packages/cli/
-COPY packages/proxy/package.json  ./packages/proxy/
-COPY packages/ui/package.json     ./packages/ui/
+COPY packages/core/package.json       ./packages/core/
+COPY packages/mcp/package.json        ./packages/mcp/
+COPY packages/cli/package.json        ./packages/cli/
+COPY packages/proxy/package.json      ./packages/proxy/
+COPY packages/ui/package.json         ./packages/ui/
+COPY packages/telemetry/package.json  ./packages/telemetry/
 
 # `npm install` instead of `npm ci` so platform-specific optional deps
 # (fastembed's @anush008/tokenizers-<platform>-gnu binaries, hnswlib, etc.)
@@ -42,7 +43,14 @@ WORKDIR /app
 COPY tsconfig.base.json ./
 COPY packages/ ./packages/
 
-RUN npm run build
+# Skip packages/core — its dist is committed directly (includes pre-compiled
+# modules whose TypeScript source lives in a separate private repo).
+# Build only the packages that have full TypeScript source here.
+RUN npm run build -w packages/telemetry \
+ && npm run build -w packages/mcp \
+ && npm run build -w packages/cli \
+ && npm run build -w packages/proxy \
+ && npm run build -w packages/ui
 
 # ── runtime ──────────────────────────────────────────────────────────────────
 FROM node:22-slim AS runtime
