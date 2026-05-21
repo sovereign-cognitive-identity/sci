@@ -20,13 +20,67 @@ import { join } from 'path';
 
 async function runSetup(config, extraArgs) {
     const { mkdirSync, writeFileSync, readFileSync, existsSync, appendFileSync } = await import('fs');
-    const { homedir } = await import('os');
+    const { homedir, hostname } = await import('os');
     const { join } = await import('path');
     const home = homedir();
     const configDir = config.configDir;
     // 1. Create ~/.sci/
     mkdirSync(configDir, { recursive: true, mode: 0o700 });
     process.stdout.write(`✓ ${configDir} ready\n`);
+    // Parse --token <code> and --control-plane <url> from extraArgs.
+    // When --token is present we do headless enrollment instead of browser OAuth.
+    let inviteToken = null;
+    let controlPlane = config.controlPlaneUrl;
+    for (let i = 0; i < extraArgs.length; i++) {
+        if (extraArgs[i] === '--token' && extraArgs[i + 1]) {
+            inviteToken = extraArgs[++i];
+        } else if (extraArgs[i] === '--control-plane' && extraArgs[i + 1]) {
+            controlPlane = extraArgs[++i];
+        }
+    }
+    // 1b. Headless enrollment via invite token (EP4).
+    if (inviteToken) {
+        process.stdout.write(`\nEnrolling via invite token...\n`);
+        let enrollResp;
+        try {
+            const res = await fetch(`${controlPlane}/api/devices/invite/redeem`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    token: inviteToken,
+                    name: hostname(),
+                    platform: process.platform,
+                }),
+            });
+            if (!res.ok) {
+                const body = await res.text().catch(() => '');
+                process.stderr.write(`Enrollment failed (${res.status}): ${body}\n`);
+                process.exit(1);
+            }
+            enrollResp = await res.json();
+        } catch (err) {
+            process.stderr.write(`Could not reach control plane at ${controlPlane}: ${err.message}\n`);
+            process.exit(1);
+        }
+        // Write CA cert + key so the agent can do TLS MITM.
+        if (enrollResp.caCert) {
+            writeFileSync(join(configDir, 'ca.crt'), enrollResp.caCert, { mode: 0o644 });
+            process.stdout.write(`✓ CA cert written to ${configDir}/ca.crt\n`);
+        }
+        if (enrollResp.caKey) {
+            writeFileSync(join(configDir, 'ca.key'), enrollResp.caKey, { mode: 0o600 });
+            process.stdout.write(`✓ CA key written to ${configDir}/ca.key\n`);
+        }
+        // Write agent token — used for authenticated control plane calls (e.g. memory sync).
+        if (enrollResp.agentToken) {
+            writeFileSync(join(configDir, 'agent.token'), enrollResp.agentToken, { mode: 0o600 });
+            process.stdout.write(`✓ Agent token written to ${configDir}/agent.token\n`);
+        }
+        // Persist the control plane URL so future agent runs know where to sync.
+        writeFileSync(join(configDir, 'control-plane'), controlPlane + '\n', { mode: 0o644 });
+        process.stdout.write(`✓ Control plane URL saved (${controlPlane})\n`);
+        process.stdout.write(`✓ Device enrolled: ${enrollResp.device?.name ?? hostname()}\n\n`);
+    }
     // 2. Shell exports
     const zshrc = join(home, '.zshrc');
     const exportBlock = [
@@ -160,13 +214,16 @@ function printUsage() {
 sci — local AI traffic anonymization + memory agent  (v${VERSION})
 
 Usage:
-  sci --setup         First-run wizard: shell config, launchd, MCP registration
-  sci up              Start the agent (HTTPS_PROXY listener + memory store)
-  sci doctor          Self-test a running agent (CA, memory, creds, TLS path)
-  sci --trust-ca      Add Sci CA to system keychain (macOS)
-  sci status          Print runtime state if running
-  sci config          Show credential file location + env-var summary
-  sci --help          This message
+  sci --setup                             First-run wizard (browser OAuth)
+  sci --setup --token <code>              Headless enrollment via invite token
+  sci --setup --token <code> \\
+      --control-plane <url>               Headless enrollment against a custom control plane
+  sci up                                  Start the agent (HTTPS_PROXY listener + memory store)
+  sci doctor                              Self-test a running agent (CA, memory, creds, TLS path)
+  sci --trust-ca                          Add Sci CA to system keychain (macOS)
+  sci status                              Print runtime state if running
+  sci config                              Show credential file location + env-var summary
+  sci --help                              This message
 
 Configuration (env vars):
   SCI_PROXY_PORT   localhost port to bind to (default 8080)

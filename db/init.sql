@@ -17,7 +17,7 @@ CREATE USER sci_writer WITH PASSWORD 'sci_writer_local' IN ROLE db_writer;
 
 CREATE TABLE profiles (
   id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name       TEXT NOT NULL UNIQUE,
+  name       TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -228,6 +228,18 @@ CREATE INDEX exposure_events_created_at_idx ON exposure_events (created_at DESC)
 -- Add user_id to profiles for multi-tenant scoping (nullable: NULL = orphan/legacy)
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id);
 
+-- ── Device invite tokens (EP4) ──────────────────────────────────────────────
+-- One-time tokens for headless device enrollment (sci --setup --token <code>).
+
+CREATE TABLE device_invites (
+  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token      TEXT NOT NULL UNIQUE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at    TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── Memory blob store (EP3) ──────────────────────────────────────────────────
 -- Encrypted memory blobs synced from devices. The control plane stores
 -- ciphertext only — decryption happens on the device using enc.key.
@@ -270,6 +282,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON devices TO db_writer;
 GRANT SELECT, INSERT ON audit_log TO db_writer;
 GRANT SELECT, INSERT, UPDATE ON gateway_state TO db_writer;
 GRANT SELECT, INSERT ON exposure_events TO db_writer;
+GRANT SELECT, INSERT, UPDATE ON device_invites TO db_writer;
 GRANT SELECT, INSERT, DELETE ON memory_blobs TO db_writer;
 
 -- ── Seed ──────────────────────────────────────────────────────────────────────

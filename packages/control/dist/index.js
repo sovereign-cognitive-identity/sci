@@ -77,6 +77,9 @@ app.get('/', (c) => c.json({
 // (it's a public-key cert; the corresponding private key is never exposed).
 const CA_CERT_PATH = process.env['SCI_CA_CERT_PATH']
     ?? join(homedir(), '.sci', 'certs', 'ca.crt');
+// Private key path — only served to authenticated, enrolled devices.
+const CA_KEY_PATH = process.env['SCI_CA_KEY_PATH']
+    ?? join(homedir(), '.sci', 'certs', 'ca.key');
 app.get('/api/ca/cert', (c) => {
     if (!existsSync(CA_CERT_PATH)) {
         return c.json({ error: 'CA cert not yet generated. Start sci-proxy with SCI_TLS_INTERCEPT=true and try again.' }, 503);
@@ -87,6 +90,21 @@ app.get('/api/ca/cert', (c) => {
         headers: {
             'content-type': 'application/x-x509-ca-cert',
             'content-disposition': 'attachment; filename="sci-ca.crt"',
+        },
+    });
+});
+// Authenticated — enrolled devices pull the CA private key during setup so they
+// can sign leaf certs for TLS MITM. Never served without a valid session.
+authed.get('/api/ca/key', (c) => {
+    if (!existsSync(CA_KEY_PATH)) {
+        return c.json({ error: 'CA key not found on control plane.' }, 503);
+    }
+    const pem = readFileSync(CA_KEY_PATH, 'utf-8');
+    return new Response(pem, {
+        status: 200,
+        headers: {
+            'content-type': 'application/x-pem-file',
+            'content-disposition': 'attachment; filename="sci-ca.key"',
         },
     });
 });
@@ -714,6 +732,70 @@ async function resolveDeviceFromSession(userId, authHeader) {
         return null;
     }
 }
+
+// ── Device invite flow (EP4) ─────────────────────────────────────────────────
+// Two-step enrollment for headless/SSH machines where browser OAuth isn't
+// available. An already-enrolled device generates a one-time token; the new
+// device redeems it via POST /api/devices/invite/redeem.
+//
+// Invite tokens live in device_invites table (added to db/init.sql).
+
+authed.post('/api/devices/invite', async (c) => {
+    const u = c.get('user');
+    const body = await c.req.json().catch(() => ({}));
+    const ttlMinutes = Math.min(Math.max(parseInt(body.ttlMinutes ?? '15'), 5), 60);
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(8)))
+        .map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
+    await writer.query(`INSERT INTO device_invites (user_id, token, expires_at)
+       VALUES ($1, $2, $3)`, [u.id, token, expiresAt]);
+    await audit({ userId: u.id, action: 'device.invite.create', metadata: { token, expiresAt } });
+    return c.json({ token, expiresAt, ttlMinutes, hint: `sci --setup --token ${token}` }, 201);
+});
+
+// Redeem an invite token — called by the new device during setup.
+// Does NOT require an existing session (the token is the credential).
+app.post('/api/devices/invite/redeem', async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    if (!body.token || !body.name)
+        return c.json({ error: 'token and name required' }, 400);
+    // Validate invite
+    const { rows: inv } = await reader.query(`SELECT user_id, expires_at, used_at FROM device_invites WHERE token = $1`, [body.token]);
+    const invite = inv[0];
+    if (!invite)
+        return c.json({ error: 'invalid token' }, 401);
+    if (invite.used_at)
+        return c.json({ error: 'token already used' }, 401);
+    if (new Date(invite.expires_at) < new Date())
+        return c.json({ error: 'token expired' }, 401);
+    // Mark token as used
+    await writer.query(`UPDATE device_invites SET used_at = NOW() WHERE token = $1`, [body.token]);
+    // Pick the user's first profile
+    const { rows: profiles } = await reader.query(`SELECT id FROM profiles WHERE user_id = $1 ORDER BY created_at LIMIT 1`, [invite.user_id]);
+    if (!profiles[0])
+        return c.json({ error: 'no profile found — create one first' }, 400);
+    const profileId = profiles[0].id;
+    // Register the device
+    const result = await createDevice({
+        userId: invite.user_id,
+        profileId,
+        name: body.name,
+        platform: body.platform,
+        tier: 'standard',
+        publicKey: body.publicKey,
+    });
+    // Pull the CA cert + key to return to the new device so it can do TLS MITM.
+    const caCert = existsSync(CA_CERT_PATH) ? readFileSync(CA_CERT_PATH, 'utf-8') : null;
+    const caKey = existsSync(CA_KEY_PATH) ? readFileSync(CA_KEY_PATH, 'utf-8') : null;
+    await audit({ userId: invite.user_id, deviceId: result.device.id, action: 'device.invite.redeem', target: body.name });
+    return c.json({
+        device: result.device,
+        agentToken: result.agentToken,
+        caCert,
+        caKey,
+        server: result.server,
+    }, 201);
+});
 
 // Mount authed routes
 app.route('/', authed);
