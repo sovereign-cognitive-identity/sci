@@ -16,20 +16,6 @@
 #     exec sci-control sh -c 'ls /home/sci/.sci/'
 
 services:
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    restart: unless-stopped
-    depends_on:
-      - sci-control
-
   postgres:
     image: pgvector/pgvector:pg16
     environment:
@@ -64,10 +50,10 @@ services:
     volumes:
       - sci_config:/home/sci/.sci
     command: ["node", "packages/control/dist/index.js"]
+    ports:
+      - "127.0.0.1:3003:3003"   # localhost only — nginx proxies externally
     restart: unless-stopped
 
 volumes:
   sci_data:
   sci_config:
-  caddy_data:
-  caddy_config:

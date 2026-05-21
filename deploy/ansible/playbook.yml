@@ -134,6 +134,55 @@
       args:
         chdir: "{{ sci_repo_dir }}"
 
+    # ── Nginx + TLS ───────────────────────────────────────────────────────────
+    - name: Install certbot
+      tags: [deploy, tls]
+      apt:
+        name: [certbot, python3-certbot-nginx]
+        state: present
+        update_cache: true
+
+    - name: Write nginx site config for control.threadline.fashion
+      tags: [deploy, tls]
+      copy:
+        dest: /etc/nginx/sites-available/sci-control
+        mode: "0644"
+        content: |
+          server {
+              listen 80;
+              server_name control.threadline.fashion;
+              location / {
+                  proxy_pass http://127.0.0.1:3003;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      register: nginx_config
+
+    - name: Enable nginx site
+      tags: [deploy, tls]
+      file:
+        src: /etc/nginx/sites-available/sci-control
+        dest: /etc/nginx/sites-enabled/sci-control
+        state: link
+
+    - name: Reload nginx
+      tags: [deploy, tls]
+      systemd:
+        name: nginx
+        state: reloaded
+
+    - name: Obtain Let's Encrypt certificate
+      tags: [deploy, tls]
+      shell: |
+        certbot --nginx -d control.threadline.fashion \
+          --non-interactive --agree-tos -m casey.zandbergen@gmail.com \
+          --redirect 2>&1
+      register: certbot_result
+      changed_when: "'Certificate not yet due for renewal' not in certbot_result.stdout"
+      failed_when: certbot_result.rc != 0 and 'Certificate not yet due for renewal' not in certbot_result.stdout
+
     # ── CA bootstrap ──────────────────────────────────────────────────────────
     # The control plane serves the CA to enrolling devices but doesn't generate
     # it. Copy from the controller's ~/.sci/ into the running container's volume
@@ -149,20 +198,24 @@
       register: ca_check
       changed_when: false
 
-    - name: Copy CA cert to container
+    - name: Upload CA files to VPS staging directory
+      tags: [deploy, ca]
+      when: ca_check.stdout | trim == "no"
+      copy:
+        src: "{{ lookup('env', 'HOME') }}/.sci/{{ item }}"
+        dest: "/tmp/sci-{{ item }}"
+        mode: "0600"
+      loop: [ca.crt, ca.key]
+
+    - name: Copy CA files from VPS into container
       tags: [deploy, ca]
       when: ca_check.stdout | trim == "no"
       shell: |
-        docker cp {{ item.src }} \
-          $(docker compose \
-            -f {{ sci_repo_dir }}/deploy/docker-compose.prod.yml \
-            ps -q sci-control):{{ item.dest }}
-      args:
-        chdir: "{{ sci_repo_dir }}"
-      delegate_to: "{{ inventory_hostname }}"
+        docker cp /tmp/sci-{{ item.src }} \
+          $(docker ps --filter name=sci-control --format '{{ "{{" }}.ID{{ "}}" }}' | head -1):{{ item.dest }}
       loop:
-        - { src: "{{ lookup('env', 'HOME') }}/.sci/ca.crt", dest: /home/sci/.sci/ca.crt }
-        - { src: "{{ lookup('env', 'HOME') }}/.sci/ca.key", dest: /home/sci/.sci/ca.key }
+        - { src: ca.crt, dest: /home/sci/.sci/ca.crt }
+        - { src: ca.key, dest: /home/sci/.sci/ca.key }
 
     - name: Restart sci-control after CA copy
       tags: [deploy, ca]
