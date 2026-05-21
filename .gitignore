@@ -37,3 +37,4 @@ apps/sci-mac/Pods/
 apps/sci-mac/SciHelper/target/
 apps/sci-mac/SciTunnel/target/
 deploy/.env.prod
+deploy/ansible/vars.yml

@@ -1,0 +1,17 @@
+# Sci control plane — Ansible vars
+# Copy to vars.yml and fill in real values. vars.yml is gitignored.
+
+# ── Repo ──────────────────────────────────────────────────────────────────────
+sci_repo_url: git@github.com:YOUR_ORG/sci.git
+sci_repo_dir: /opt/sci
+
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# Generate: openssl rand -hex 32
+postgres_admin_password: change-me
+sci_internal_token: change-me
+
+# ── First-run admin account ───────────────────────────────────────────────────
+# Used once by the bootstrap task. Idempotent — skipped if already initialized.
+sci_admin_email: you@example.com
+sci_admin_password: change-me        # 8+ chars
+sci_admin_display_name: Casey
