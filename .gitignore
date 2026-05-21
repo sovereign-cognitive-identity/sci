@@ -36,3 +36,4 @@ apps/sci-mac/Pods/
 # ── shipped binaries (only commit source) ───────────────────────────
 apps/sci-mac/SciHelper/target/
 apps/sci-mac/SciTunnel/target/
+deploy/.env.prod

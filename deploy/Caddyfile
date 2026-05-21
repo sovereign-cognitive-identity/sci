@@ -1,0 +1,7 @@
+# Sci control plane — TLS termination
+# Caddy auto-provisions a Let's Encrypt cert for the domain.
+# Add more blocks here as other services come online.
+
+control.threadline.fashion {
+    reverse_proxy sci-control:3003
+}
