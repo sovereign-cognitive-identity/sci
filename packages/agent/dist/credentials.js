@@ -26,6 +26,7 @@
  */
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 const FILE_NAME = 'credentials.env';
 /**
  * Read the agent's credential bundle. Logs (to stderr) a one-time summary
@@ -61,9 +62,13 @@ const nonEmpty = (v) => v && v.length > 0 ? v : undefined;
 /** One-line stderr summary of which provider keys are configured. */
 export function summarizeCredentials(creds) {
     const present = Object.keys(creds).filter(k => creds[k]);
-    if (present.length === 0)
+    const hasOAuth = existsSync(join(homedir(), '.sci', 'oauth.json'));
+    if (present.length === 0 && !hasOAuth)
         return 'no provider keys configured (set ANTHROPIC_API_KEY etc. or ~/.sci/credentials.env)';
-    return `provider keys loaded: ${present.join(', ')}`;
+    const parts = [...present];
+    if (hasOAuth && !creds.anthropic)
+        parts.unshift('anthropic(oauth)');
+    return `provider keys loaded: ${parts.join(', ')}`;
 }
 /** Parse `KEY=VALUE` per line, with `#` comments and optional quoted values. */
 function readCredsFile(path) {

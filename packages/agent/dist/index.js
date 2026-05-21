@@ -84,6 +84,25 @@ async function runSetup(config, extraArgs) {
         generateEncKey(configDir);
         process.stdout.write(`✓ Encryption key ready at ${configDir}/enc.key\n`);
         process.stdout.write(`✓ Device enrolled: ${enrollResp.device?.name ?? hostname()}\n\n`);
+    } else {
+        // Browser OAuth flow — authenticate with Anthropic subscription.
+        process.stdout.write(`\nOpening browser for Anthropic login...\n`);
+        const { login } = await import('@sci/ui');
+        let tokenInfo;
+        try {
+            tokenInfo = await login({
+                onAuthUrl: (url) => process.stdout.write(`  If browser didn't open: ${url}\n`),
+            });
+        } catch (err) {
+            process.stderr.write(`OAuth login failed: ${err.message}\n`);
+            process.exit(1);
+        }
+        const account = tokenInfo.account;
+        const displayName = typeof account === 'object' && account !== null
+            ? (account.email_address ?? account.email ?? JSON.stringify(account))
+            : (account ?? 'your account');
+        process.stdout.write(`✓ Authenticated as ${displayName}\n`);
+        process.stdout.write(`  Token saved to ${configDir}/oauth.json\n\n`);
     }
     // 2. Shell exports
     const zshrc = join(home, '.zshrc');

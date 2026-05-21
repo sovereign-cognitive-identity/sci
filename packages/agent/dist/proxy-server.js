@@ -32,6 +32,7 @@ import { mkdirSync, existsSync } from 'fs';
 import { handleAnthropicMessages, handleOpenAIChat, handleGoogleGemini, makeHandlerContext, pipeResponse, ANONYMOUS_AGENT, } from '@sci/proxy/handlers';
 import { SqliteStorageAdapter } from './storage-sqlite.js';
 import { loadCredentials, summarizeCredentials, injectCredentialForHost, } from './credentials.js';
+import { getAccessTokenSafe, readCache, ANTHROPIC_OAUTH_BETA } from '@sci/ui';
 // Handler routing: hostname → which provider format. Path-level routing
 // happens inside dispatchToHandler so each provider's path quirks (e.g.
 // /v1/messages vs /v1/messages?beta=true vs /v1/chat/completions vs
@@ -195,6 +196,22 @@ async function handleAIRequest(req, res) {
     // tool — `claude`, raw curl, an SDK with stale creds — works as long as
     // Sci itself has the right key.
     injectCredentialForHost(hostname, req.headers, credentials);
+    // If Anthropic host and no API key was injected, try the OAuth token.
+    // getAccessTokenSafe() reads ~/.sci/oauth.json and refreshes proactively
+    // when within 60s of expiry, so the token is always fresh here.
+    if (ANTHROPIC_HOSTS.has(hostname) && !credentials.anthropic && readCache()) {
+        try {
+            const token = await getAccessTokenSafe();
+            req.headers['authorization'] = `Bearer ${token}`;
+            delete req.headers['x-api-key'];
+            const existing = req.headers['anthropic-beta'];
+            req.headers['anthropic-beta'] = existing
+                ? `${existing},${ANTHROPIC_OAUTH_BETA}`
+                : ANTHROPIC_OAUTH_BETA;
+        } catch (err) {
+            process.stderr.write(`[sci-agent] OAuth token refresh failed: ${err.message}\n`);
+        }
+    }
     // Decide whether this hostname+path is one we know how to anonymize.
     const handler = pickHandler(hostname, path, req.method ?? 'POST');
     if (handler) {

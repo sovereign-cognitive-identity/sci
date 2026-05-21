@@ -13,7 +13,7 @@
  * and retried on the next sync cycle.
  */
 import { CloudAdapter } from '@sci/core';
-import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 import { homedir } from 'os';
@@ -200,6 +200,42 @@ export class SqliteStorageAdapter extends CloudAdapter {
         const encKey = loadEncKey(this.#configDir);
         if (!encKey) return { uploaded: 0, downloaded: 0 };
 
+        // Drain pending-sync.ndjson — blobs that failed to push during a previous
+        // sync (offline, 5xx, timeout). Already encrypted; just re-POST them.
+        const pendingPath = join(this.#configDir, 'pending-sync.ndjson');
+        if (existsSync(pendingPath)) {
+            const lines = readFileSync(pendingPath, 'utf-8').split('\n').filter(l => l.trim());
+            if (lines.length > 0) {
+                const failed = [];
+                for (const line of lines) {
+                    let entry;
+                    try { entry = JSON.parse(line); } catch { continue; }
+                    try {
+                        const res = await fetch(`${this.#controlPlaneUrl}/api/memories`, {
+                            method: 'POST',
+                            headers: {
+                                'content-type': 'application/json',
+                                authorization: `Bearer ${this.#agentToken}`,
+                            },
+                            body: JSON.stringify(entry),
+                            signal: AbortSignal.timeout(8_000),
+                        });
+                        if (!res.ok) failed.push(line);
+                    } catch {
+                        failed.push(line);
+                    }
+                }
+                if (failed.length === 0) {
+                    unlinkSync(pendingPath);
+                    process.stderr.write(`[sci] drained ${lines.length} pending blob(s)\n`);
+                } else {
+                    writeFileSync(pendingPath, failed.join('\n') + '\n');
+                    if (failed.length < lines.length)
+                        process.stderr.write(`[sci] drained ${lines.length - failed.length}/${lines.length} pending blobs; ${failed.length} still offline\n`);
+                }
+            }
+        }
+
         const syncState = loadSyncState(this.#configDir);
         // SQLite datetime() format: 'YYYY-MM-DD HH:MM:SS'
         const since = syncState.lastSyncAt
@@ -231,7 +267,6 @@ export class SqliteStorageAdapter extends CloudAdapter {
         if (!toUpload.length) return { uploaded: 0, downloaded: 0 };
 
         let uploaded = 0;
-        const pendingPath = join(this.#configDir, 'pending-sync.ndjson');
 
         for (const { blobType, record } of toUpload) {
             // Look up the embedding from the vector map so the recipient can re-index.
