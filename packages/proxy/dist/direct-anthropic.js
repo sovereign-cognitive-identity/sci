@@ -46,11 +46,27 @@ function makeH2Request(path, h1Headers, bodyStr) {
         const isSciOAuth = authVal.includes('oat01');
         // When using sci OAuth, also strip body fields that require stripped betas.
         if (isSciOAuth) {
+            // When using sci OAuth, send only fields compatible with safe betas.
+            // CC-specific fields (output_config, context_management CC edits, thinking
+            // adaptive mode) require claude-code/effort betas that we strip to avoid 429.
             try {
                 const rb = JSON.parse(bodyStr);
-                delete rb.output_config;   // requires effort-2025-11-24
-                delete rb.extended_thinking; // extra field not needed
-                bodyStr = JSON.stringify(rb);
+                const safe = {
+                    model: rb.model,
+                    max_tokens: rb.max_tokens,
+                    messages: rb.messages,
+                    stream: rb.stream,
+                };
+                if (rb.system) safe.system = rb.system;
+                if (rb.tools) safe.tools = rb.tools;
+                if (rb.tool_choice) safe.tool_choice = rb.tool_choice;
+                if (rb.stop_sequences) safe.stop_sequences = rb.stop_sequences;
+                if (rb.temperature !== undefined) safe.temperature = rb.temperature;
+                // Include thinking only if it doesn't require advanced betas
+                if (rb.thinking?.type === 'enabled' || rb.thinking?.budget_tokens) {
+                    safe.thinking = rb.thinking;
+                }
+                bodyStr = JSON.stringify(safe);
                 h2Req['content-length'] = Buffer.byteLength(bodyStr).toString();
             } catch { /* leave bodyStr as-is if parse fails */ }
         }
