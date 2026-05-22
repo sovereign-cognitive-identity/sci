@@ -74,16 +74,26 @@ export async function pipeResponse(result, res) {
         if (result.body) {
             const reader = result.body.getReader();
             let totalBytes = 0;
+            let chunkCount = 0;
+            const reqPath = res.req?.url ?? '?';
             try {
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done)
                         break;
                     if (value) {
+                        if (chunkCount === 0) {
+                            process.stderr.write(`[sci-pipe] first chunk for ${reqPath}: ${value.length}b, starts: ${Buffer.from(value).toString('utf8').slice(0,40).replace(/\n/g,'↵')}\n`);
+                        }
                         totalBytes += value.length;
-                        res.write(Buffer.from(value));
+                        chunkCount++;
+                        const ok = res.write(Buffer.from(value));
+                        if (!ok && chunkCount === 1) {
+                            process.stderr.write(`[sci-pipe] backpressure on first chunk for ${reqPath}\n`);
+                        }
                     }
                 }
+                process.stderr.write(`[sci-pipe] done ${reqPath}: ${chunkCount} chunks, ${totalBytes}b\n`);
             } catch (pipeErr) {
                 process.stderr.write(`[sci-pipe] write error after ${totalBytes}b: ${pipeErr.message}\n`);
             }

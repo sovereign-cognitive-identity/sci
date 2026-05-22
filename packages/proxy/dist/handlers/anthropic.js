@@ -339,11 +339,8 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
             prelude: fullPrelude,
             // Postlude — fired after deanon drains. Reports how many tokens
             // Anthropic's response contained that we had to swap back.
-            postlude: () => `event: sci.deanonymized\ndata: ${JSON.stringify({
-                reqId,
-                tokensReplaced: deanonStream.replacementCount,
-                replaced: deanonStream.replacedTokens,
-            })}\n\n`,
+            // postlude disabled for SCI-219 test
+            postlude: undefined,
         });
         endSpan('ok');
         return new Response(readable, {
