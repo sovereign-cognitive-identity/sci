@@ -86,8 +86,8 @@ export abstract class CloudAdapter implements StorageAdapter {
   }
 
   async disconnect(): Promise<void> {
-    this.db?.close()
     await this.sync()
+    this.db?.close()
   }
 
   // ── Schema ────────────────────────────────────────────────────────────────

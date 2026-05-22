@@ -81,7 +81,9 @@ authed.use('*', async (c, next) => {
 // Used for the /api/memories sync endpoints.
 const deviceOrUserAuthed = new Hono();
 deviceOrUserAuthed.use('*', async (c, next) => {
+    process.stderr.write(`[mem-auth] ${c.req.method} ${c.req.path} auth:${c.req.header('authorization')?.slice(0,15)}\n`);
     const user = (await loadUser(c)) ?? (await loadUserFromAgentToken(c.req.header('authorization')));
+    process.stderr.write(`[mem-auth] user result: ${JSON.stringify(user?.email)}\n`);
     if (!user)
         return c.json({ error: 'unauthorized' }, 401);
     c.set('user', user);

@@ -55,8 +55,8 @@ export class CloudAdapter {
         }
     }
     async disconnect() {
-        this.db?.close();
         await this.sync();
+        this.db?.close();
     }
     // ── Schema ────────────────────────────────────────────────────────────────
     _initSchema() {

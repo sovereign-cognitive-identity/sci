@@ -266,9 +266,17 @@ export class SqliteStorageAdapter extends CloudAdapter {
 
         if (!toUpload.length) return { uploaded: 0, downloaded: 0 };
 
+        // Cap per-sync batch to avoid overwhelming the control plane on first run.
+        // Subsequent syncs will pick up where this left off via lastSyncAt.
+        const BATCH_LIMIT = 200;
+        const batch = toUpload.slice(0, BATCH_LIMIT);
+        if (toUpload.length > BATCH_LIMIT) {
+            process.stderr.write(`[sci] sync: ${toUpload.length} memories pending, uploading first ${BATCH_LIMIT}\n`);
+        }
+
         let uploaded = 0;
 
-        for (const { blobType, record } of toUpload) {
+        for (const { blobType, record } of batch) {
             // Look up the embedding from the vector map so the recipient can re-index.
             const embeddingEntry = this.vectorMap.find(e => e.id === record.id);
             const embedding = embeddingEntry ? this.index.getPoint(embeddingEntry.index) : null;
