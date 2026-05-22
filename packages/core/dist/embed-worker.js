@@ -6,10 +6,8 @@ import { dirname, join } from 'path';
 
 // Resolve fastembed from the sci root node_modules regardless of cwd.
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(join(__dirname, '../../..', 'package.json'));
-const { FlagEmbedding, EmbeddingModel } = await import(
-    join(__dirname, '../../../node_modules/fastembed/dist/index.js')
-);
+const fastembedPath = join(__dirname, '../../../node_modules/fastembed/lib/esm/index.js');
+const { FlagEmbedding, EmbeddingModel } = await import(fastembedPath);
 
 let model = null;
 async function init(cacheDir) {
