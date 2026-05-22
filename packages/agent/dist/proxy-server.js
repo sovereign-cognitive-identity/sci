@@ -26,6 +26,7 @@
 import { createServer as createHttpServer } from 'http';
 import { request as httpsRequest } from 'https';
 import { getH2Client } from '../../proxy/dist/direct-anthropic.js';
+import { getCached, setCached } from './init-cache.js';
 import { connect as netConnect } from 'net';
 import { TLSSocket } from 'tls';
 import { ensureCA, makeSNICallback } from './cert.js';
@@ -269,9 +270,23 @@ async function passthroughForward(req, body, hostname, res) {
     // Use HTTP/2 for Anthropic hosts — all requests share one connection,
     // matching the rate-limit profile of a direct Claude Code session.
     if (ANTHROPIC_HOSTS.has(hostname)) {
+        // Check the init-request cache before going to the network.
+        const method = req.method ?? 'GET';
+        const url = req.url ?? '/';
+        const cached = getCached(method, url);
+        if (cached) {
+            process.stderr.write(`[sci-cache] HIT ${method} ${url.split('?')[0]}\n`);
+            res.writeHead(cached.status, cached.headers);
+            res.end(Buffer.from(cached.body, 'base64'));
+            return;
+        }
+        // Log a MISS only for GET requests (the ones we'd cache if they weren't already).
+        if (method === 'GET') {
+            process.stderr.write(`[sci-cache] MISS ${method} ${url.split('?')[0]}\n`);
+        }
         try {
             const h2 = getH2Client();
-            const h2Headers = { ':method': req.method ?? 'GET', ':path': req.url ?? '/', ':scheme': 'https', ':authority': hostname, 'accept-encoding': 'identity' };
+            const h2Headers = { ':method': method, ':path': url, ':scheme': 'https', ':authority': hostname, 'accept-encoding': 'identity' };
             const skip = new Set([':method',':path',':scheme',':authority','host','connection','transfer-encoding','content-length']);
             for (const [k, v] of Object.entries(req.headers)) {
                 if (!skip.has(k.toLowerCase())) h2Headers[k.toLowerCase()] = String(v);
@@ -282,18 +297,26 @@ async function passthroughForward(req, body, hostname, res) {
                 process.stderr.write(`[sci-agent] h2 passthrough error: ${err.message}\n`);
                 if (!res.headersSent) { res.writeHead(502); res.end(); }
             });
-            let statusSent = false;
+            let responseStatus = 200;
+            let responseHeaders = {};
             h2req.on('response', (headers) => {
-                const status = Number(headers[':status'] ?? 200);
-                const resHeaders = {};
+                responseStatus = Number(headers[':status'] ?? 200);
                 for (const [k, v] of Object.entries(headers)) {
-                    if (!k.startsWith(':')) resHeaders[k] = String(v);
+                    if (!k.startsWith(':')) responseHeaders[k] = String(v);
                 }
-                res.writeHead(status, resHeaders);
-                statusSent = true;
+                res.writeHead(responseStatus, responseHeaders);
             });
-            h2req.on('data', chunk => res.write(chunk));
-            h2req.on('end', () => res.end());
+            // Buffer chunks for caching while simultaneously streaming to client.
+            const chunks = [];
+            h2req.on('data', chunk => {
+                chunks.push(chunk);
+                res.write(chunk);
+            });
+            h2req.on('end', () => {
+                const fullBody = Buffer.concat(chunks);
+                setCached(method, url, responseStatus, responseHeaders, fullBody);
+                res.end();
+            });
             if (body.length > 0) { h2req.write(body); h2req.end(); }
             return;
         } catch (err) {
