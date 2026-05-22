@@ -62,8 +62,19 @@ export async function createStorageAdapter(): Promise<StorageAdapter> {
       return adapter
     }
 
+    case 'sqlite': {
+      // Local SQLite + HNSW — same backend the sci agent uses.
+      // Point SCI_LOCAL_DIR at ~/.sci/memory to share with the running agent.
+      const { iCloudAdapter } = await import('./icloud-adapter.js')
+      const localDir = process.env['SCI_LOCAL_DIR']
+        ?? join(homedir(), '.sci', 'memory')
+      const adapter = new iCloudAdapter(localDir)
+      await adapter.connect()
+      return adapter
+    }
+
     default:
-      throw new Error(`Unknown SCI_STORAGE_BACKEND: "${backend}". Valid: local, dropbox, s3, icloud`)
+      throw new Error(`Unknown SCI_STORAGE_BACKEND: "${backend}". Valid: local, dropbox, s3, icloud, sqlite`)
   }
 }
 
