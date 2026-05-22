@@ -14,6 +14,7 @@
 import https from 'https';
 import { resolveRealDirect } from './dns-resolver.js';
 import { getPhysicalInterfaceIP } from './physical-iface.js';
+import { forceRefreshAnthropicToken } from './upstream-auth.js';
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com';
 const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true';
 const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true';
@@ -145,11 +146,32 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
     }
     else {
         const bodyStr = JSON.stringify(requestBody);
-        const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
+        let response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
             method: 'POST',
             headers: { ...originalHeaders, 'content-type': 'application/json' },
             body: bodyStr,
         });
+        // On 429 (rate limit), force-refresh the OAuth token and retry once.
+        // The sci OAuth token is rate-limited per-minute; refreshing gets a fresh
+        // token with its own quota window.
+        if (response.status === 429) {
+            process.stderr.write(`[direct-anthropic] 429 rate limit — refreshing OAuth token and retrying\n`);
+            try {
+                const freshToken = await forceRefreshAnthropicToken();
+                if (freshToken) {
+                    const retryHeaders = { ...originalHeaders, 'content-type': 'application/json', 'authorization': `Bearer ${freshToken}` };
+                    response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
+                        method: 'POST',
+                        headers: retryHeaders,
+                        body: bodyStr,
+                    });
+                    process.stderr.write(`[direct-anthropic] retry after token refresh: ${response.status}\n`);
+                }
+            }
+            catch (refreshErr) {
+                process.stderr.write(`[direct-anthropic] token refresh failed: ${refreshErr}\n`);
+            }
+        }
         if (!response.ok) {
             // Return the real HTTP error status so the SDK can parse it correctly.
             const errText = await response.text();

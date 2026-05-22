@@ -62,6 +62,29 @@ async function refresh(refreshToken) {
     return next;
 }
 /**
+ * Force-refresh the Anthropic OAuth token regardless of expiry.
+ * Used on 429 rate-limit responses — the token may be valid (not expired)
+ * but rate-limited; refreshing gets a new token_uuid with its own quota window.
+ * Returns the fresh access_token, or the cached one if refresh fails.
+ */
+export async function forceRefreshAnthropicToken() {
+    if (inflight)
+        await inflight; // wait for any in-flight refresh to settle first
+    const cache = readCache();
+    if (!cache)
+        return null;
+    if (!cache.refresh_token)
+        return cache.access_token;
+    try {
+        const next = await refresh(cache.refresh_token);
+        return next?.access_token ?? cache.access_token;
+    }
+    catch (err) {
+        console.error(`[upstream-auth] force-refresh failed: ${err}`);
+        return cache.access_token;
+    }
+}
+/**
  * Returns a usable Anthropic access token, refreshing if needed. Returns null
  * if no cache exists at all (caller should error out — user must run
  * `docker compose --profile setup run --rm --service-ports sci-auth`).
