@@ -79,13 +79,17 @@ export abstract class CloudAdapter implements StorageAdapter {
     this.db.exec('PRAGMA foreign_keys = ON')
     this._initSchema()
 
-    // Load or create hnswlib index
+    // Load or create hnswlib index. Use 100k capacity to handle large memory stores.
+    const MAX_ELEMENTS = 100_000
     this.index = new HierarchicalNSW('cosine', VECTOR_DIM)
     if (existsSync(this.idxPath)) {
       this.index.readIndex(this.idxPath)
       this._loadVectorMap()
-    } else {
-      this.index.initIndex(10_000, HNSW_M, HNSW_EF_CONSTRUCTION)
+    }
+    // Ensure the index is usable. If maxElements = 0 (index was written before
+    // initIndex was ever called — a one-time corruption), reinitialize it.
+    if ((this.index as any).getMaxElements?.() === 0) {
+      this.index.initIndex(MAX_ELEMENTS, HNSW_M, HNSW_EF_CONSTRUCTION)
     }
   }
 
