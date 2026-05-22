@@ -325,16 +325,68 @@ pub async fn handle_anthropic_messages(
     // model context they're about to bounce off of.
     let inspect_request = Some(bytes::Bytes::from(upstream_body.clone()));
 
+    let upstream_body_bytes: bytes::Bytes = upstream_body.into();
+
     let upstream_req = UpstreamRequest {
         method:  "POST".into(),
-        url:     upstream_url,
-        headers: upstream_headers,
-        body:    upstream_body.into(),
+        url:     upstream_url.clone(),
+        headers: upstream_headers.clone(),
+        body:    upstream_body_bytes.clone(),
     };
 
     // ── 4. Forward ─────────────────────────────────────────────────────────
-    let upstream_resp = state.upstream.send(upstream_req).await
+    let mut upstream_resp = state.upstream.send(upstream_req).await
         .map_err(|e| HandlerError::Upstream(e.to_string()))?;
+
+    // ── 4a. 429 retry — force-refresh OAuth token and retry once ───────────
+    //
+    // When Anthropic returns 429 on the OAuth path the token may be
+    // rate-limited per-minute. Refreshing via the OAuth flow gives us a
+    // new token_uuid with its own fresh quota window. We retry exactly
+    // once; if the retry also 429s we fall through to the normal error
+    // path so the client sees the real status code.
+    if upstream_resp.status == 429 && oauth_active {
+        tracing::warn!(
+            target: "sci_handlers::anthropic",
+            "upstream 429 on OAuth path — force-refreshing token and retrying"
+        );
+        match sci_oauth::refresh_token().await {
+            Ok(fresh) => {
+                let mut retry_headers = upstream_headers.clone();
+                retry_headers.insert("authorization".into(), format!("Bearer {}", fresh.access_token));
+                let retry_req = UpstreamRequest {
+                    method:  "POST".into(),
+                    url:     upstream_url.clone(),
+                    headers: retry_headers,
+                    body:    upstream_body_bytes.clone(),
+                };
+                match state.upstream.send(retry_req).await {
+                    Ok(r) => {
+                        tracing::info!(
+                            target: "sci_handlers::anthropic",
+                            status = r.status,
+                            "retry after token refresh"
+                        );
+                        upstream_resp = r;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            target: "sci_handlers::anthropic",
+                            err = %e,
+                            "retry request failed"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "sci_handlers::anthropic",
+                    err = %e,
+                    "force-refresh failed, passing 429 through"
+                );
+            }
+        }
+    }
 
     // For non-2xx responses Anthropic returns a JSON error body; pass
     // it through verbatim (no deanonymization needed — error bodies
