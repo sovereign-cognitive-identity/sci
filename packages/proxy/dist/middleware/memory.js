@@ -28,6 +28,12 @@ const CONTEXT_SUFFIX = `Use these as authoritative information about the user wh
 Token handling: tokens of the form [PERSON_n], [EMAIL_n], [PHONE_n], [PLACE_n], [ORG_n], [PROJECT_n], [URL_n], and [HANDLE_n] are valid identifiers for real entities — treat them as you would the real names. Answer questions about them directly using the same tokens (e.g. "Your name is [PERSON_1]"). Do NOT describe them as masked, redacted, placeholder, or template text. Do NOT explain the tokens or apologize for using them. Do NOT comment on the privacy mechanism. Just answer the question naturally.`;
 // Final number of unique memories injected.
 const MAX_CONTEXT_RESULTS = 5;
+// Each recalled memory is truncated to this many characters before injection.
+// Episodic memories can be full conversation transcripts (10k+ chars). Without
+// a cap, 5 items can add 90k+ tokens to the request → Anthropic 429.
+const MAX_CHARS_PER_ITEM = 400;
+// Hard ceiling on total injected context (~500 tokens).
+const MAX_TOTAL_CHARS = 2000;
 // Recall fetches more than we'll inject, so dedup + self-filter still leaves
 // us with a useful set even when there are many near-duplicate episodics
 // (e.g. the same question asked across many sessions).
@@ -141,12 +147,22 @@ export async function injectMemoryContext(messages, adapter, sessionTokenMap) {
         // Each line tagged with how the user phrased it (statement vs question).
         // Helps the model distinguish "the user told us X" from "the user asked X".
         const isQuestion = (s) => /\?\s*$/.test(s.trim());
+        let totalChars = 0;
         const contextLines = anonymizedResults
             .map((r) => {
             const tag = r.type === 'episodic'
                 ? (isQuestion(r.content) ? '(user previously asked)' : '(user previously said)')
                 : `(${r.type})`;
-            return `- ${tag}: ${r.content}`;
+            // Truncate each item to prevent full conversation transcripts from
+            // blowing up the request (can be 10k+ chars per episodic memory).
+            const truncated = r.content.length > MAX_CHARS_PER_ITEM
+                ? r.content.slice(0, MAX_CHARS_PER_ITEM) + '…'
+                : r.content;
+            return `- ${tag}: ${truncated}`;
+        })
+            .filter(line => {
+            totalChars += line.length;
+            return totalChars <= MAX_TOTAL_CHARS;
         })
             .join('\n');
         const contextBlock = `${CONTEXT_PREFIX}\n${contextLines}\n\n${CONTEXT_SUFFIX}`;

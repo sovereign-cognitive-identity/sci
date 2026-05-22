@@ -73,6 +73,10 @@ export async function startProxyServer(config) {
     await sqliteAdapter.connect();
     adapter = sqliteAdapter;
     process.stderr.write(`[sci-agent] memory store ready: ${config.memoryDir}\n`);
+    // Warm up the fastembed ONNX model in the background so the first request
+    // doesn't block the event loop loading the model mid-stream.
+    import('@sci/core').then(({ embed }) => embed('warmup').catch(() => {})).catch(() => {});
+    process.stderr.write(`[sci-agent] warming up embed model...\n`);
     // Resolve BYO credentials once. Logged as a count + provider list (never
     // bytes). If empty, the agent still runs — handlers fall back to whatever
     // header the client tool sent, so a tool that brings its own key still
