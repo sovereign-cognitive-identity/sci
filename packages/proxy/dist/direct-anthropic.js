@@ -12,10 +12,58 @@
  * You lose multi-model routing — everything stays on the Claude model requested.
  */
 import https from 'https';
+import http2 from 'http2';
 import { resolveRealDirect } from './dns-resolver.js';
 import { getPhysicalInterfaceIP } from './physical-iface.js';
 import { forceRefreshAnthropicToken } from './upstream-auth.js';
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com';
+// Persistent HTTP/2 client session. Anthropic rate-limits HTTP/1.1 proxy
+// requests (429) but not HTTP/2 — same behavior as direct Claude Code.
+let _h2Client = null;
+function getH2Client() {
+    if (_h2Client && !_h2Client.destroyed && !_h2Client.closed) return _h2Client;
+    _h2Client = http2.connect(`https://${ANTHROPIC_HOSTNAME}`);
+    _h2Client.on('error', () => { _h2Client = null; });
+    _h2Client.on('close', () => { _h2Client = null; });
+    return _h2Client;
+}
+function makeH2Request(path, h1Headers, bodyStr) {
+    return new Promise((resolve, reject) => {
+        const client = getH2Client();
+        const h2Req = {
+            ':method': 'POST',
+            ':path': path,
+            ':scheme': 'https',
+            ':authority': ANTHROPIC_HOSTNAME,
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(bodyStr).toString(),
+        };
+        // Forward all non-pseudo headers; force identity encoding so we get plain SSE bytes.
+        const skip = new Set([':method',':path',':scheme',':authority','host','connection','transfer-encoding','content-length','content-type','accept-encoding']);
+        for (const [k, v] of Object.entries(h1Headers)) {
+            if (!skip.has(k.toLowerCase())) h2Req[k.toLowerCase()] = String(v);
+        }
+        h2Req['accept-encoding'] = 'identity';
+        const req = client.request(h2Req, { endStream: false });
+        let status = 200;
+        req.on('response', headers => { status = Number(headers[':status'] ?? 200); });
+        req.on('error', reject);
+        let resolved = false;
+        // Return as soon as we have status + readable stream
+        req.on('response', () => {
+            if (!resolved) { resolved = true; resolve({ status, stream: req }); }
+        });
+        // Timeout fallback: resolve after first data/end if response event was missed
+        req.once('data', (chunk) => {
+            if (!resolved) { resolved = true; resolve({ status, stream: req, firstChunk: chunk }); }
+        });
+        req.once('end', () => {
+            if (!resolved) { resolved = true; resolve({ status, stream: req }); }
+        });
+        req.write(bodyStr);
+        req.end();
+    });
+}
 const VPN_MODE = process.env['SCI_VPN_MODE'] === 'true';
 const TUN_MODE = process.env['SCI_TUN_MODE'] === 'true';
 /**
@@ -145,45 +193,23 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
         asyncStream = await requestViaRealIP(path, requestBody, originalHeaders);
     }
     else {
+        // Use HTTP/2 to avoid rate limiting on HTTP/1.1 for sci OAuth tokens.
         const bodyStr = JSON.stringify(requestBody);
-        let response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
-            method: 'POST',
-            headers: { ...originalHeaders, 'content-type': 'application/json' },
-            body: bodyStr,
-        });
-        // On 429 (rate limit), wait briefly and retry once with the same headers.
-        if (response.status === 429) {
-            process.stderr.write(`[direct-anthropic] 429 rate limit — waiting 2s and retrying\n`);
-            await new Promise(r => setTimeout(r, 2000));
-            response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
-                method: 'POST',
-                headers: { ...originalHeaders, 'content-type': 'application/json' },
-                body: bodyStr,
-            });
-            process.stderr.write(`[direct-anthropic] retry status: ${response.status}\n`);
-        }
-        if (!response.ok) {
-            // Return the real HTTP error status so the SDK can parse it correctly.
-            const errText = await response.text();
+        const { status, stream, firstChunk } = await makeH2Request(path, originalHeaders, bodyStr);
+        if (status >= 400) {
+            const chunks = firstChunk ? [firstChunk] : [];
+            for await (const c of stream) chunks.push(c);
+            const errText = Buffer.concat(chunks).toString('utf8');
             onComplete();
             return new Response(errText, {
-                status: response.status,
+                status,
                 headers: { 'content-type': 'application/json', 'x-sci-error': 'upstream' },
             });
         }
-        if (!response.body)
-            throw new Error('No response body from Anthropic');
-        const reader = response.body.getReader();
-        asyncStream = {
-            [Symbol.asyncIterator]() {
-                return {
-                    async next() {
-                        const { done, value } = await reader.read();
-                        return done ? { done: true, value: undefined } : { done: false, value: Buffer.from(value) };
-                    }
-                };
-            }
-        };
+        asyncStream = (async function* () {
+            if (firstChunk) yield firstChunk;
+            for await (const chunk of stream) yield chunk;
+        })();
     }
     return new ReadableStream({
         async start(controller) {

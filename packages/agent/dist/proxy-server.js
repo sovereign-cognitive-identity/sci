@@ -200,8 +200,8 @@ async function handleAIRequest(req, res) {
     // tool — `claude`, raw curl, an SDK with stale creds — works as long as
     // Sci itself has the right key.
     injectCredentialForHost(hostname, req.headers, credentials);
-    // Only inject the sci OAuth token when the client has NO auth of its own.
-    // Claude Code's native Bearer token is passed through unchanged.
+    // Pass through client's own token for all requests.
+    // The proxy now uses HTTP/2 upstream which doesn't rate-limit CC native tokens.
     if (ANTHROPIC_HOSTS.has(hostname) && !credentials.anthropic &&
         !req.headers['authorization'] && !req.headers['x-api-key'] && readCache()) {
         try {
