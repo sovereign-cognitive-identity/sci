@@ -70,8 +70,7 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
     }
     else {
         // Normal mode: fetch works fine, no routing concern
-        process.stderr.write(`[sci-auth-debug] auth header: ${(originalHeaders['authorization'] ?? 'NONE').slice(0,30)}
-`);
+        const bodyStr = JSON.stringify(body);
         const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
             method: 'POST',
             headers: { ...originalHeaders, 'content-type': 'application/json' },
@@ -145,12 +144,11 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
         asyncStream = await requestViaRealIP(path, requestBody, originalHeaders);
     }
     else {
-        process.stderr.write(`[sci-auth-debug] auth header: ${(originalHeaders['authorization'] ?? 'NONE').slice(0,30)}
-`);
+        const bodyStr = JSON.stringify(requestBody);
         const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
             method: 'POST',
             headers: { ...originalHeaders, 'content-type': 'application/json' },
-            body: JSON.stringify(requestBody),
+            body: bodyStr,
         });
         if (!response.ok) {
             // Return the real HTTP error status so the SDK can parse it correctly.
