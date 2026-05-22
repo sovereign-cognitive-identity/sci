@@ -308,6 +308,10 @@ export class SqliteStorageAdapter extends CloudAdapter {
                 });
                 if (res.ok) {
                     uploaded++;
+                    // Save progress incrementally so interruptions don't lose work.
+                    if (record.created_at) {
+                        saveSyncState(this.#configDir, { ...syncState, lastSyncAt: new Date(record.created_at).toISOString() });
+                    }
                 } else {
                     appendFileSync(pendingPath, JSON.stringify({ blobType, encryptedBlob }) + '\n');
                 }
