@@ -166,12 +166,20 @@ async function runSetup(config, extraArgs) {
         try {
             const existing = JSON.parse(readFileSync(claudeJsonPath, 'utf-8'));
             if (!existing.mcpServers) existing.mcpServers = {};
+            // Resolve MCP server from agent location: packages/agent/dist → packages/mcp/dist
+            const { resolve: resolvePath, dirname: dirnameFn } = await import('path');
+            const { fileURLToPath } = await import('url');
+            const agentDir = dirnameFn(fileURLToPath(import.meta.url));
+            const mcpScript = resolvePath(agentDir, '../../mcp/dist/index.js');
             existing.mcpServers['sci'] = {
                 type: 'stdio',
                 command: process.execPath,
-                args: ['mcp'],
+                args: [mcpScript],
                 env: {
+                    SCI_STORAGE_BACKEND: 'sqlite',
+                    SCI_LOCAL_DIR: join(configDir, 'memory'),
                     SCI_CONFIG_DIR: configDir,
+                    SCI_FASTEMBED_CACHE_DIR: join(configDir, 'fastembed'),
                     HOME: home,
                 },
             };
