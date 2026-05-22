@@ -66,6 +66,11 @@ async function loadUserFromAgentToken(authHeader) {
     catch { return null; }
 }
 authed.use('*', async (c, next) => {
+    // Memory sync endpoints accept device agent tokens — handled by deviceOrUserAuthed.
+    // Let them pass through so deviceOrUserAuthed can authenticate them.
+    if (c.req.path.startsWith('/api/memories')) {
+        return next();
+    }
     const user = await loadUser(c);
     if (!user)
         return c.json({ error: 'unauthorized' }, 401);
