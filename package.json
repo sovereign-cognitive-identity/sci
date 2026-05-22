@@ -16,6 +16,10 @@
     "dev:mcp": "npm run dev --workspace=packages/mcp",
     "dev:cli": "npm run dev --workspace=packages/cli",
     "test": "SCI_DB_READER_URL=postgresql://sci_reader:sci_reader_local@localhost:5432/sci SCI_DB_WRITER_URL=postgresql://sci_writer:sci_writer_local@localhost:5432/sci SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node tests/integration.mjs",
+    "test:unit": "SCI_STORAGE_BACKEND=sqlite SCI_EMBED_MODEL=BAAI/bge-base-en-v1.5 node scripts/test-proxy-unit.mjs",
+    "test:smoke": "bash scripts/test-proxy-smoke.sh",
+    "health": "node scripts/sci-health.mjs",
+    "reset:ratelimit": "node scripts/reset-proxy-rate-limit.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
