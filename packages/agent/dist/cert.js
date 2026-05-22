@@ -29,10 +29,21 @@ export function ensureCA(configDir) {
     if (!existsSync(configDir))
         mkdirSync(configDir, { recursive: true, mode: 0o700 });
     if (existsSync(certPath) && existsSync(keyPath)) {
-        return {
+        const pair = {
             cert: readFileSync(certPath, 'utf-8'),
             key: readFileSync(keyPath, 'utf-8'),
         };
+        // Validate the key is RSA PKCS#1 (what node-forge requires for signing).
+        // If enrollment wrote a PKCS#8 or EC key, forge.pki.privateKeyFromPem
+        // throws "ASN.1 object does not contain an RSAPrivateKey". Detect that
+        // here and fall through to regenerate rather than failing every TLS handshake.
+        try {
+            forge.pki.privateKeyFromPem(pair.key);
+            return pair;
+        }
+        catch {
+            process.stderr.write('[sci-agent] CA key is not RSA PKCS#1 — regenerating local CA.\n');
+        }
     }
     process.stderr.write('[sci-agent] generating Sci CA (one-time)...\n');
     const keys = forge.pki.rsa.generateKeyPair(2048);
