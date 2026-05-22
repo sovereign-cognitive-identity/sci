@@ -151,26 +151,16 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
             headers: { ...originalHeaders, 'content-type': 'application/json' },
             body: bodyStr,
         });
-        // On 429 (rate limit), force-refresh the OAuth token and retry once.
-        // The sci OAuth token is rate-limited per-minute; refreshing gets a fresh
-        // token with its own quota window.
+        // On 429 (rate limit), wait briefly and retry once with the same headers.
         if (response.status === 429) {
-            process.stderr.write(`[direct-anthropic] 429 rate limit — refreshing OAuth token and retrying\n`);
-            try {
-                const freshToken = await forceRefreshAnthropicToken();
-                if (freshToken) {
-                    const retryHeaders = { ...originalHeaders, 'content-type': 'application/json', 'authorization': `Bearer ${freshToken}` };
-                    response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
-                        method: 'POST',
-                        headers: retryHeaders,
-                        body: bodyStr,
-                    });
-                    process.stderr.write(`[direct-anthropic] retry after token refresh: ${response.status}\n`);
-                }
-            }
-            catch (refreshErr) {
-                process.stderr.write(`[direct-anthropic] token refresh failed: ${refreshErr}\n`);
-            }
+            process.stderr.write(`[direct-anthropic] 429 rate limit — waiting 2s and retrying\n`);
+            await new Promise(r => setTimeout(r, 2000));
+            response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
+                method: 'POST',
+                headers: { ...originalHeaders, 'content-type': 'application/json' },
+                body: bodyStr,
+            });
+            process.stderr.write(`[direct-anthropic] retry status: ${response.status}\n`);
         }
         if (!response.ok) {
             // Return the real HTTP error status so the SDK can parse it correctly.
