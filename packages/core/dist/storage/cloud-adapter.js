@@ -22,15 +22,17 @@ export class CloudAdapter {
             mkdirSync(this.localDir, { recursive: true });
         // Pull latest from cloud before opening
         await this._downloadIfNeeded();
-        // Load native addons lazily. In Bun compiled binaries, import.meta.url is
-        // a virtual /$bunfs/ path, so createRequire can't find real node_modules.
-        // In that case, use a file:// URL relative to the binary's actual location.
+        // Load SQLite and hnswlib lazily.
+        // In Bun's compiled binary runtime, better-sqlite3 is intercepted and rejected.
+        // Use bun:sqlite instead, which is built into Bun and API-compatible.
+        // hnswlib-node is loaded via file:// URL in Bun (createRequire fails in $bunfs).
+        const isBun = typeof globalThis.Bun !== 'undefined';
         const { _Database, HierarchicalNSW } = await (async () => {
-            if (import.meta.url.includes('$bunfs')) {
+            if (isBun) {
+                const { Database: BunDB } = await import('bun:sqlite');
                 const base = 'file://' + dirname(process.execPath) + '/node_modules/';
-                const sqlite = await import(base + 'better-sqlite3/lib/index.js');
                 const hnswlib = await import(base + 'hnswlib-node/lib/index.js');
-                return { _Database: sqlite.default, HierarchicalNSW: hnswlib.HierarchicalNSW };
+                return { _Database: BunDB, HierarchicalNSW: hnswlib.HierarchicalNSW };
             }
             else {
                 const _require = createRequire(import.meta.url);
@@ -41,8 +43,10 @@ export class CloudAdapter {
             }
         })();
         this.db = new _Database(this.dbPath);
-        this.db.pragma('journal_mode = WAL');
-        this.db.pragma('foreign_keys = ON');
+        // bun:sqlite uses exec() for PRAGMAs; better-sqlite3 has a pragma() method.
+        // Use exec() for both to stay compatible.
+        this.db.exec('PRAGMA journal_mode = WAL');
+        this.db.exec('PRAGMA foreign_keys = ON');
         this._initSchema();
         // Load or create hnswlib index
         this.index = new HierarchicalNSW('cosine', VECTOR_DIM);
