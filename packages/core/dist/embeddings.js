@@ -1,35 +1,21 @@
 // BGEBaseENV15: 768-dim, matches schema. Nomic requires fastembed >=2.x.
 export const MODEL_ID = process.env['SCI_EMBED_MODEL'] ?? 'BAAI/bge-base-en-v1.5';
 export const DIMENSIONS = 768;
-import { Worker, isMainThread, parentPort, workerData, receiveMessageOnPort, MessageChannel } from 'worker_threads';
+import { Worker, isMainThread, parentPort } from 'worker_threads';
 import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 // Run ONNX inference on a dedicated worker thread to avoid blocking the main
 // event loop. A blocked event loop stalls the HTTP server's CONNECT tunnel
 // I/O, causing Anthropic to see a connection stall and return 429.
+const __embedDirname = dirname(fileURLToPath(import.meta.url));
 let _worker = null;
 let _pendingEmbeds = new Map();
 let _embedCounter = 0;
 function getWorker() {
     if (_worker)
         return _worker;
-    const workerCode = `
-import { parentPort } from 'worker_threads';
-import { FlagEmbedding, EmbeddingModel } from 'fastembed';
-let model = null;
-async function init(cacheDir) {
-    model = await FlagEmbedding.init({
-        model: EmbeddingModel.BGEBaseENV15,
-        ...(cacheDir ? { cacheDir } : {}),
-    });
-}
-const cacheDir = process.env.SCI_FASTEMBED_CACHE_DIR;
-init(cacheDir).then(() => parentPort.postMessage({ type: 'ready' }));
-parentPort.on('message', async ({ id, text }) => {
-    const vector = await model.queryEmbed(text);
-    parentPort.postMessage({ type: 'result', id, vector: Array.from(vector) });
-});
-`;
-    _worker = new Worker(workerCode, { eval: true });
+    const workerFile = join(__embedDirname, 'embed-worker.js');
+    _worker = new Worker(workerFile);
     _worker.on('message', ({ type, id, vector }) => {
         if (type === 'result' && _pendingEmbeds.has(id)) {
             const { resolve } = _pendingEmbeds.get(id);
