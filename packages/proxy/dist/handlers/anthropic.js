@@ -268,25 +268,16 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     // so TS doesn't lose its type via flow analysis through the `.map()` closure
     // assignment above (an open issue with let + closures).
     const buildAnonPrelude = (r) => {
-        if (!r || r.entityCount === 0) {
-            return `event: sci.anonymized\ndata: ${JSON.stringify({
-                reqId,
-                original: lastUserOriginal,
-                masked: lastUserMaskedText,
-                entities: [],
-                sessionEntityCount: sessionTokenMap.forward.size,
-            })}\n\n`;
-        }
-        const entities = r.detected.map((e) => ({
-            original: e.text,
-            type: e.type,
-            token: sessionTokenMap.forward.get(e.text) ?? sessionTokenMap.forward.get(e.text.toLowerCase()) ?? null,
-        }));
+        // Keep the prelude SMALL (< 1KB) — the Anthropic SDK fails on large
+        // SSE events before message_start (SCI-219). Full text logged to stderr.
+        const entityCount = r?.entityCount ?? 0;
+        const tokens = entityCount > 0
+            ? r.detected.map((e) => `${sessionTokenMap.forward.get(e.text) ?? '?'}←"${e.text.slice(0, 30)}"`)
+            : [];
+        process.stderr.write(`[${reqId}] 🔒 masked ${entityCount}: ${tokens.join('  ')}\n`);
         return `event: sci.anonymized\ndata: ${JSON.stringify({
             reqId,
-            original: lastUserOriginal,
-            masked: lastUserMaskedText,
-            entities,
+            entityCount,
             sessionEntityCount: sessionTokenMap.forward.size,
         })}\n\n`;
     };
@@ -295,8 +286,9 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     // when the recall actually ran (even if 0 results), so the user can tell
     // the difference between "Sci asked memory" and "Sci skipped memory because
     // the message was too short".
+    // Keep sci.memory prelude small — full content logged to stderr above.
     const sciMemoryPrelude = memoryInspector
-        ? `event: sci.memory\ndata: ${JSON.stringify({ reqId, ...memoryInspector })}\n\n`
+        ? `event: sci.memory\ndata: ${JSON.stringify({ reqId, injected: memoryInspector.injected, count: memoryInspector.results?.length ?? 0, approxTokens: memoryInspector.approxTokensAdded })}\n\n`
         : '';
     const fullPrelude = sciAnonymizedPrelude + sciMemoryPrelude;
     // ── Direct mode: forward to Anthropic with original auth ─────────────────
@@ -339,10 +331,18 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
             prelude: fullPrelude,
             // Postlude — fired after deanon drains. Reports how many tokens
             // Anthropic's response contained that we had to swap back.
-            // postlude disabled for SCI-219 test
-            postlude: undefined,
+            // Postlude — fired after deanon drains. Reports how many tokens
+            // Anthropic's response contained that we had to swap back.
+            postlude: () => `event: sci.deanonymized\ndata: ${JSON.stringify({
+                reqId,
+                tokensReplaced: deanonStream.replacementCount,
+                replaced: deanonStream.replacedTokens,
+            })}\n\n`,
         });
         endSpan('ok');
+        // streamDirectAnthropic returns either a Response (for upstream errors)
+        // or a ReadableStream (for success). Return errors directly.
+        if (readable instanceof Response) return readable;
         return new Response(readable, {
             headers: {
                 'Content-Type': 'text/event-stream',

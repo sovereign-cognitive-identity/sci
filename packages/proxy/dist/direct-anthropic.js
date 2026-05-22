@@ -135,6 +135,42 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
  */
 export async function streamDirectAnthropic(path, requestBody, originalHeaders, deanonPush, deanonEnd, onComplete, extra) {
     const encoder = new TextEncoder();
+    // Fetch from Anthropic BEFORE creating the ReadableStream so we can return
+    // the correct HTTP status code for errors (rate_limit, auth, etc.).
+    // The SDK correctly parses 4xx/5xx but fails on event: error in HTTP 200.
+    let asyncStream;
+    if (TUN_MODE || VPN_MODE) {
+        asyncStream = await requestViaRealIP(path, requestBody, originalHeaders);
+    }
+    else {
+        const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
+            method: 'POST',
+            headers: { ...originalHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify(requestBody),
+        });
+        if (!response.ok) {
+            // Return the real HTTP error status so the SDK can parse it correctly.
+            const errText = await response.text();
+            onComplete();
+            return new Response(errText, {
+                status: response.status,
+                headers: { 'content-type': 'application/json', 'x-sci-error': 'upstream' },
+            });
+        }
+        if (!response.body)
+            throw new Error('No response body from Anthropic');
+        const reader = response.body.getReader();
+        asyncStream = {
+            [Symbol.asyncIterator]() {
+                return {
+                    async next() {
+                        const { done, value } = await reader.read();
+                        return done ? { done: true, value: undefined } : { done: false, value: Buffer.from(value) };
+                    }
+                };
+            }
+        };
+    }
     return new ReadableStream({
         async start(controller) {
             // Sci transparency events first (clients that don't recognise them ignore them).
@@ -142,42 +178,6 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
                 controller.enqueue(encoder.encode(extra.prelude));
             }
             try {
-                // Get raw SSE bytes from Anthropic.
-                let asyncStream;
-                if (TUN_MODE || VPN_MODE) {
-                    asyncStream = await requestViaRealIP(path, requestBody, originalHeaders);
-                }
-                else {
-                    const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
-                        method: 'POST',
-                        headers: { ...originalHeaders, 'content-type': 'application/json' },
-                        body: JSON.stringify(requestBody),
-                    });
-                    if (!response.ok) {
-                        // Forward the original Anthropic error as a proper SSE error event
-                        // so the SDK can parse the error type (rate_limit, auth_error, etc.)
-                        const errText = await response.text();
-                        let errData;
-                        try { errData = JSON.parse(errText); } catch { errData = { type: 'error', error: { type: 'api_error', message: errText } }; }
-                        controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify(errData)}\n\n`));
-                        controller.close();
-                        onComplete();
-                        return;
-                    }
-                    if (!response.body)
-                        throw new Error('No response body from Anthropic');
-                    const reader = response.body.getReader();
-                    asyncStream = {
-                        [Symbol.asyncIterator]() {
-                            return {
-                                async next() {
-                                    const { done, value } = await reader.read();
-                                    return done ? { done: true, value: undefined } : { done: false, value: Buffer.from(value) };
-                                }
-                            };
-                        }
-                    };
-                }
                 // Parse SSE events (split on double-newline) and forward,
                 // patching only text_delta events for deanonymization.
                 const decoder = new TextDecoder();
