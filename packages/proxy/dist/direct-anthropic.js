@@ -39,10 +39,36 @@ function makeH2Request(path, h1Headers, bodyStr) {
             'content-type': 'application/json',
             'content-length': Buffer.byteLength(bodyStr).toString(),
         };
-        // Forward all non-pseudo headers; force identity encoding so we get plain SSE bytes.
+        // Forward most client headers; strip Claude Code-specific headers when using sci OAuth.
+        // Anthropic rate-limits the sci OAuth client when it sees x-app:cli + claude-code beta flags
+        // (OAuth client mismatch — sci client claiming to be Claude Code native client).
+        const authVal = String(h1Headers['authorization'] ?? h1Headers['Authorization'] ?? '');
+        const isSciOAuth = authVal.includes('oat01');
+        // When using sci OAuth, also strip body fields that require stripped betas.
+        if (isSciOAuth) {
+            try {
+                const rb = JSON.parse(bodyStr);
+                delete rb.output_config;   // requires effort-2025-11-24
+                delete rb.extended_thinking; // extra field not needed
+                bodyStr = JSON.stringify(rb);
+                h2Req['content-length'] = Buffer.byteLength(bodyStr).toString();
+            } catch { /* leave bodyStr as-is if parse fails */ }
+        }
+        const ccOnlyHeaders = new Set(['x-app', 'x-claude-code-session-id', 'x-client-request-id']);
         const skip = new Set([':method',':path',':scheme',':authority','host','connection','transfer-encoding','content-length','content-type','accept-encoding']);
         for (const [k, v] of Object.entries(h1Headers)) {
-            if (!skip.has(k.toLowerCase())) h2Req[k.toLowerCase()] = String(v);
+            const lk = k.toLowerCase();
+            if (skip.has(lk)) continue;
+            if (isSciOAuth && ccOnlyHeaders.has(lk)) continue;
+            // When using sci OAuth, keep only safe betas. Advanced features like
+            // context-1m, effort, cache-diagnosis trigger rate limiting on the sci app.
+            if (isSciOAuth && lk === 'anthropic-beta') {
+                const safeBetas = new Set(['oauth-2025-04-20','interleaved-thinking-2025-05-14','context-management-2025-06-27','prompt-caching-scope-2026-01-05']);
+                const filtered = String(v).split(',').filter(b => safeBetas.has(b.trim()));
+                if (filtered.length) h2Req[lk] = filtered.join(',');
+                continue;
+            }
+            h2Req[lk] = String(v);
         }
         h2Req['accept-encoding'] = 'identity';
         const req = client.request(h2Req, { endStream: false });

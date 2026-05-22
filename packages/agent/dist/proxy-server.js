@@ -202,10 +202,12 @@ async function handleAIRequest(req, res) {
     // tool — `claude`, raw curl, an SDK with stale creds — works as long as
     // Sci itself has the right key.
     injectCredentialForHost(hostname, req.headers, credentials);
-    // Pass through client's own token for all requests.
-    // The proxy now uses HTTP/2 upstream which doesn't rate-limit CC native tokens.
+    // For /v1/messages: always use sci OAuth (CC native token is exhausted per-account).
+    // For init requests: pass through client's own token (too many to inject sci OAuth for all).
+    // The sci OAuth is rate-limited per-app, so we only use it where it matters.
+    const isMessageRequest = path.startsWith('/v1/messages');
     if (ANTHROPIC_HOSTS.has(hostname) && !credentials.anthropic &&
-        !req.headers['authorization'] && !req.headers['x-api-key'] && readCache()) {
+        (isMessageRequest || !req.headers['authorization']) && readCache()) {
         try {
             const token = await getAccessTokenSafe();
             req.headers['authorization'] = `Bearer ${token}`;
