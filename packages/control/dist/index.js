@@ -824,12 +824,23 @@ app.post('/api/devices/invite/redeem', async (c) => {
     // Pull the CA cert + key to return to the new device so it can do TLS MITM.
     const caCert = existsSync(CA_CERT_PATH) ? readFileSync(CA_CERT_PATH, 'utf-8') : null;
     const caKey = existsSync(CA_KEY_PATH) ? readFileSync(CA_KEY_PATH, 'utf-8') : null;
+    // Return the shared per-user enc_key so all devices on this account share the
+    // same encryption key and can decrypt each other's memory blobs (SCI-220).
+    const { rows: ekRows } = await reader.query(`SELECT enc_key FROM users WHERE id = $1`, [invite.user_id]);
+    let encKey = ekRows[0]?.enc_key ?? null;
+    if (!encKey) {
+        // First enrollment for this user — generate and persist a shared key.
+        const { randomBytes } = await import('crypto');
+        encKey = randomBytes(32).toString('base64');
+        await writer.query(`UPDATE users SET enc_key = $1 WHERE id = $2`, [encKey, invite.user_id]);
+    }
     await audit({ userId: invite.user_id, deviceId: result.device.id, action: 'device.invite.redeem', target: body.name });
     return c.json({
         device: result.device,
         agentToken: result.agentToken,
         caCert,
         caKey,
+        encKey,
         server: result.server,
     }, 201);
 });

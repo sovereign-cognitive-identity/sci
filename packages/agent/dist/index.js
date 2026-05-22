@@ -81,8 +81,14 @@ async function runSetup(config, extraArgs) {
         // Persist the control plane URL so future agent runs know where to sync.
         writeFileSync(join(configDir, 'control-plane'), controlPlane + '\n', { mode: 0o644 });
         process.stdout.write(`✓ Control plane URL saved (${controlPlane})\n`);
-        // Generate per-device encryption key for memory blobs (idempotent — skips if already exists).
-        generateEncKey(configDir);
+        // Use the shared per-user enc_key from the control plane (SCI-220).
+        // All devices on the same account share this key so blobs are cross-device readable.
+        if (enrollResp.encKey) {
+            writeFileSync(join(configDir, 'enc.key'), enrollResp.encKey + '\n', { mode: 0o600 });
+        } else {
+            // Fallback: generate locally if control plane doesn't provide one (old CP).
+            generateEncKey(configDir);
+        }
         process.stdout.write(`✓ Encryption key ready at ${configDir}/enc.key\n`);
         process.stdout.write(`✓ Device enrolled: ${enrollResp.device?.name ?? hostname()}\n\n`);
     } else {
