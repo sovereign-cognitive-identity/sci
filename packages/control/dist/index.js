@@ -45,8 +45,38 @@ async function loadUser(c) {
         return null;
     return validateSession(token);
 }
+// Resolve user from a device agent token (sci_* prefix).
+// Used by the memories endpoints so devices can sync without a user session.
+async function loadUserFromAgentToken(authHeader) {
+    if (!authHeader?.startsWith('Bearer '))
+        return null;
+    const token = authHeader.slice(7);
+    if (!token.startsWith('sci_'))
+        return null;
+    try {
+        const { validateToken } = await import('@sci/core');
+        const agent = await validateToken(token);
+        if (!agent)
+            return null;
+        const { rows } = await reader.query(`SELECT u.id, u.email, u.display_name, u.is_admin
+             FROM devices d JOIN users u ON d.user_id = u.id
+             WHERE d.agent_id = $1 LIMIT 1`, [agent.agentId]);
+        return rows[0] ? { id: rows[0].id, email: rows[0].email, isAdmin: rows[0].is_admin } : null;
+    }
+    catch { return null; }
+}
 authed.use('*', async (c, next) => {
     const user = await loadUser(c);
+    if (!user)
+        return c.json({ error: 'unauthorized' }, 401);
+    c.set('user', user);
+    await next();
+});
+// Hono router that accepts EITHER user session OR device agent token.
+// Used for the /api/memories sync endpoints.
+const deviceOrUserAuthed = new Hono();
+deviceOrUserAuthed.use('*', async (c, next) => {
+    const user = (await loadUser(c)) ?? (await loadUserFromAgentToken(c.req.header('authorization')));
     if (!user)
         return c.json({ error: 'unauthorized' }, 401);
     c.set('user', user);
@@ -639,7 +669,7 @@ app.post('/api/gateway/external-endpoint', async (c) => {
 //   GET  /api/memories/stats — count per type for debugging
 //   DELETE /api/memories/:id — device-initiated delete (rare)
 
-authed.post('/api/memories', async (c) => {
+deviceOrUserAuthed.post('/api/memories', async (c) => {
     const u = c.get('user');
     const body = await c.req.json().catch(() => ({}));
     if (!body.encryptedBlob)
@@ -657,7 +687,7 @@ authed.post('/api/memories', async (c) => {
     return c.json({ id: rows[0].id, createdAt: rows[0].created_at }, 201);
 });
 
-authed.get('/api/memories', async (c) => {
+deviceOrUserAuthed.get('/api/memories', async (c) => {
     const u = c.get('user');
     const since = c.req.query('since');
     const limit = Math.min(parseInt(c.req.query('limit') ?? '1000'), 5000);
@@ -695,14 +725,14 @@ authed.get('/api/memories', async (c) => {
     });
 });
 
-authed.get('/api/memories/stats', async (c) => {
+deviceOrUserAuthed.get('/api/memories/stats', async (c) => {
     const u = c.get('user');
     const { rows } = await reader.query(`SELECT blob_type, COUNT(*)::int AS c, MAX(created_at) AS last_sync
        FROM memory_blobs WHERE user_id = $1 GROUP BY blob_type`, [u.id]);
     return c.json({ stats: rows });
 });
 
-authed.delete('/api/memories/:id', async (c) => {
+deviceOrUserAuthed.delete('/api/memories/:id', async (c) => {
     const u = c.get('user');
     const id = c.req.param('id');
     const { rowCount } = await writer.query(`DELETE FROM memory_blobs WHERE id = $1 AND user_id = $2`, [id, u.id]);
@@ -799,6 +829,8 @@ app.post('/api/devices/invite/redeem', async (c) => {
 
 // Mount authed routes
 app.route('/', authed);
+// Mount device-or-user-authed routes (memories sync — accepts agent tokens too)
+app.route('/', deviceOrUserAuthed);
 async function reloadGateway() {
     const url = process.env['SCI_GATEWAY_RELOAD_URL'];
     if (!url)
