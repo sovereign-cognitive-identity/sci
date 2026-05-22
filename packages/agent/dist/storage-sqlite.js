@@ -135,7 +135,11 @@ export class SqliteStorageAdapter extends CloudAdapter {
         }
 
         saveSyncState(this.#configDir, { ...syncState, lastPullAt: new Date().toISOString() });
-        if (imported > 0) process.stderr.write(`[sci] imported ${imported} memory blob(s) from control plane\n`);
+        if (imported > 0) {
+            // Flush HNSW index to disk so the MCP server can read the new vectors.
+            this.index.writeIndex(this.idxPath);
+            process.stderr.write(`[sci] imported ${imported} memory blob(s) from control plane\n`);
+        }
     }
 
     async _importBlobRecord(blobType, record) {
