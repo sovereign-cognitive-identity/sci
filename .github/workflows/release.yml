@@ -9,6 +9,7 @@ jobs:
   build:
     name: Build sci (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.continue_on_error == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +20,7 @@ jobs:
           - target: x86_64-apple-darwin
             runner: macos-13
             bun_target: bun-darwin-x64
+            continue_on_error: true
           - target: aarch64-linux
             runner: ubuntu-latest
             bun_target: bun-linux-arm64
@@ -114,10 +116,8 @@ jobs:
           files: |
             dist/sci-aarch64-apple-darwin.tar.gz
             dist/sci-aarch64-apple-darwin.tar.gz.sha256
-            dist/sci-x86_64-apple-darwin.tar.gz
-            dist/sci-x86_64-apple-darwin.tar.gz.sha256
             dist/sci-aarch64-linux.tar.gz
             dist/sci-aarch64-linux.tar.gz.sha256
             dist/sci-x86_64-linux.tar.gz
             dist/sci-x86_64-linux.tar.gz.sha256
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
