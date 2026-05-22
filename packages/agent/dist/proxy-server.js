@@ -25,6 +25,7 @@
  */
 import { createServer as createHttpServer } from 'http';
 import { request as httpsRequest } from 'https';
+import { getH2Client } from '../../proxy/dist/direct-anthropic.js';
 import { connect as netConnect } from 'net';
 import { TLSSocket } from 'tls';
 import { ensureCA, makeSNICallback } from './cert.js';
@@ -265,6 +266,40 @@ function pickHandler(hostname, path, method) {
  * within an AI host. Forwards verbatim to the real upstream.
  */
 async function passthroughForward(req, body, hostname, res) {
+    // Use HTTP/2 for Anthropic hosts — all requests share one connection,
+    // matching the rate-limit profile of a direct Claude Code session.
+    if (ANTHROPIC_HOSTS.has(hostname)) {
+        try {
+            const h2 = getH2Client();
+            const h2Headers = { ':method': req.method ?? 'GET', ':path': req.url ?? '/', ':scheme': 'https', ':authority': hostname, 'accept-encoding': 'identity' };
+            const skip = new Set([':method',':path',':scheme',':authority','host','connection','transfer-encoding','content-length']);
+            for (const [k, v] of Object.entries(req.headers)) {
+                if (!skip.has(k.toLowerCase())) h2Headers[k.toLowerCase()] = String(v);
+            }
+            if (body.length > 0) h2Headers['content-length'] = String(body.length);
+            const h2req = h2.request(h2Headers, { endStream: body.length === 0 });
+            h2req.on('error', (err) => {
+                process.stderr.write(`[sci-agent] h2 passthrough error: ${err.message}\n`);
+                if (!res.headersSent) { res.writeHead(502); res.end(); }
+            });
+            let statusSent = false;
+            h2req.on('response', (headers) => {
+                const status = Number(headers[':status'] ?? 200);
+                const resHeaders = {};
+                for (const [k, v] of Object.entries(headers)) {
+                    if (!k.startsWith(':')) resHeaders[k] = String(v);
+                }
+                res.writeHead(status, resHeaders);
+                statusSent = true;
+            });
+            h2req.on('data', chunk => res.write(chunk));
+            h2req.on('end', () => res.end());
+            if (body.length > 0) { h2req.write(body); h2req.end(); }
+            return;
+        } catch (err) {
+            process.stderr.write(`[sci-agent] h2 passthrough setup error: ${err.message} — falling back to HTTP/1.1\n`);
+        }
+    }
     const upstreamHeaders = sanitizeHeaders(req.headers, hostname);
     const upstream = httpsRequest({
         host: hostname,
@@ -273,9 +308,6 @@ async function passthroughForward(req, body, hostname, res) {
         method: req.method,
         headers: upstreamHeaders,
     }, (upstreamRes) => {
-        // Sanitize response headers too — remove hop-by-hop headers that
-        // Node.js handles automatically when piping (transfer-encoding, connection).
-        // Forwarding them causes double-encoding and confuses HTTP clients.
         const responseHeaders = sanitizeHeaders(upstreamRes.headers, hostname);
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
         upstreamRes.on('error', err => {

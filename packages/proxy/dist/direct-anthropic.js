@@ -19,8 +19,9 @@ import { forceRefreshAnthropicToken } from './upstream-auth.js';
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com';
 // Persistent HTTP/2 client session. Anthropic rate-limits HTTP/1.1 proxy
 // requests (429) but not HTTP/2 — same behavior as direct Claude Code.
+// Exported so passthroughForward() can share the same session for init requests.
 let _h2Client = null;
-function getH2Client() {
+export function getH2Client() {
     if (_h2Client && !_h2Client.destroyed && !_h2Client.closed) return _h2Client;
     _h2Client = http2.connect(`https://${ANTHROPIC_HOSTNAME}`);
     _h2Client.on('error', () => { _h2Client = null; });
