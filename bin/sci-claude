@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# sci-claude — launch Claude Code routed through the sci proxy (3001 Rust helper).
+#
+# Why a wrapper instead of ~/.claude/settings.json `env`:
+#   NODE_EXTRA_CA_CERTS is read by Node at PROCESS STARTUP, not lazily. A
+#   settings.json env block is applied by Claude Code after its own node
+#   process has already initialized its TLS context — too late for the sci
+#   MITM CA to be trusted, so the handshake to the proxy fails. Exporting
+#   here, before `exec claude`, is the only reliable way to get both the
+#   proxy routing AND trust of the Sci-CA-signed leaf certs.
+#
+# Routes through com.sci.agent on :8080 (the node agent). The 3001 Rust helper
+# would also work, but it can't parse the current PKCS#1 ~/.sci/ca.key (the node
+# agent regenerated the CA in a format rcgen rejects — see SCI-231), so it's the
+# 8080 agent until that's reconciled. The 8080 agent has the SCI-147 prefix fix,
+# SQLite memory, and signs leaves with the current ~/.sci/ca.crt.
+set -euo pipefail
+
+PROXY="http://127.0.0.1:8080"
+CA="$HOME/.sci/ca.crt"
+
+export HTTPS_PROXY="$PROXY"
+export HTTP_PROXY="$PROXY"
+export https_proxy="$PROXY"
+export http_proxy="$PROXY"
+# Only sci/AI hosts go through the proxy; everything local bypasses it.
+export NO_PROXY="127.0.0.1,localhost"
+export no_proxy="127.0.0.1,localhost"
+export NODE_EXTRA_CA_CERTS="$CA"
+
+if [[ ! -f "$CA" ]]; then
+  echo "✗ $CA not found — start the sci helper once to generate it." >&2
+  exit 1
+fi
+if ! nc -z 127.0.0.1 8080 2>/dev/null; then
+  echo "⚠️  sci agent not listening on :8080 (com.sci.agent)." >&2
+  echo "    Run: bash $(dirname "$0")/../scripts/sci-up.sh" >&2
+fi
+
+exec claude "$@"
