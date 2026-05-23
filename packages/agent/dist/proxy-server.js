@@ -214,6 +214,9 @@ async function handleAIRequest(req, res) {
         try {
             const token = await getAccessTokenSafe();
             req.headers['authorization'] = `Bearer ${token}`;
+            // Strip any x-api-key the client sent (e.g. sentinel "sci_t_*" from sci-chat)
+            // — it would conflict with OAuth Bearer auth and cause a 401 from Anthropic.
+            delete req.headers['x-api-key'];
             const existing = req.headers['anthropic-beta'];
             req.headers['anthropic-beta'] = existing
                 ? `${existing},${ANTHROPIC_OAUTH_BETA}`
