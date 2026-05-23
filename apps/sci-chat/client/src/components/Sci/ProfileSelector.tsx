@@ -120,7 +120,7 @@ export default function ProfileSelector({ enabled }: Props) {
           {profiles.isLoading && (
             <div className="px-3 py-1 text-text-secondary">Loading…</div>
           )}
-          {profiles.error && (
+          {profiles.isError && (
             <div className="px-3 py-1 text-red-500">Failed to load profiles</div>
           )}
           {profiles.data?.map((p) => {
@@ -164,7 +164,7 @@ export default function ProfileSelector({ enabled }: Props) {
                   focus:border-blue-500
                 "
               />
-              {create.error && (
+              {create.isError && (
                 <p className="mt-1 text-[10px] text-red-500">
                   {String(create.error)}
                 </p>
@@ -179,13 +179,13 @@ export default function ProfileSelector({ enabled }: Props) {
                 </button>
                 <button
                   type="submit"
-                  disabled={!draftName.trim() || create.isPending}
+                  disabled={!draftName.trim() || create.isLoading}
                   className="
                     rounded bg-blue-500 px-2 py-0.5 text-white
                     disabled:opacity-50
                   "
                 >
-                  {create.isPending ? 'Creating…' : 'Create'}
+                  {create.isLoading ? 'Creating…' : 'Create'}
                 </button>
               </div>
             </form>

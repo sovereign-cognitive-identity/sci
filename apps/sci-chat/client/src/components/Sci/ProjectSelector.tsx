@@ -184,7 +184,7 @@ export default function ProjectSelector({ enabled }: Props) {
                 "
               />
             </label>
-            {setProject.error && (
+            {setProject.isError && (
               <p className="mt-1 text-[10px] text-red-500">
                 {String(setProject.error)}
               </p>
@@ -192,13 +192,13 @@ export default function ProjectSelector({ enabled }: Props) {
             <div className="mt-1 flex justify-end">
               <button
                 type="submit"
-                disabled={!draft.trim() || setProject.isPending}
+                disabled={!draft.trim() || setProject.isLoading}
                 className="
                   rounded bg-blue-500 px-2 py-0.5 text-white
                   disabled:opacity-50
                 "
               >
-                {setProject.isPending ? 'Setting…' : 'Set'}
+                {setProject.isLoading ? 'Setting…' : 'Set'}
               </button>
             </div>
           </form>

@@ -60,7 +60,7 @@ export default function RecallPreview({ enabled }: Props) {
         </span>
       </header>
 
-      {recall.error && (
+      {recall.isError && (
         <p className="text-red-500">Recall failed: {String(recall.error)}</p>
       )}
 
