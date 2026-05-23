@@ -35,7 +35,7 @@ server.tool(
   'Health check: storage backend, row counts, last write timestamp',
   {},
   async () => {
-    const result = await memoryStatus(adapter)
+    const result = await memoryStatus()
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
   }
 )
@@ -53,7 +53,8 @@ server.tool(
     try {
       assertCan(agentCtx, 'write')
       const profileId = await resolveProfileId(args.profile, agentCtx, adapter)
-      const result = await memoryStore({ ...args, _profileId: profileId }, adapter)
+      const profileName = (await adapter.getProfiles()).find(p => p.id === profileId)?.name ?? args.profile ?? 'work'
+      const result = await memoryStore({ ...args, profile: profileName })
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       const msg = err instanceof AuthError ? `Access denied: ${err.message}` : (err instanceof Error ? err.message : String(err))
@@ -103,7 +104,7 @@ server.tool(
     try {
       const profileId = await resolveProfileId(args.profile, agentCtx, adapter)
       const profile = (await adapter.getProfiles()).find(p => p.id === profileId)
-      const result = await memoryRecall({ ...args, profile: profile?.name ?? args.profile }, adapter)
+      const result = await memoryRecall({ ...args, profile: profile?.name ?? args.profile })
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -123,7 +124,7 @@ server.tool(
   async (args) => {
     try {
       assertCan(agentCtx, 'write')
-      const result = await memoryStoreIdentity(args, adapter)
+      const result = await memoryStoreIdentity(args)
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       const msg = err instanceof AuthError ? `Access denied: ${err.message}` : (err instanceof Error ? err.message : String(err))

@@ -15,6 +15,8 @@
 //!   GET /sci/profiles                     — profile list
 //!   GET /sci/recall?query=&profile=&limit — recall preview (no store)
 //!   GET /sci/memories?profile=&limit=     — all memories for graph
+//!  POST /sci/memories                     — store a memory (episodic|identity)
+//! DELETE /sci/memories/:id                — delete an episodic memory + vector
 //!   GET /sci/events                       — SSE event stream
 //!
 //! Bind is hardcoded to `127.0.0.1` (never `0.0.0.0`); the localhost
@@ -34,7 +36,7 @@ use axum::{
         IntoResponse,
         sse::{Event as SseEvent, KeepAlive, Sse},
     },
-    routing::get,
+    routing::{delete, get},
 };
 use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -43,8 +45,13 @@ use tokio::net::TcpListener;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 
+use std::collections::HashMap;
+
 use sci_core::handlers::HandlerState;
-use sci_core::memory::{AuditTurn, Profile, RecallQuery, RecallResult, StorageStats, TokenMapping};
+use sci_core::memory::{
+    AuditTurn, Profile, RecallQuery, RecallResult, StorageStats, StoreEpisodicInput,
+    StoreIdentityInput, TokenMapping,
+};
 
 use crate::events::EventBus;
 
@@ -76,7 +83,8 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/sci/active_profile",    get(get_active_profile).post(set_active_profile))
         .route("/sci/active_project",    get(get_active_project).post(set_active_project))
         .route("/sci/recall",            get(preview_recall))
-        .route("/sci/memories",           get(list_memories))
+        .route("/sci/memories",           get(list_memories).post(store_memory))
+        .route("/sci/memories/:id",      delete(delete_memory))
         .route("/sci/events",            get(events_stream))
         .layer(cors)
         .with_state(state)
@@ -414,6 +422,109 @@ async fn preview_recall(
         })
     })?;
     Ok(Json(hits))
+}
+
+// ── /sci/memories (POST: store) ──────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct StoreMemoryBody {
+    content: String,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    metadata: Option<HashMap<String, serde_json::Value>>,
+    /// "episodic" (default) or "identity".
+    #[serde(default)]
+    kind: Option<String>,
+    /// Identity-only: preference | value | skill | relationship | project | context.
+    #[serde(default)]
+    category: Option<String>,
+    /// Identity-only: 0.0–1.0.
+    #[serde(default)]
+    confidence: Option<f64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoreMemoryResponse {
+    id:     String,
+    stored: bool,
+}
+
+/// Write a memory to the live SQLite + sqlite-vec store. This is the
+/// single write path shared with the proxy, so memories stored here are
+/// immediately recallable via `/sci/recall`. Embedding happens with the
+/// same `handler_state.embedder` used by recall — no model drift.
+///
+/// The embed `.await` is taken before any storage lock (mirrors
+/// `preview_recall`), so `clippy::await_holding_lock` stays satisfied.
+async fn store_memory(
+    State(s):    State<AdminState>,
+    Json(input): Json<StoreMemoryBody>,
+) -> Result<Json<StoreMemoryResponse>, AdminError> {
+    let content = input.content.trim();
+    if content.is_empty() {
+        return Err(AdminError::BadRequest("content cannot be empty".into()));
+    }
+
+    let embedding = s.handler_state.embedder.embed(content).await
+        .map_err(|e| AdminError::Internal(format!("embed: {e}")))?;
+
+    let metadata = input.metadata.unwrap_or_default();
+    let kind = input.kind.as_deref().unwrap_or("episodic");
+
+    let id = match kind {
+        "identity" => with_storage(&s, |a| {
+            a.store_identity_fact(&StoreIdentityInput {
+                content,
+                embedding:  &embedding,
+                category:   input.category.as_deref(),
+                confidence: input.confidence,
+                metadata,
+            })
+        })?,
+        "episodic" => {
+            let profile_name = input.profile.clone()
+                .unwrap_or_else(|| s.handler_state.active_profile_name());
+            with_storage(&s, |a| {
+                let profile_id = match a.get_profile(&profile_name)? {
+                    Some(p) => p.id,
+                    None    => a.create_profile(&profile_name)?.id,
+                };
+                a.store_episodic(&StoreEpisodicInput {
+                    profile_id: &profile_id,
+                    content,
+                    embedding:  &embedding,
+                    source:     input.source.as_deref(),
+                    agent_id:   None,
+                    metadata,
+                })
+            })?
+        }
+        other => return Err(AdminError::BadRequest(format!("unknown kind: {other}"))),
+    };
+
+    Ok(Json(StoreMemoryResponse { id, stored: true }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteMemoryResponse {
+    deleted: bool,
+}
+
+/// Delete an episodic memory (row + vector) by id. 404 if it doesn't exist.
+async fn delete_memory(
+    State(s):  State<AdminState>,
+    Path(id):  Path<String>,
+) -> Result<Json<DeleteMemoryResponse>, AdminError> {
+    let deleted = with_storage(&s, |a| a.delete_episodic(&id))?;
+    if !deleted {
+        return Err(AdminError::NotFound(format!("memory not found: {id}")));
+    }
+    Ok(Json(DeleteMemoryResponse { deleted: true }))
 }
 
 // ── /sci/events (SSE) ──────────────────────────────────────────────────────

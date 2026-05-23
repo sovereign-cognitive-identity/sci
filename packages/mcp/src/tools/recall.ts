@@ -1,30 +1,16 @@
-import { embed } from '@sci/core'
-import type { StorageAdapter } from '@sci/core'
+import { helperRecall } from '../helper.js'
 
 type MemoryType = 'episodic' | 'semantic' | 'identity'
 
-export async function memoryRecall(
-  args: {
-    query: string
-    profile?: string
-    limit?: number
-    memory_types?: MemoryType[]
-  },
-  adapter: StorageAdapter
-) {
-  const profileName = args.profile ?? 'work'
-  const profile = await adapter.getProfile(profileName)
-  if (!profile) throw new Error(`Profile not found: ${profileName}`)
-
-  const queryEmbedding = await embed(args.query)
-
-  const results = await adapter.recall({
-    queryEmbedding,
-    query: args.query,
-    profileId: profile.id,
-    limit: args.limit ?? 10,
-    types: args.memory_types ?? ['episodic', 'semantic', 'identity'],
-  })
-
-  return { results }
+export async function memoryRecall(args: {
+  query: string
+  profile?: string
+  limit?: number
+  memory_types?: MemoryType[]
+}) {
+  const results = await helperRecall(args.query, args.profile ?? 'work', args.limit ?? 10)
+  const filtered = args.memory_types
+    ? results.filter(r => args.memory_types!.includes(r.type))
+    : results
+  return { results: filtered }
 }

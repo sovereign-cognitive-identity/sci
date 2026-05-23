@@ -1,6 +1,26 @@
 # Handoff
 
-_Last updated: 2026-05-23 — SCI-239 fixed (Rust helper rebuilt), inspector TS-clean, Sci MCP scope conflict resolved_
+_Last updated: 2026-05-23 (pm) — Fixed memory_recall returning empty: converged MCP onto the Rust helper's sqlite-vec store (Option A)_
+
+---
+
+## Latest session: memory_recall divergence fix
+
+**Root cause:** Two divergent vector stores on one `sci.db`. The MCP (`@sci/core` `CloudAdapter`) read an **hnswlib** index (`sci.idx`, 96-byte empty file, ~308 stale `vector_map` entries) while the live **42,998** embeddings live in the Rust helper's **sqlite-vec** table (`embeddings_episodic`). MCP `memory_recall` → `_searchIndex` (empty hnswlib) → `[]`.
+
+**Fix (Option A — converge on the Rust helper as single source of truth):**
+- **Rust:** added `POST /sci/memories` to `apps/sci-mac/SciHelper/src/admin.rs` — embeds via `handler_state.embedder`, stores via `store_episodic` (default) or `store_identity_fact` (`kind:"identity"`). Auto-creates profile by name. Rebuilt + reloaded `dev.sci.helper`.
+- **MCP:** new `packages/mcp/src/helper.ts` HTTP client (`SCI_HELPER_URL`, default `http://127.0.0.1:3002`). Rerouted `recall.ts`, `store.ts`, `status.ts`, `store-identity.ts` to the helper. Updated `index.ts` call sites (pass profile **name**, not id — Rust resolves/creates by name). `memory_identity` (read) left on the adapter — identity_facts is empty so it's not broken; the broken hnswlib branch only matters once identity facts exist.
+
+**Verified** (via rebuilt `dist/` against live helper): `memory_status` → 42,999 embeddings (was 308); `memory_recall` employment query returns real hits (was `[]`); `memory_store` round-trips and is instantly recallable.
+
+**⚠️ Requires fresh Claude session** — the MCP server process in the session that made this fix still runs old code. New session reloads `dist/`.
+
+**Also added:** `DELETE /sci/memories/:id` (admin.rs) + `LocalAdapter::delete_episodic` (sci-memory crate) — removes episodic row + vec0 vector (vec0 `memory_id` is auxiliary/non-filterable, so it deletes by `rowid` found via scan). Used it to clean the two smoke-test rows; verified counts dropped and re-delete 404s.
+
+**Cleanup / follow-ups:**
+- **Open: recall ranking quality** — recall surfaces near-identical stored *questions* over *answers*, all at RRF floor (~0.0164). Separate from the divergence bug. Investigate `recall.rs` scoring in `core/crates/sci-memory`.
+- Changed files (uncommitted): `apps/sci-mac/SciHelper/src/admin.rs`, `core/crates/sci-memory/src/adapter.rs`, `packages/mcp/src/{helper.ts,index.ts,tools/{recall,store,status,store-identity}.ts}` + rebuilt `dist/` + Rust binary.
 
 ---
 

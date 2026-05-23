@@ -278,6 +278,36 @@ impl LocalAdapter {
         Ok(id)
     }
 
+    /// Delete an episodic memory and its vector. Returns `false` if no row
+    /// matched. The vec0 `memory_id` is an auxiliary column (not filterable),
+    /// so we locate the vector by scanning `(rowid, memory_id)` and delete by
+    /// `rowid`, which vec0 always supports.
+    pub fn delete_episodic(&self, id: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        let existed = tx.execute("DELETE FROM episodic_memories WHERE id = ?1", params![id])? > 0;
+        if !existed {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let rowid: Option<i64> = {
+            let mut stmt = tx.prepare("SELECT rowid, memory_id FROM embeddings_episodic")?;
+            let mut rows = stmt.query([])?;
+            let mut found = None;
+            while let Some(r) = rows.next()? {
+                if r.get::<_, String>(1)? == id {
+                    found = Some(r.get::<_, i64>(0)?);
+                    break;
+                }
+            }
+            found
+        };
+        if let Some(rid) = rowid {
+            tx.execute("DELETE FROM embeddings_episodic WHERE rowid = ?1", params![rid])?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn store_semantic(&self, input: &StoreSemanticInput<'_>) -> Result<String> {
         check_dim(input.embedding)?;
         let id = Uuid::new_v4().to_string();
