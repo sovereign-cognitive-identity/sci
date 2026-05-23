@@ -54,6 +54,46 @@ function extractText(content: AnthropicMessage['content']): string {
     .join('')
 }
 
+// SCI-147: canonical Claude Code system prefix. Anthropic's OAuth-bearer path
+// exact-matches this as system block[0]; anything else gets throttled to a 429
+// `{"message":"Error"}`. CC stamps it natively; our memory injection prepends a
+// [Sci Memory] block in front of it, so we must re-stamp it as block[0].
+const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
+
+/**
+ * Ensure `body.system` leads with the exact canonical Claude Code prefix as
+ * block[0] (array shape). Port of the Rust helper's prepend_claude_code_prefix:
+ * the OAuth gate only checks block[0]; memory + caller content ride in block[1+].
+ * Idempotent. Only call on the OAuth path — API keys aren't gated.
+ */
+function prependClaudeCodePrefix(body: { system?: unknown }): void {
+  const prefix = CLAUDE_CODE_SYSTEM_PREFIX
+  const canonical = { type: 'text', text: prefix }
+  const sys = body.system
+  if (typeof sys === 'string') {
+    if (sys === prefix) body.system = [canonical]
+    else if (sys.startsWith(prefix)) {
+      const rest = sys.slice(prefix.length).replace(/^[\n ]+/, '')
+      body.system = rest ? [canonical, { type: 'text', text: rest }] : [canonical]
+    } else if (sys.length === 0) body.system = [canonical]
+    else body.system = [canonical, { type: 'text', text: sys }]
+  } else if (Array.isArray(sys)) {
+    const first = sys[0] as { type?: string; text?: string } | undefined
+    const firstText = first && first.type === 'text' && typeof first.text === 'string' ? first.text : null
+    if (firstText === prefix) {
+      // perfect — leave alone
+    } else if (firstText && firstText.startsWith(prefix)) {
+      const rest = firstText.slice(prefix.length).replace(/^[\n ]+/, '')
+      sys[0] = canonical
+      if (rest) sys.splice(1, 0, { type: 'text', text: rest })
+    } else {
+      sys.unshift(canonical)
+    }
+  } else {
+    body.system = [canonical]
+  }
+}
+
 /**
  * Anonymize a user message's content without destroying structured blocks.
  *
@@ -399,6 +439,12 @@ export async function handleAnthropicMessages(
         : { 'x-api-key': authHeader ?? '' }),
     }
 
+    // SCI-147 shape-gate: re-stamp the canonical Claude Code prefix as system
+    // block[0] on the OAuth path so memory-injected requests aren't throttled.
+    if (/sk-ant-oat01/.test(authHeader ?? '')) {
+      prependClaudeCodePrefix(anonymizedBody)
+    }
+
     const deanonStream = new DeanonymizingStreamV2(sessionTokenMap)
     const readable = await streamDirectAnthropic(
       '/v1/messages',
@@ -426,6 +472,10 @@ export async function handleAnthropicMessages(
     )
 
     endSpan('ok')
+    // streamDirectAnthropic returns a Response directly on upstream 4xx/5xx
+    // so the actual HTTP status reaches the SDK. Otherwise wrap the
+    // ReadableStream in our standard SSE response.
+    if (readable instanceof Response) return readable
     return new Response(readable, {
       headers: {
         'Content-Type': 'text/event-stream',

@@ -26,12 +26,22 @@ import type { OpenRouterMessage } from '../openrouter.js'
 // the system should substitute…", which leak through as awkward, hedging
 // answers. Treat the tokens as if they were the real names; never mention
 // them; the deanonymizer handles the rest invisibly.
-const CONTEXT_PREFIX = `[Sci Memory — excerpts from this user's prior messages, surfaced by relevance]`
-const CONTEXT_SUFFIX = `Use these as authoritative information about the user when relevant.
-
-Token handling: tokens of the form [PERSON_n], [EMAIL_n], [PHONE_n], [PLACE_n], [ORG_n], [PROJECT_n], [URL_n], and [HANDLE_n] are valid identifiers for real entities — treat them as you would the real names. Answer questions about them directly using the same tokens (e.g. "Your name is [PERSON_1]"). Do NOT describe them as masked, redacted, placeholder, or template text. Do NOT explain the tokens or apologize for using them. Do NOT comment on the privacy mechanism. Just answer the question naturally.`
+const CONTEXT_PREFIX = `[Sci Memory — excerpts from prior messages]`
+// Compact form: every extra token of meta-instructions eats into per-minute
+// input-token rate-limit headroom. The model only needs to know (a) trust
+// these as facts and (b) [TYPE_n] tokens stand for real entities.
+const CONTEXT_SUFFIX = `Treat as authoritative facts. Tokens like [PERSON_n], [EMAIL_n], [PLACE_n], [ORG_n], [PROJECT_n], [URL_n], [HANDLE_n] are valid identifiers — use them as if they were real names; never describe them as masked or apologize for them.`
 // Final number of unique memories injected.
-const MAX_CONTEXT_RESULTS = 5
+const MAX_CONTEXT_RESULTS = 3
+// Each recalled memory is truncated to this many characters before injection.
+// Episodic memories can be full conversation transcripts (10k+ chars); without
+// a cap, items add 90k+ tokens to the request → Anthropic 429.
+const MAX_CHARS_PER_ITEM = 250
+// Hard ceiling on total injected context content (~150 tokens). Plus prefix
+// (~12 tokens) + suffix (~55 tokens) = ~220 token budget per request. The
+// previous 2000-char limit pushed memory-injected requests into Anthropic's
+// per-minute input-token rate limit under rapid-fire usage.
+const MAX_TOTAL_CHARS = 600
 // Recall fetches more than we'll inject, so dedup + self-filter still leaves
 // us with a useful set even when there are many near-duplicate episodics
 // (e.g. the same question asked across many sessions).
@@ -183,12 +193,22 @@ export async function injectMemoryContext(
     // Each line tagged with how the user phrased it (statement vs question).
     // Helps the model distinguish "the user told us X" from "the user asked X".
     const isQuestion = (s: string): boolean => /\?\s*$/.test(s.trim())
+    let totalChars = 0
     const contextLines = anonymizedResults
       .map((r) => {
         const tag = r.type === 'episodic'
           ? (isQuestion(r.content) ? '(user previously asked)' : '(user previously said)')
           : `(${r.type})`
-        return `- ${tag}: ${r.content}`
+        // Truncate each item so a full conversation transcript doesn't blow
+        // up the request (some episodic memories are 10k+ chars).
+        const truncated = r.content.length > MAX_CHARS_PER_ITEM
+          ? r.content.slice(0, MAX_CHARS_PER_ITEM) + '…'
+          : r.content
+        return `- ${tag}: ${truncated}`
+      })
+      .filter(line => {
+        totalChars += line.length
+        return totalChars <= MAX_TOTAL_CHARS
       })
       .join('\n')
     const contextBlock = `${CONTEXT_PREFIX}\n${contextLines}\n\n${CONTEXT_SUFFIX}`

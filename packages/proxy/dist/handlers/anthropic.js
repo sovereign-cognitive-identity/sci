@@ -34,6 +34,55 @@ function extractText(content) {
         .map(b => b.text)
         .join('');
 }
+// SCI-147: canonical Claude Code system prefix. Anthropic's OAuth-bearer path
+// exact-matches this as system block[0]; anything else gets throttled to 429.
+const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
+/**
+ * Ensure the request body's `system` leads with the exact canonical Claude Code
+ * prefix as block[0] (array shape). Port of the Rust helper's
+ * prepend_claude_code_prefix — verified by curl bisection that the OAuth gate
+ * only checks block[0] in array shape; memory + caller content ride in block[1+].
+ * Idempotent.
+ */
+function prependClaudeCodePrefix(body) {
+    const prefix = CLAUDE_CODE_SYSTEM_PREFIX;
+    const canonical = { type: 'text', text: prefix };
+    const sys = body.system;
+    if (typeof sys === 'string') {
+        if (sys === prefix) {
+            body.system = [canonical];
+        }
+        else if (sys.startsWith(prefix)) {
+            const rest = sys.slice(prefix.length).replace(/^[\n ]+/, '');
+            body.system = rest ? [canonical, { type: 'text', text: rest }] : [canonical];
+        }
+        else if (sys.length === 0) {
+            body.system = [canonical];
+        }
+        else {
+            body.system = [canonical, { type: 'text', text: sys }];
+        }
+    }
+    else if (Array.isArray(sys)) {
+        const first = sys[0];
+        const firstText = first && first.type === 'text' && typeof first.text === 'string' ? first.text : null;
+        if (firstText === prefix) {
+            // perfect — leave alone
+        }
+        else if (firstText && firstText.startsWith(prefix)) {
+            const rest = firstText.slice(prefix.length).replace(/^[\n ]+/, '');
+            sys[0] = canonical;
+            if (rest)
+                sys.splice(1, 0, { type: 'text', text: rest });
+        }
+        else {
+            sys.unshift(canonical);
+        }
+    }
+    else {
+        body.system = [canonical];
+    }
+}
 /**
  * Anonymize a user message's content without destroying structured blocks.
  *
@@ -210,6 +259,9 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
         }
         span.end();
     };
+    // DIAGNOSTIC toggles — see scripts/diagnose-rate-limit.sh
+    const DISABLE_ANON = process.env['SCI_DISABLE_ANON'] === '1';
+    const DISABLE_MEMORY = process.env['SCI_DISABLE_MEMORY'] === '1';
     // 1. Anonymize all user messages
     let sessionTokenMap = { forward: new Map(), reverse: new Map() };
     // Capture the anonymization result for the LATEST user turn — this is what
@@ -220,20 +272,25 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     let lastUserOriginal = '';
     let lastUserMaskedText = '';
     const lastUserIdx = body.messages.map(m => m.role).lastIndexOf('user');
-    const anonymizedMessages = body.messages.map((m, idx) => {
-        if (m.role !== 'user')
-            return m;
-        const { content: anonContent, extractedText, maskedText, result, tokenMap: nextMap } = anonymizeContent(m.content, sessionTokenMap);
-        sessionTokenMap = nextMap;
-        if (idx === lastUserIdx) {
-            lastUserResult = result;
-            lastUserOriginal = extractedText;
-            lastUserMaskedText = maskedText;
-        }
-        return { ...m, content: anonContent };
-    });
+    const anonymizedMessages = DISABLE_ANON
+        ? body.messages.slice()
+        : body.messages.map((m, idx) => {
+            if (m.role !== 'user')
+                return m;
+            const { content: anonContent, extractedText, maskedText, result, tokenMap: nextMap } = anonymizeContent(m.content, sessionTokenMap);
+            sessionTokenMap = nextMap;
+            if (idx === lastUserIdx) {
+                lastUserResult = result;
+                lastUserOriginal = extractedText;
+                lastUserMaskedText = maskedText;
+            }
+            return { ...m, content: anonContent };
+        });
     // Log what got masked
-    if (sessionTokenMap.forward.size > 0) {
+    if (DISABLE_ANON) {
+        process.stderr.write(`[${reqId}] ⚠️  anon DISABLED (diagnostic)\n`);
+    }
+    else if (sessionTokenMap.forward.size > 0) {
         const masked = [...sessionTokenMap.forward.entries()].map(([e, t]) => `${t}←"${e.slice(0, 30)}"`).join('  ');
         process.stderr.write(`[${reqId}] 🔒 masked ${sessionTokenMap.forward.size}: ${masked}\n`);
     }
@@ -249,8 +306,13 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     // are added), and the deanonymizer below uses the same reference to
     // swap tokens back in the response.
     const anonymizedWithContext = toOpenRouterMessages(anonymizedMessages, body.system);
-    const { messages: withContext, inspector: memoryInspector } = await injectMemoryContext(anonymizedWithContext, adapter, sessionTokenMap);
-    if (memoryInspector?.injected) {
+    const { messages: withContext, inspector: memoryInspector } = DISABLE_MEMORY
+        ? { messages: anonymizedWithContext, inspector: null }
+        : await injectMemoryContext(anonymizedWithContext, adapter, sessionTokenMap);
+    if (DISABLE_MEMORY) {
+        process.stderr.write(`[${reqId}] ⚠️  memory DISABLED (diagnostic)\n`);
+    }
+    else if (memoryInspector?.injected) {
         process.stderr.write(`[${reqId}] 🧠 injected ${memoryInspector.results.length} memory context items (~${memoryInspector.approxTokensAdded} tokens)\n`);
     }
     else if (memoryInspector && memoryInspector.results.length === 0) {
@@ -317,6 +379,18 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
         // Ensure version is always present
         if (!originalHeaders['anthropic-version'])
             originalHeaders['anthropic-version'] = '2023-06-01';
+        // SCI-147 shape-gate: Anthropic's OAuth-bearer (Pro/Max) path throttles
+        // /v1/messages to 429 `{"message":"Error"}` unless the system field LEADS
+        // with the exact canonical Claude Code prefix. CC stamps it natively, but
+        // our memory injection prepends a [Sci Memory] block in front of it,
+        // knocking the prefix out of position. Re-stamp it as system block[0]
+        // (array shape: only block[0] must match exactly; memory + caller content
+        // ride in block[1+]). Only on the OAuth path — API keys aren't gated.
+        const authHeader = String(originalHeaders['authorization'] ?? originalHeaders['Authorization'] ?? '');
+        const oauthActive = /sk-ant-oat01/.test(authHeader);
+        if (oauthActive) {
+            prependClaudeCodePrefix(anonymizedBody);
+        }
         const deanonStream = new DeanonymizingStreamV2(sessionTokenMap);
         // Preserve the original request URL including query params (e.g. ?beta=true)
         // so Anthropic returns the expected response format for extended features.

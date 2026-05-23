@@ -15,7 +15,6 @@ import https from 'https';
 import http2 from 'http2';
 import { resolveRealDirect } from './dns-resolver.js';
 import { getPhysicalInterfaceIP } from './physical-iface.js';
-import { forceRefreshAnthropicToken } from './upstream-auth.js';
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com';
 // Persistent HTTP/2 client session. Anthropic rate-limits HTTP/1.1 proxy
 // requests (429) but not HTTP/2 — same behavior as direct Claude Code.
@@ -39,51 +38,15 @@ function makeH2Request(path, h1Headers, bodyStr) {
             'content-type': 'application/json',
             'content-length': Buffer.byteLength(bodyStr).toString(),
         };
-        // Forward most client headers; strip Claude Code-specific headers when using sci OAuth.
-        // Anthropic rate-limits the sci OAuth client when it sees x-app:cli + claude-code beta flags
-        // (OAuth client mismatch — sci client claiming to be Claude Code native client).
-        const authVal = String(h1Headers['authorization'] ?? h1Headers['Authorization'] ?? '');
-        const isSciOAuth = authVal.includes('oat01');
-        // When using sci OAuth, also strip body fields that require stripped betas.
-        if (isSciOAuth) {
-            // When using sci OAuth, send only fields compatible with safe betas.
-            // CC-specific fields (output_config, context_management CC edits, thinking
-            // adaptive mode) require claude-code/effort betas that we strip to avoid 429.
-            try {
-                const rb = JSON.parse(bodyStr);
-                const safe = {
-                    model: rb.model,
-                    max_tokens: rb.max_tokens,
-                    messages: rb.messages,
-                    stream: rb.stream,
-                };
-                if (rb.system) safe.system = rb.system;
-                if (rb.tools) safe.tools = rb.tools;
-                if (rb.tool_choice) safe.tool_choice = rb.tool_choice;
-                if (rb.stop_sequences) safe.stop_sequences = rb.stop_sequences;
-                if (rb.temperature !== undefined) safe.temperature = rb.temperature;
-                // Include thinking only if it doesn't require advanced betas
-                if (rb.thinking?.type === 'enabled' || rb.thinking?.budget_tokens) {
-                    safe.thinking = rb.thinking;
-                }
-                bodyStr = JSON.stringify(safe);
-                h2Req['content-length'] = Buffer.byteLength(bodyStr).toString();
-            } catch { /* leave bodyStr as-is if parse fails */ }
-        }
-        const ccOnlyHeaders = new Set(['x-app', 'x-claude-code-session-id', 'x-client-request-id']);
+        // Forward all client headers verbatim (minus HTTP/2 pseudo-headers and
+        // hop-by-hop). The previous oat01-detection stripping was a workaround
+        // for a now-removed auth-swap that put requests on sci's rate-limited
+        // OAuth identity; with passthrough auth the client's own betas/fields
+        // are exactly what Anthropic expects.
         const skip = new Set([':method',':path',':scheme',':authority','host','connection','transfer-encoding','content-length','content-type','accept-encoding']);
         for (const [k, v] of Object.entries(h1Headers)) {
             const lk = k.toLowerCase();
             if (skip.has(lk)) continue;
-            if (isSciOAuth && ccOnlyHeaders.has(lk)) continue;
-            // When using sci OAuth, keep only safe betas. Advanced features like
-            // context-1m, effort, cache-diagnosis trigger rate limiting on the sci app.
-            if (isSciOAuth && lk === 'anthropic-beta') {
-                const safeBetas = new Set(['oauth-2025-04-20','interleaved-thinking-2025-05-14','context-management-2025-06-27','prompt-caching-scope-2026-01-05']);
-                const filtered = String(v).split(',').filter(b => safeBetas.has(b.trim()));
-                if (filtered.length) h2Req[lk] = filtered.join(',');
-                continue;
-            }
             h2Req[lk] = String(v);
         }
         h2Req['accept-encoding'] = 'identity';
@@ -243,6 +206,7 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
             const chunks = firstChunk ? [firstChunk] : [];
             for await (const c of stream) chunks.push(c);
             const errText = Buffer.concat(chunks).toString('utf8');
+            process.stderr.write(`[sci-pipe] upstream ${status} body: ${errText}\n`);
             onComplete();
             return new Response(errText, {
                 status,

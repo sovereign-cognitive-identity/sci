@@ -202,12 +202,15 @@ async function handleAIRequest(req, res) {
     // tool — `claude`, raw curl, an SDK with stale creds — works as long as
     // Sci itself has the right key.
     injectCredentialForHost(hostname, req.headers, credentials);
-    // For /v1/messages: always use sci OAuth (CC native token is exhausted per-account).
-    // For init requests: pass through client's own token (too many to inject sci OAuth for all).
-    // The sci OAuth is rate-limited per-app, so we only use it where it matters.
-    const isMessageRequest = path.startsWith('/v1/messages');
+    // Inject sci's OAuth token only when the client sent no auth of its own
+    // (raw curl, an SDK without a key). Claude Code passes its own valid Max
+    // bearer through unchanged. NOTE: Anthropic's premium-model (sonnet/opus)
+    // rate limit is ACCOUNT-WIDE, shared across every OAuth token UUID on the
+    // account — swapping in sci's token does NOT get a separate budget, so
+    // there's no reason to override a working client bearer (and doing so adds
+    // a fragile dependency on ~/.sci/oauth.json staying refreshable).
     if (ANTHROPIC_HOSTS.has(hostname) && !credentials.anthropic &&
-        (isMessageRequest || !req.headers['authorization']) && readCache()) {
+        !req.headers['authorization'] && readCache()) {
         try {
             const token = await getAccessTokenSafe();
             req.headers['authorization'] = `Bearer ${token}`;
