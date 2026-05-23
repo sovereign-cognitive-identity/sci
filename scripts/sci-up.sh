@@ -38,15 +38,19 @@ check_proxy() {
 }
 
 echo "── sci stack health ──"
-# Primary proxy = 8080 node agent (works with the current ~/.sci/ca.crt + has
-# the SCI-147 fix). The 3001 Rust helper is OPTIONAL and currently expected
-# down: it can't parse the PKCS#1 ca.key the node agent writes (SCI-231). We
-# report its status but don't auto-revive it (that would just crash-loop).
-check_proxy "agent (com.sci.agent)" "com.sci.agent" 8080
-if nc -z 127.0.0.1 3001 2>/dev/null; then
-  green "helper (dev.sci.helper) listening on :3001"
+# Primary proxy = 3001 Rust helper (go-forward product). It uses its OWN CA at
+# ~/.sci/helper-ca/ (SCI-231); 8080 node agent uses ~/.sci/ca.crt. Both run.
+check_proxy "helper (dev.sci.helper)" "dev.sci.helper" 3001
+check_proxy "agent  (com.sci.agent)"  "com.sci.agent"  8080
+
+# (Re)build the CC trust bundle = node CA + helper CA, so both proxies validate.
+HELPER_CA="$HOME/.sci/helper-ca/ca.crt"
+BUNDLE="$HOME/.sci/ca-bundle.crt"
+if [[ -f "$CA" && -f "$HELPER_CA" ]]; then
+  cat "$CA" "$HELPER_CA" > "$BUNDLE"
+  green "trust bundle rebuilt ($(grep -c 'BEGIN CERTIFICATE' "$BUNDLE") CAs → $BUNDLE)"
 else
-  warn "helper (dev.sci.helper) down on :3001 — known, blocked on SCI-231 (CA key format). 8080 is the active proxy."
+  red "missing a CA for the bundle (node:$CA helper:$HELPER_CA)"
 fi
 
 [[ -f "$CA" ]] && green "CA cert present ($CA)" || red "CA cert missing ($CA)"
@@ -78,17 +82,18 @@ fi | while read -r status msg; do
   [[ "$status" == GREEN ]] && green "$msg" || red "$msg"
 done
 
-# Live smoke test: Haiku through :8080. No auth header → the agent injects sci's
-# OAuth from ~/.sci/oauth.json, exercising the full inject+forward path. Haiku is
-# the safe probe (premium models are OAuth-shape-gated + rate-limited).
-if nc -z 127.0.0.1 8080 2>/dev/null; then
+# Live smoke test: Haiku through :3001 (the go-forward proxy), validating against
+# the trust bundle (proper cert check, not -k). Haiku is the safe probe (premium
+# models are OAuth-shape-gated + rate-limited). The sci_t_chat_local sentinel
+# tells the helper to fall through to ~/.sci/oauth.json for upstream auth.
+if nc -z 127.0.0.1 3001 2>/dev/null && [[ -f "$BUNDLE" ]]; then
   body='{"model":"claude-haiku-4-5-20251001","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"reply OK"}]}'
-  resp="$(curl -sS --cacert "$CA" --max-time 25 --proxy http://127.0.0.1:8080 \
-    -H "anthropic-version: 2023-06-01" \
+  resp="$(curl -sS --cacert "$BUNDLE" --max-time 25 --proxy http://127.0.0.1:3001 \
+    -H "x-api-key: sci_t_chat_local" -H "anthropic-version: 2023-06-01" \
     -H "content-type: application/json" -d "$body" \
-    "https://api.anthropic.com/v1/messages?beta=true" 2>&1 | head -c 200)"
+    "https://api.anthropic.com/v1/messages" 2>&1 | head -c 200)"
   if echo "$resp" | grep -q 'message_start\|sci.anonymized'; then
-    green "live /v1/messages (haiku) through :8080 streamed OK"
+    green "live /v1/messages (haiku) through :3001 streamed OK"
   elif echo "$resp" | grep -q '"type":"error"'; then
     red "smoke test error: $(echo "$resp" | sed -n 's/.*\"type\":\"\([a-z_]*_error\)\".*/\1/p')"
   else

@@ -197,8 +197,16 @@ async fn main() -> Result<()> {
     );
 
     // ── 1. Ensure CA exists ───────────────────────────────────────────────
-    let ca = Arc::new(ensure_ca(&config_dir).context("ensure_ca")?);
-    tracing::info!(cert = %config_dir.join("ca.crt").display(), "Sci CA loaded");
+    // Use a helper-owned CA dir, separate from the node agent's ~/.sci/ca.crt
+    // (SCI-231): rcgen/ring can only load RSA keys as PKCS#8, but node-forge
+    // writes PKCS#1, so the two can't share one ca.key. The helper generates +
+    // loads its own (ECDSA) CA here; memory/oauth/creds stay in config_dir.
+    let ca_dir = config_dir.join("helper-ca");
+    tokio::fs::create_dir_all(&ca_dir)
+        .await
+        .with_context(|| format!("create CA dir {}", ca_dir.display()))?;
+    let ca = Arc::new(ensure_ca(&ca_dir).context("ensure_ca")?);
+    tracing::info!(cert = %ca_dir.join("ca.crt").display(), "Sci CA loaded");
 
     // ── 2. Build the rustls ServerConfig (one for the process) ────────────
     // The acceptor is cheap to clone — its `Arc<ServerConfig>` is shared

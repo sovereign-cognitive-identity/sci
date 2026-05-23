@@ -9,15 +9,14 @@
 #   here, before `exec claude`, is the only reliable way to get both the
 #   proxy routing AND trust of the Sci-CA-signed leaf certs.
 #
-# Routes through com.sci.agent on :8080 (the node agent). The 3001 Rust helper
-# would also work, but it can't parse the current PKCS#1 ~/.sci/ca.key (the node
-# agent regenerated the CA in a format rcgen rejects — see SCI-231), so it's the
-# 8080 agent until that's reconciled. The 8080 agent has the SCI-147 prefix fix,
-# SQLite memory, and signs leaves with the current ~/.sci/ca.crt.
+# Routes through dev.sci.helper on :3001 (the Rust helper — the go-forward
+# product). Per SCI-231 the helper now uses its OWN CA at ~/.sci/helper-ca/
+# (separate from the node agent's RSA-PKCS#1 ~/.sci/ca.crt). We trust BOTH via
+# ~/.sci/ca-bundle.crt so :3001 (helper CA) and :8080 (node CA) both validate.
 set -euo pipefail
 
-PROXY="http://127.0.0.1:8080"
-CA="$HOME/.sci/ca.crt"
+PROXY="http://127.0.0.1:3001"
+CA="$HOME/.sci/ca-bundle.crt"
 
 export HTTPS_PROXY="$PROXY"
 export HTTP_PROXY="$PROXY"
@@ -29,11 +28,11 @@ export no_proxy="127.0.0.1,localhost"
 export NODE_EXTRA_CA_CERTS="$CA"
 
 if [[ ! -f "$CA" ]]; then
-  echo "✗ $CA not found — start the sci helper once to generate it." >&2
+  echo "✗ $CA not found — run scripts/sci-up.sh to (re)build the trust bundle." >&2
   exit 1
 fi
-if ! nc -z 127.0.0.1 8080 2>/dev/null; then
-  echo "⚠️  sci agent not listening on :8080 (com.sci.agent)." >&2
+if ! nc -z 127.0.0.1 3001 2>/dev/null; then
+  echo "⚠️  sci helper not listening on :3001 (dev.sci.helper)." >&2
   echo "    Run: bash $(dirname "$0")/../scripts/sci-up.sh" >&2
 fi
 
