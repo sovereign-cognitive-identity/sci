@@ -217,6 +217,14 @@
         - { src: ca.crt, dest: /home/sci/.sci/ca.crt }
         - { src: ca.key, dest: /home/sci/.sci/ca.key }
 
+    - name: Fix CA file ownership inside container
+      tags: [deploy, ca]
+      when: ca_check.stdout | trim == "no"
+      shell: |
+        docker exec --user root \
+          $(docker ps --filter name=sci-control --format '{{ "{{" }}.ID{{ "}}" }}' | head -1) \
+          chown sci:sci /home/sci/.sci/ca.crt /home/sci/.sci/ca.key
+
     - name: Restart sci-control after CA copy
       tags: [deploy, ca]
       when: ca_check.stdout | trim == "no"
