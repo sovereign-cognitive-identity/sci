@@ -63,12 +63,13 @@ export async function createStorageAdapter(): Promise<StorageAdapter> {
     }
 
     case 'sqlite': {
-      // Local SQLite + HNSW — same backend the sci agent uses.
-      // Point SCI_LOCAL_DIR at ~/.sci/memory to share with the running agent.
-      const { iCloudAdapter } = await import('./icloud-adapter.js')
+      // Pure-local SQLite + HNSW — same on-disk store the sci agent uses, with
+      // NO sync layer (no iCloud copy, no control-plane push). Point
+      // SCI_LOCAL_DIR at ~/.sci/memory to share the agent's store.
+      const { SqliteAdapter } = await import('./sqlite-adapter.js')
       const localDir = process.env['SCI_LOCAL_DIR']
         ?? join(homedir(), '.sci', 'memory')
-      const adapter = new iCloudAdapter(localDir)
+      const adapter = new SqliteAdapter(localDir)
       await adapter.connect()
       return adapter
     }

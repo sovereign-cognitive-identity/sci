@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
-import pg from 'pg'
 import { runImport } from './import.js'
-import { drainPools, registerAgent, reader, writer } from '@sci/core'
+import { drainPools, registerAgent, reader, writer, createStorageAdapter } from '@sci/core'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { runBackup, runRestore } from './backup.js'
 import type { AgentTier } from '@sci/core'
@@ -14,8 +13,6 @@ const __dirname = dirname(__filename)
 // Resolve real MCP server path from CLI location: packages/cli/dist → packages/mcp/dist
 const MCP_SERVER_PATH = resolve(__dirname, '../../mcp/dist/index.js')
 
-const { Pool } = pg
-
 const program = new Command()
 program.name('sci').description('Sovereign Cognitive Identity').version('0.1.0')
 
@@ -23,29 +20,25 @@ program.name('sci').description('Sovereign Cognitive Identity').version('0.1.0')
 
 program
   .command('status')
-  .description('Check Postgres connection and memory counts')
+  .description('Check storage backend and memory counts')
   .action(async () => {
-    const pool = new Pool({ connectionString: requireEnv('SCI_DB_READER_URL') })
+    // Backend-agnostic: honors SCI_STORAGE_BACKEND (sqlite | local/postgres | …).
+    // Defaults to sqlite (~/.sci/memory) so `sci status` works with no Docker.
+    process.env['SCI_STORAGE_BACKEND'] ??= 'sqlite'
     try {
-      const [episodic, semantic, identity, embeddings, queue] = await Promise.all([
-        pool.query<{ count: string }>('SELECT COUNT(*) FROM episodic_memories'),
-        pool.query<{ count: string }>('SELECT COUNT(*) FROM semantic_nodes'),
-        pool.query<{ count: string }>('SELECT COUNT(*) FROM identity_facts'),
-        pool.query<{ count: string }>('SELECT COUNT(*) FROM embeddings'),
-        pool.query<{ count: string }>(`SELECT COUNT(*) FROM write_queue WHERE status = 'pending'`),
-      ])
+      const adapter = await createStorageAdapter()
+      const stats = await adapter.getStats()
       console.log('ok: true')
-      console.log(`episodic:        ${episodic.rows[0]!.count}`)
-      console.log(`semantic:        ${semantic.rows[0]!.count}`)
-      console.log(`identity:        ${identity.rows[0]!.count}`)
-      console.log(`embeddings:      ${embeddings.rows[0]!.count}`)
-      console.log(`queue (pending): ${queue.rows[0]!.count}`)
+      console.log(`backend:    ${stats.backend}`)
+      console.log(`episodic:   ${stats.episodic}`)
+      console.log(`semantic:   ${stats.semantic}`)
+      console.log(`identity:   ${stats.identity}`)
+      console.log(`embeddings: ${stats.embeddings}`)
+      await adapter.disconnect()
     } catch (err) {
       console.error('ok: false')
       console.error(err instanceof Error ? err.message : String(err))
       process.exit(1)
-    } finally {
-      await pool.end()
     }
   })
 
