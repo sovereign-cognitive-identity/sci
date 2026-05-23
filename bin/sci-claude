@@ -9,13 +9,14 @@
 #   here, before `exec claude`, is the only reliable way to get both the
 #   proxy routing AND trust of the Sci-CA-signed leaf certs.
 #
-# Routes through dev.sci.helper on :3001 (the Rust helper — the go-forward
-# product). Per SCI-231 the helper now uses its OWN CA at ~/.sci/helper-ca/
-# (separate from the node agent's RSA-PKCS#1 ~/.sci/ca.crt). We trust BOTH via
-# ~/.sci/ca-bundle.crt so :3001 (helper CA) and :8080 (node CA) both validate.
+# INTERIM: routes through com.sci.agent on :8080 (node agent), which handles
+# real CC requests cleanly. The go-forward is :3001 (Rust helper) — its cert is
+# fixed (SCI-231) — but it currently 400s real CC requests on a cache_control
+# ordering bug (SCI-239). Flip PROXY back to :3001 once SCI-239 lands.
+# CA = the bundle (node + helper CAs) so either port validates.
 set -euo pipefail
 
-PROXY="http://127.0.0.1:3001"
+PROXY="http://127.0.0.1:8080"
 CA="$HOME/.sci/ca-bundle.crt"
 
 export HTTPS_PROXY="$PROXY"
@@ -31,8 +32,8 @@ if [[ ! -f "$CA" ]]; then
   echo "✗ $CA not found — run scripts/sci-up.sh to (re)build the trust bundle." >&2
   exit 1
 fi
-if ! nc -z 127.0.0.1 3001 2>/dev/null; then
-  echo "⚠️  sci helper not listening on :3001 (dev.sci.helper)." >&2
+if ! nc -z 127.0.0.1 8080 2>/dev/null; then
+  echo "⚠️  sci agent not listening on :8080 (com.sci.agent)." >&2
   echo "    Run: bash $(dirname "$0")/../scripts/sci-up.sh" >&2
 fi
 
