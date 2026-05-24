@@ -1510,13 +1510,43 @@ fn mark_cache_control(body: &mut Value) {
 
     let cc = serde_json::json!({"type": "ephemeral"});
 
-    // 1. Tools — mark the last tool (idempotent: skip if already marked).
+    // Tools are the FIRST segment Anthropic processes (order: tools, system,
+    // messages) and ttl=1h must never follow ttl=5m. Claude Code marks its system
+    // prompt with ttl=1h, so a default (5m) breakpoint on tools[last] would sit
+    // BEFORE that 1h block → HTTP 400. When any 1h block is already present, mark
+    // tools with 1h instead (1h at the very front is always order-valid).
+    let has_1h = ["system", "tools"].iter().any(|seg| {
+        body.get(*seg).and_then(|v| v.as_array()).is_some_and(|arr| {
+            arr.iter().any(|b| {
+                b.get("cache_control")
+                    .and_then(|c| c.get("ttl"))
+                    .and_then(|v| v.as_str()) == Some("1h")
+            })
+        })
+    });
+    let tools_cc = if has_1h {
+        serde_json::json!({"type": "ephemeral", "ttl": "1h"})
+    } else {
+        cc.clone()
+    };
+
+    // 1. Tools — mark the last NON-DEFERRED tool (idempotent: skip if already
+    //    marked). Anthropic rejects (HTTP 400) cache_control on a tool with
+    //    defer_loading=true ("tools with defer_loading cannot use prompt
+    //    caching") — and Claude Code's MCP tools are deferred and typically
+    //    sit at the end of tools[]. Marking the last non-deferred tool caches
+    //    the stable built-in tool prefix without touching deferred ones.
     if budget > 0 {
         if let Some(tools) = body.get_mut("tools").and_then(|v| v.as_array_mut()) {
-            if let Some(last) = tools.last_mut().and_then(|v| v.as_object_mut()) {
-                if !last.contains_key("cache_control") {
-                    last.insert("cache_control".into(), cc.clone());
-                    budget -= 1;
+            let idx = tools.iter().rposition(|t| {
+                t.get("defer_loading").and_then(|v| v.as_bool()) != Some(true)
+            });
+            if let Some(i) = idx {
+                if let Some(obj) = tools[i].as_object_mut() {
+                    if !obj.contains_key("cache_control") {
+                        obj.insert("cache_control".into(), tools_cc);
+                        budget -= 1;
+                    }
                 }
             }
         }
@@ -2478,36 +2508,60 @@ pub fn inject_project_context(body: &mut Value, state: &Arc<HandlerState>) {
     }
 }
 
-/// SCI-239: Ensure all `cache_control` blocks with `ttl="1h"` appear
-/// before any blocks with `ttl="5m"` (or no TTL, which defaults to 5m)
-/// within the `system` array.
+/// SCI-239 + SCI-147: keep the `system` array valid on BOTH of Anthropic's
+/// constraints, while preserving Claude Code's own block order as much as
+/// possible.
 ///
-/// The Anthropic API hard-rejects (HTTP 400) requests where a ttl=1h
-/// cache_control block follows a ttl=5m block. Claude Code stamps ttl=1h
-/// on its large static system-prompt blocks; we append a recall block
-/// (no explicit TTL, i.e. 5m default) and may insert other blocks.
-/// Intermediate manipulations (e.g. `prepend_claude_code_prefix` split)
-/// can displace ttl=1h blocks behind ttl=5m blocks.
+/// 1. **Ordering (HTTP 400):** among `cache_control` *breakpoints* (across the
+///    global tools → system → messages sequence) every `ttl=1h` must precede
+///    every `ttl=5m`. A block with NO `cache_control` is not a breakpoint and
+///    does NOT count as 5m — verified live: Claude Code interleaves bare blocks
+///    among its 1h blocks and Anthropic accepts it. So we only reorder when
+///    there is a genuine `ttl=1h`-after-`ttl=5m` violation *inside* system, and
+///    when we do, a stable 1h-first sort fixes it. (The proxy only ever adds 5m
+///    to a trailing message block, never to system, so this rarely fires.)
 ///
-/// This is a **safety-net stable sort**: blocks without cache_control or
-/// with ttl≠1h are left in their relative positions relative to each
-/// other; only the cross-group ordering (1h before 5m) is enforced.
-/// Blocks without cache_control are treated as ttl=5m (same as Anthropic's
-/// default) and thus sort after ttl=1h blocks.
+/// 2. **Identity gate (HTTP 429):** Anthropic's OAuth-bearer abuse gate keys on
+///    `system[0]` being the canonical Claude Code prefix. `inject_project_context`,
+///    `prepend_claude_code_prefix`, and the sort above can all displace it, so we
+///    re-pin the prefix block to index 0 last. The prefix block is bare, so
+///    leading with it never reintroduces an ordering violation.
 ///
-/// Called unconditionally after all system-array mutations so the
-/// invariant holds regardless of which path was taken.
+/// Called unconditionally after all system-array mutations.
 fn normalize_cache_control_order(body: &mut Value) {
     let Some(Value::Array(blocks)) = body.get_mut("system") else { return; };
 
-    // Stable sort: 1h blocks first, everything else after.
-    // We use a key function: 0 for ttl=1h, 1 for all others.
-    blocks.sort_by_key(|b| {
-        let ttl = b.get("cache_control")
+    let explicit_ttl = |b: &Value| -> Option<String> {
+        b.get("cache_control")
             .and_then(|cc| cc.get("ttl"))
-            .and_then(|v| v.as_str());
-        if ttl == Some("1h") { 0u8 } else { 1u8 }
-    });
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+
+    // Detect a real ordering violation: a 1h breakpoint that follows a 5m
+    // breakpoint. Bare blocks (no cache_control) are skipped entirely.
+    let mut seen_5m = false;
+    let mut violation = false;
+    for b in blocks.iter() {
+        match explicit_ttl(b).as_deref() {
+            Some("1h") => { if seen_5m { violation = true; break; } }
+            Some(_) => seen_5m = true,   // an explicit non-1h ttl (i.e. 5m)
+            None => {}                    // bare block — not a breakpoint
+        }
+    }
+    if violation {
+        blocks.sort_by_key(|b| if explicit_ttl(b).as_deref() == Some("1h") { 0u8 } else { 1u8 });
+    }
+
+    // Re-pin the canonical Claude Code prefix to system[0] for the identity gate.
+    if let Some(pos) = blocks.iter().position(|b| {
+        b.get("text").and_then(|t| t.as_str()) == Some(CLAUDE_CODE_SYSTEM_PREFIX)
+    }) {
+        if pos != 0 {
+            let prefix_block = blocks.remove(pos);
+            blocks.insert(0, prefix_block);
+        }
+    }
 }
 
 /// Idempotent: if the existing system field already starts with the
@@ -3153,6 +3207,137 @@ mod tests {
         let arr = body["system"].as_array().expect("array");
         assert_eq!(arr[0]["text"], "static");
         assert_eq!(arr[1]["text"], "dynamic");
+    }
+
+    #[test]
+    fn normalize_keeps_canonical_prefix_at_zero_when_rest_is_1h() {
+        // SCI-147 vs SCI-239 reconciliation. Claude Code can send
+        // system[0] = "<prefix>\n\n<content>" carrying cache_control ttl=1h.
+        // prepend_claude_code_prefix splits that into [prefix(bare), rest(1h)].
+        // The OAuth abuse gate keys on system[0] being the exact canonical
+        // prefix, so it MUST remain at index 0. The prefix block stays bare
+        // (a bare block is not a 5m breakpoint, so leading with it before a 1h
+        // block is valid) — we do NOT promote it.
+        let mut body: Value = serde_json::json!({
+            "system": [{
+                "type": "text",
+                "text": format!("{}\n\nProject guidelines: be terse.", CLAUDE_CODE_SYSTEM_PREFIX),
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+            }],
+            "messages": []
+        });
+        prepend_claude_code_prefix(&mut body);
+        normalize_cache_control_order(&mut body);
+        let arr = body["system"].as_array().expect("array");
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX,
+            "canonical prefix must stay at system[0] after normalize: {arr:?}");
+        assert!(arr[0].get("cache_control").is_none(),
+            "prefix block must stay bare (not promoted to a breakpoint): {arr:?}");
+        assert_eq!(arr[1]["cache_control"]["ttl"], "1h",
+            "the 1h content block follows the bare prefix: {arr:?}");
+    }
+
+    #[test]
+    fn normalize_repins_displaced_prefix_to_zero() {
+        // Live repro (2026-05-24): Claude Code sends the bare canonical prefix
+        // as its own block, with separate 1h content blocks. The old 1h-first
+        // sort hoisted the 1h blocks ahead of the bare prefix, pushing it to
+        // system[3] → system[0] no longer matched the prefix → Anthropic 429.
+        // No real 1h-after-5m violation exists here, so we must NOT reorder the
+        // content blocks; we only re-pin the prefix to index 0.
+        let mut body: Value = serde_json::json!({
+            "system": [
+                {"type":"text","text":"You are an interactive agent","cache_control":{"type":"ephemeral","ttl":"1h"}},
+                {"type":"text","text":"For actions","cache_control":{"type":"ephemeral","ttl":"1h"}},
+                {"type":"text","text":"x-anthropic-billing-header"},
+                {"type":"text","text": CLAUDE_CODE_SYSTEM_PREFIX},
+                {"type":"text","text":"You have memory of previous interactions"},
+            ],
+            "messages": []
+        });
+        normalize_cache_control_order(&mut body);
+        let arr = body["system"].as_array().expect("array");
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX,
+            "displaced prefix must be re-pinned to system[0]: {arr:?}");
+        // No spurious reordering of the other (already-valid) blocks.
+        assert_eq!(arr[1]["text"], "You are an interactive agent");
+        assert_eq!(arr[2]["text"], "For actions");
+    }
+
+    #[test]
+    fn tools_breakpoint_does_not_precede_1h_system_block() {
+        // Repro of the live 400: "system.0.cache_control.ttl: a ttl='1h' block
+        // must not come after a ttl='5m' block" (processing order: tools, system,
+        // messages). Claude Code sends tools WITHOUT cache_control + a system
+        // prefix block with ttl=1h. mark_cache_control stamps a default (5m)
+        // breakpoint on tools[last]; tools precede system, so that 5m lands before
+        // the system 1h block → Anthropic 400. After the full pipeline, the global
+        // [tools, system, messages] cache_control sequence must have NO 5m before
+        // any 1h.
+        let mut body: Value = serde_json::json!({
+            "tools": [
+                {"name":"Read","input_schema":{"type":"object"}},
+                {"name":"Bash","input_schema":{"type":"object"}}
+            ],
+            "system": [{
+                "type":"text",
+                "text": format!("{}\n\nProject guidelines.", CLAUDE_CODE_SYSTEM_PREFIX),
+                "cache_control": {"type":"ephemeral","ttl":"1h"}
+            }],
+            "messages": [{"role":"user","content":"hi"}]
+        });
+        mark_cache_control(&mut body);
+        prepend_claude_code_prefix(&mut body);
+        normalize_cache_control_order(&mut body);
+
+        // Effective ttl: explicit ttl, else (cache_control present, no ttl) == 5m.
+        let ttl = |b: &Value| -> Option<String> {
+            b.get("cache_control").map(|cc| {
+                cc.get("ttl").and_then(|v| v.as_str()).unwrap_or("5m").to_string()
+            })
+        };
+        let mut seq: Vec<String> = Vec::new();
+        for seg in ["tools", "system"] {
+            if let Some(arr) = body.get(seg).and_then(|v| v.as_array()) {
+                for b in arr { if let Some(t) = ttl(b) { seq.push(t); } }
+            }
+        }
+        if let Some(msgs) = body.get("messages").and_then(|v| v.as_array()) {
+            for m in msgs {
+                if let Some(content) = m.get("content").and_then(|v| v.as_array()) {
+                    for b in content { if let Some(t) = ttl(b) { seq.push(t); } }
+                }
+            }
+        }
+        let mut seen_5m = false;
+        for t in &seq {
+            if t == "5m" { seen_5m = true; }
+            if t == "1h" {
+                assert!(!seen_5m, "ttl=1h after ttl=5m → Anthropic 400. seq={seq:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn mark_cache_control_skips_deferred_tools() {
+        // Anthropic 400: "Tool '...' cannot have both defer_loading=true and
+        // cache_control set." Claude Code's MCP tools are deferred and sit last
+        // in tools[]; the breakpoint must land on the last NON-deferred tool.
+        let mut body: Value = serde_json::json!({
+            "tools": [
+                {"name":"Read","input_schema":{"type":"object"}},
+                {"name":"Bash","input_schema":{"type":"object"}},
+                {"name":"mcp__sci__memory_recall","input_schema":{"type":"object"},"defer_loading":true}
+            ],
+            "system": [{"type":"text","text": CLAUDE_CODE_SYSTEM_PREFIX}],
+            "messages": [{"role":"user","content":"hi"}]
+        });
+        mark_cache_control(&mut body);
+        let tools = body["tools"].as_array().expect("tools");
+        assert!(tools[2].get("cache_control").is_none(),
+            "deferred tool must not receive cache_control: {tools:?}");
+        assert!(tools[1].get("cache_control").is_some(),
+            "last non-deferred tool (Bash) should carry the breakpoint: {tools:?}");
     }
 
     // ── SCI: non-streaming JSON deanonymizer ──────────────────────────────
