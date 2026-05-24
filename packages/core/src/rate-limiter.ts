@@ -1,71 +1,69 @@
 /**
- * HTTP rate limiter using token bucket algorithm.
+ * HTTP rate limiter — token bucket algorithm.
  *
- * Environment variables:
+ * This is Sci's local copy of @caseyzandbergen/rate-limiter.
+ * Source of truth: ~/src/rate-limiter
+ *
+ * Sci-specific defaults: envPrefix = 'SCI_RATE_LIMIT'
+ *
+ * Environment variables (Sci defaults):
  *   SCI_RATE_LIMIT_RPS     — requests per second (default: 10)
  *   SCI_RATE_LIMIT_BURST   — burst capacity in tokens (default: RPS)
  *   SCI_RATE_LIMIT_ENABLED — set to "false" to disable (default: "true")
- *
- * Usage:
- *   const limiter = new RateLimiter()
- *   await limiter.acquire()  // blocks until token available
- *   // make HTTP request
+ *   SCI_RATE_LIMIT_LOG     — set to "true" to enable logging
  */
 
-interface Config {
-  rpsLimit: number  // tokens per second
-  burst: number     // max tokens in bucket
-  enabled: boolean
+export interface RateLimiterOptions {
+  rpsLimit?: number
+  burst?: number
+  enabled?: boolean
+  /** Env var prefix. Default for Sci: 'SCI_RATE_LIMIT'. Set null to ignore env vars. */
+  envPrefix?: string | null
+  log?: boolean
 }
 
 export class RateLimiter {
   private tokens: number
   private lastRefill: number
-  private config: Config
-  private readonly log = process.env['SCI_LOG_RATELIMIT'] === 'true'
+  private readonly rpsLimit: number
+  private readonly burst: number
+  private readonly enabled: boolean
+  private readonly log: boolean
 
-  constructor(config?: Partial<Config>) {
-    this.config = {
-      rpsLimit: parseFloat(process.env['SCI_RATE_LIMIT_RPS'] ?? '10'),
-      burst: parseInt(process.env['SCI_RATE_LIMIT_BURST'] ?? '', 10),
-      enabled: process.env['SCI_RATE_LIMIT_ENABLED'] !== 'false',
-    }
-    // Default burst = RPS if not specified
-    if (!this.config.burst) this.config.burst = this.config.rpsLimit
+  constructor(options: RateLimiterOptions = {}) {
+    const prefix = options.envPrefix !== undefined ? options.envPrefix : 'SCI_RATE_LIMIT'
+    const env = (key: string): string | undefined =>
+      prefix != null ? process.env[`${prefix}_${key}`] : undefined
 
-    Object.assign(this.config, config)
+    const rpsLimit = options.rpsLimit ?? parseFloat(env('RPS') ?? '10')
+    const burst = options.burst ?? (parseInt(env('BURST') ?? '', 10) || rpsLimit)
+    const enabled = options.enabled ?? env('ENABLED') !== 'false'
+    const log = options.log ?? env('LOG') === 'true'
 
-    this.tokens = this.config.burst
+    this.rpsLimit = rpsLimit
+    this.burst = burst
+    this.enabled = enabled
+    this.log = log
+    this.tokens = burst
     this.lastRefill = Date.now()
 
-    if (this.log && this.config.enabled) {
-      console.log(
-        `[rate-limiter] enabled: ${this.config.rpsLimit} RPS, burst: ${this.config.burst}`
-      )
+    if (this.log && this.enabled) {
+      console.log(`[rate-limiter] enabled: ${this.rpsLimit} RPS, burst: ${this.burst}`)
     }
   }
 
-  /**
-   * Refill tokens based on elapsed time since last refill.
-   * Token generation rate = rpsLimit tokens/second.
-   */
   private refillBucket(): void {
     const now = Date.now()
-    const elapsed = (now - this.lastRefill) / 1000 // seconds
-    const tokensToAdd = elapsed * this.config.rpsLimit
-
-    this.tokens = Math.min(this.config.burst, this.tokens + tokensToAdd)
+    const elapsed = (now - this.lastRefill) / 1000
+    const added = elapsed * this.rpsLimit
+    this.tokens = Math.min(this.burst, this.tokens + added)
     this.lastRefill = now
   }
 
-  /**
-   * Block until a token is available, then consume it.
-   * If rate limiting is disabled, returns immediately.
-   */
+  /** Block until a token is available, then consume it. */
   async acquire(): Promise<void> {
-    if (!this.config.enabled) return
+    if (!this.enabled) return
 
-    // Fast path: token available
     this.refillBucket()
     if (this.tokens >= 1) {
       this.tokens -= 1
@@ -75,25 +73,19 @@ export class RateLimiter {
       return
     }
 
-    // Slow path: wait for next token
     const tokensNeeded = 1 - this.tokens
-    const waitMs = (tokensNeeded / this.config.rpsLimit) * 1000
-
+    const waitMs = (tokensNeeded / this.rpsLimit) * 1000
     if (this.log) {
       console.log(`[rate-limiter] waiting ${waitMs.toFixed(0)}ms for token`)
     }
-
     await new Promise(resolve => setTimeout(resolve, waitMs))
     this.refillBucket()
     this.tokens -= 1
   }
 
-  /**
-   * Non-blocking check. Returns true if a token is available without waiting.
-   */
+  /** Non-blocking: consume a token if available, return false if not. */
   tryAcquire(): boolean {
-    if (!this.config.enabled) return true
-
+    if (!this.enabled) return true
     this.refillBucket()
     if (this.tokens >= 1) {
       this.tokens -= 1
@@ -102,44 +94,27 @@ export class RateLimiter {
     return false
   }
 
-  /**
-   * Get current token count (for debugging).
-   */
+  /** Current limiter state (for debugging). */
   getStatus(): { tokens: number; rpsLimit: number; burst: number; enabled: boolean } {
     this.refillBucket()
-    return {
-      tokens: this.tokens,
-      rpsLimit: this.config.rpsLimit,
-      burst: this.config.burst,
-      enabled: this.config.enabled,
-    }
+    return { tokens: this.tokens, rpsLimit: this.rpsLimit, burst: this.burst, enabled: this.enabled }
   }
 }
 
-/**
- * Wrap fetch to apply rate limiting.
- *
- * Usage:
- *   const limiter = new RateLimiter()
- *   const limitedFetch = rateLimitFetch(fetch, limiter)
- *   await limitedFetch('https://api.example.com/endpoint')
- */
+/** Wrap a fetch function to apply rate limiting before every request. */
 export function rateLimitFetch(
-  fetchFn: typeof global.fetch,
+  fetchFn: typeof globalThis.fetch,
   limiter: RateLimiter
-): typeof global.fetch {
-  return async (...args: Parameters<typeof global.fetch>): Promise<Response> => {
+): typeof globalThis.fetch {
+  return async (...args: Parameters<typeof globalThis.fetch>): Promise<Response> => {
     await limiter.acquire()
     return fetchFn(...args)
   }
 }
 
-// Create a singleton instance for convenience
 let _globalLimiter: RateLimiter | null = null
 
-export function getGlobalLimiter(): RateLimiter {
-  if (!_globalLimiter) {
-    _globalLimiter = new RateLimiter()
-  }
+export function getGlobalLimiter(options?: RateLimiterOptions): RateLimiter {
+  if (!_globalLimiter) _globalLimiter = new RateLimiter(options)
   return _globalLimiter
 }
