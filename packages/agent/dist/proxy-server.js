@@ -50,6 +50,133 @@ let adapter = null;
 // Periodic sync timer — cleared on shutdown.
 let syncTimer = null;
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+// ── Session-end identity extraction ──────────────────────────────────────────
+//
+// On shutdown, read the last N user-role episodic memories written during this
+// agent session, ask Claude Haiku to extract durable identity facts about
+// Casey, conflict-check each candidate against existing identity_facts, and
+// POST new ones to the helper (which handles embedding + storage).
+//
+// All failures are swallowed — this must never block or throw during shutdown.
+const HELPER_ADMIN_URL = process.env.SCI_HELPER_URL || 'http://127.0.0.1:3002';
+const IDENTITY_EXTRACT_PROMPT = `You are analyzing conversation chunks from an AI session.
+Extract ONLY facts that describe the user personally:
+  - preferences (tools, style, workflow)
+  - skills (technical areas, expertise)
+  - values (principles, what they care about)
+  - relationships (people, companies they work with)
+  - background (career, roles, projects)
+
+Rules:
+1. Facts must be attributable to the USER, not the assistant.
+2. Must be durable ("prefers X", not "is working on X today").
+3. One concise sentence per fact.
+4. Confidence: 1.0 = stated explicitly, 0.7 = inferred from behaviour.
+
+Return JSON array only — no prose:
+[{"content":"...","category":"preference|skill|value|relationship|background","confidence":0.0}]
+Return [] if nothing found.
+
+Chunks:
+---
+{chunks}
+---`;
+async function extractIdentityFacts() {
+    // Use the cached OAuth access token (same auth path as all intercepted calls).
+    let authHeader;
+    try {
+        const token = await getAccessTokenSafe();
+        if (!token) {
+            process.stderr.write('[sci-agent] identity-extract: no OAuth token, skipping\n');
+            return;
+        }
+        authHeader = `Bearer ${token}`;
+    }
+    catch {
+        process.stderr.write('[sci-agent] identity-extract: could not read OAuth token, skipping\n');
+        return;
+    }
+    // Fetch recent memories from the helper (last 100 episodic, user-role only).
+    let recentChunks;
+    try {
+        const res = await fetch(`${HELPER_ADMIN_URL}/sci/memories?limit=100`, { signal: AbortSignal.timeout(5_000) });
+        const { nodes } = await res.json();
+        recentChunks = (nodes ?? [])
+            .filter(n => n.type === 'episodic'
+                && n.metadata?.role === 'user'
+                && typeof n.content === 'string'
+                && n.content.length > 80
+                && n.content.length < 4_000)
+            .map(n => n.content)
+            .slice(0, 60);
+    }
+    catch (e) {
+        process.stderr.write(`[sci-agent] identity-extract: fetch memories failed: ${e}\n`);
+        return;
+    }
+    if (recentChunks.length === 0)
+        return;
+    // Call Claude Haiku for extraction.
+    let facts;
+    try {
+        const body = JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 1024,
+            messages: [{ role: 'user', content: IDENTITY_EXTRACT_PROMPT.replace('{chunks}', recentChunks.join('\n---\n')) }],
+        });
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Authorization': authHeader, 'anthropic-version': '2023-06-01', 'anthropic-beta': ANTHROPIC_OAUTH_BETA, 'content-type': 'application/json' },
+            body,
+            signal: AbortSignal.timeout(20_000),
+        });
+        const data = await res.json();
+        const text = data.content?.[0]?.text ?? '';
+        const m = text.match(/\[[\s\S]*\]/);
+        facts = m ? JSON.parse(m[0]) : [];
+    }
+    catch (e) {
+        process.stderr.write(`[sci-agent] identity-extract: LLM call failed: ${e}\n`);
+        return;
+    }
+    if (!Array.isArray(facts) || facts.length === 0)
+        return;
+    // Fetch existing identity facts for conflict check.
+    let existing = [];
+    try {
+        const res = await fetch(`${HELPER_ADMIN_URL}/sci/identity?limit=100`, { signal: AbortSignal.timeout(5_000) });
+        existing = await res.json();
+    }
+    catch { /* best-effort */ }
+    const existingTexts = existing.map(f => f.content?.toLowerCase() ?? '');
+    // POST each new fact that isn't already covered.
+    for (const fact of facts) {
+        if (!fact.content || typeof fact.content !== 'string')
+            continue;
+        // Simple token-overlap check — same threshold as bootstrap script.
+        const cand = new Set(fact.content.toLowerCase().split(/\s+/));
+        const duplicate = existingTexts.some(ex => {
+            const exSet = new Set(ex.split(/\s+/));
+            const inter = [...cand].filter(w => exSet.has(w)).length;
+            const union = new Set([...cand, ...exSet]).size;
+            return union > 0 && inter / union > 0.7;
+        });
+        if (duplicate)
+            continue;
+        try {
+            await fetch(`${HELPER_ADMIN_URL}/sci/memories`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ content: fact.content, kind: 'identity', category: fact.category, confidence: fact.confidence ?? 0.8 }),
+                signal: AbortSignal.timeout(8_000),
+            });
+            process.stderr.write(`[sci-agent] identity-extract: stored [${fact.category ?? '?'}] ${fact.content.slice(0, 80)}\n`);
+        }
+        catch (e) {
+            process.stderr.write(`[sci-agent] identity-extract: POST failed: ${e}\n`);
+        }
+    }
+}
 // Credentials are loaded once at startup. The agent process is long-lived;
 // re-reading on every request would be cheap but pointless. If the user
 // edits ~/.sci/credentials.env they restart the agent — same shape as
@@ -156,6 +283,15 @@ export async function closeAdapter() {
     }
     if (!adapter)
         return;
+    // Extract identity facts from this session's memories before shutting down.
+    // Fire-and-forget with a hard cap so shutdown never hangs.
+    try {
+        await Promise.race([
+            extractIdentityFacts(),
+            new Promise(r => setTimeout(r, 30_000)), // 30s max
+        ]);
+    }
+    catch { /* swallow — never block shutdown */ }
     // Run a final sync before disconnecting so nothing written since the last
     // interval is lost.
     try {
