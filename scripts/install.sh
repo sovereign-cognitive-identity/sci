@@ -6,9 +6,8 @@
 #   ./scripts/install.sh                          # auto-detect arch, download latest
 #   ./scripts/install.sh /path/to/tarball.tar.gz  # use a local tarball
 #
-# Proxy note: targets :3001 (sci-helper Rust binary). Requires SCI-239 fix
-# before the Rust helper proxy is fully functional. The node agent runs on
-# :8080 as a fallback. Both are installed and supervised by launchd.
+# Proxy: HTTPS traffic from Claude Code routes through sci-helper on :3001.
+# The node agent runs on :8080. Both are supervised by launchd.
 
 set -euo pipefail
 
@@ -31,14 +30,14 @@ green "Platform: macOS"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
-  arm64)  ARCH_LABEL="arm64" ;;
-  x86_64) ARCH_LABEL="x86_64" ;;
+  arm64)  ARCH_TARGET="aarch64-apple-darwin" ;;
+  x86_64) ARCH_TARGET="x86_64-apple-darwin" ;;
   *)
     red "Unsupported CPU architecture: $ARCH"
     exit 1
     ;;
 esac
-green "Architecture: $ARCH_LABEL"
+green "Architecture: $ARCH ($ARCH_TARGET)"
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -75,7 +74,7 @@ else
     red "Could not fetch latest release version from GitHub"
     exit 1
   fi
-  TARBALL_NAME="sci-darwin-${ARCH_LABEL}-${VERSION}.tar.gz"
+  TARBALL_NAME="sci-${ARCH_TARGET}-${VERSION}.tar.gz"
   URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL_NAME}"
   info "Downloading $TARBALL_NAME..."
   curl -fsSL --progress-bar "$URL" -o "$TMP/$TARBALL_NAME"
@@ -239,8 +238,6 @@ AGENT_PLIST="$LAUNCH_AGENTS/com.sci.agent.plist"
 NODE_BIN="$(command -v node 2>/dev/null || echo "/opt/homebrew/bin/node")"
 
 # Write dev.sci.helper.plist (Rust helper — port 3001)
-# NOTE: :3001 requires SCI-239 to be fixed before this proxy is fully functional.
-# The node agent (:8080) serves as fallback proxy in the interim.
 write_helper_plist() {
   cat > "$HELPER_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -431,9 +428,6 @@ else:
 if "env" not in data:
     data["env"] = {}
 
-# NOTE: :3001 = Rust helper (requires SCI-239 fix for full functionality).
-# :8080 = Node agent (always available as fallback).
-# For now we configure :3001 as the proxy target per the SCI-253 spec.
 data["env"]["HTTPS_PROXY"] = "http://127.0.0.1:3001"
 data["env"]["HTTP_PROXY"]  = "http://127.0.0.1:3001"
 data["env"]["NODE_EXTRA_CA_CERTS"] = ca_path
@@ -442,7 +436,7 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
 PY
 green "Proxy config written to $CLAUDE_SETTINGS"
-info "  HTTPS_PROXY=http://127.0.0.1:3001 (SCI-239 must be fixed for full function)"
+info "  HTTPS_PROXY=http://127.0.0.1:3001"
 info "  NODE_EXTRA_CA_CERTS=$CA_BUNDLE_PATH"
 
 # ── Final status check ────────────────────────────────────────────────────────
