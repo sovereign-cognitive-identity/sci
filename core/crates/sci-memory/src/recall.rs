@@ -1,23 +1,21 @@
-//! Recall: vec0 ANN search + keyword boost + RRF merge.
+//! Recall: vec0 ANN search + informativeness weighting + keyword boost.
 //!
 //!   1. For each requested memory class (`episodic` / `semantic` /
 //!      `identity`), issue a `vec0 MATCH` query — sqlite-vec's ANN index
 //!      returns the top-k nearest vectors in sub-millisecond time regardless
 //!      of corpus size.
-//!   2. Apply a keyword boost: +0.02 to the score if the row's `content`
-//!      contains the lowercased query as a substring.
-//!   3. RRF merge across types: `1 / (rank + 1 + 60)`.
-//!   4. Truncate to `limit`.
+//!   2. Compute `base = 1/(1+L2_distance)` (higher = semantically closer).
+//!   3. Apply an informativeness factor based on content length: very short
+//!      chunks (headings, bare questions) are demoted so substantive content
+//!      ranks above them even when the short chunk is marginally closer in
+//!      vector space.
+//!   4. Apply a keyword boost: +0.02 if the content contains the raw query.
+//!   5. Sort by adjusted score, deduplicate by id, truncate to `limit`.
+//!      Return the adjusted score directly so callers see a meaningful signal.
 //!
 //! The distance metric from vec0 is L2. For BGE-base-en-v1.5 (which
-//! emits L2-normalised vectors) L2 distance and cosine distance are
-//! monotonically related: `cosine_dist = L2_dist² / 2`. Ranking by
-//! ascending L2 gives the same ordering as ranking by descending cosine,
-//! so the RRF merge is unaffected.
-//!
-//! `score` on each DenseHit is stored as `1 / (1 + L2_distance)` — a
-//! value in (0, 1] where higher is better — purely so the "sort descending
-//! by score" path in the RRF merge behaves intuitively.
+//! emits L2-normalised vectors) L2 and cosine distance are monotonically
+//! related: `cosine_dist = L2_dist² / 2`.
 
 use crate::error::Result;
 use crate::types::{Metadata, RecallQuery, RecallResult, RecallType};
@@ -94,8 +92,8 @@ pub fn recall(conn: &Connection, q: &RecallQuery<'_>) -> Result<Vec<RecallResult
     let types: &[RecallType] = if q.types.is_empty() { &all_types } else { q.types };
 
     let lower_query = q.query.to_lowercase();
-    // Over-fetch per type so the RRF merge has enough candidates even after
-    // the profile_id post-filter drops some vec0 results.
+    // Over-fetch so we have enough candidates after the profile_id post-filter
+    // drops some vec0 rows and the informativess reranking shuffles the order.
     let k = (q.limit * 6).max(50) as i64;
 
     let query_bytes = embedding_to_vec0_bytes(q.query_embedding);
@@ -106,31 +104,28 @@ pub fn recall(conn: &Connection, q: &RecallQuery<'_>) -> Result<Vec<RecallResult
         all_hits.extend(hits);
     }
 
-    // RRF merge — rank by raw score first so every hit gets a deterministic
-    // position for the `1 / (rank + 61)` formula.
+    // Sort by adjusted score descending, deduplicate by id (keep highest),
+    // then truncate to limit.  Return the raw adjusted score so callers get
+    // a meaningful relevance signal rather than a narrow RRF rank band.
     all_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut best: HashMap<String, RecallResult> = HashMap::new();
-    for (i, hit) in all_hits.iter().enumerate() {
-        let rrf = 1.0_f64 / (i as f64 + 1.0 + 60.0);
-        match best.get_mut(&hit.id) {
-            Some(prev) if prev.score >= rrf => continue,
-            _ => {
-                best.insert(hit.id.clone(), RecallResult {
-                    id:          hit.id.clone(),
-                    kind:        hit.kind,
-                    content:     hit.content.clone(),
-                    score:       rrf,
-                    metadata:    hit.metadata.clone(),
-                    occurred_at: hit.occurred_at,
-                });
+    let mut seen: HashMap<String, ()> = HashMap::new();
+    let mut out: Vec<RecallResult> = Vec::with_capacity(q.limit);
+    for hit in all_hits {
+        if seen.insert(hit.id.clone(), ()).is_none() {
+            out.push(RecallResult {
+                id:          hit.id,
+                kind:        hit.kind,
+                content:     hit.content,
+                score:       hit.score as f64,
+                metadata:    hit.metadata,
+                occurred_at: hit.occurred_at,
+            });
+            if out.len() >= q.limit {
+                break;
             }
         }
     }
-
-    let mut out: Vec<RecallResult> = best.into_values().collect();
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    out.truncate(q.limit);
     Ok(out)
 }
 
@@ -215,11 +210,27 @@ fn dense_hits(
 
     let mut hits = Vec::with_capacity(rows.len());
     for (id, distance, content, metadata_raw, occurred_at_raw) in rows {
-        // Convert L2 distance to a [0,1] score (higher = closer).
-        let mut score = 1.0_f32 / (1.0 + distance as f32);
-        if !lower_query.is_empty() && content.to_lowercase().contains(lower_query) {
-            score += 0.02;
-        }
+        // Base semantic similarity: 1/(1+L2) ∈ (0, 1], higher = closer.
+        let base = 1.0_f32 / (1.0 + distance as f32);
+
+        // Informativeness factor: demote very short chunks (headings, one-line
+        // labels, bare user questions) that embed close to queries but carry
+        // little information.  Ramps from 0.3 at 0 chars to 1.0 at 150 chars,
+        // capped at 1.0.  A 30-char heading gets ×0.42; a 150-char paragraph
+        // gets ×1.0.
+        let len_factor = (content.len() as f32 / 150.0).clamp(0.0, 1.0);
+        let info_factor = 0.3 + 0.7 * len_factor;
+
+        // Keyword boost: tiny bonus when the full query appears verbatim.
+        let keyword_boost = if !lower_query.is_empty()
+            && content.to_lowercase().contains(&*lower_query)
+        {
+            0.02_f32
+        } else {
+            0.0
+        };
+
+        let score = base * info_factor + keyword_boost;
         let metadata: Metadata = serde_json::from_str(&metadata_raw).unwrap_or_default();
         let occurred_at = occurred_at_raw.and_then(|s| parse_sqlite_datetime(&s));
         hits.push(DenseHit { id, kind, content, score, metadata, occurred_at });
