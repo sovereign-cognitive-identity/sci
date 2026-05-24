@@ -47,6 +47,9 @@ const GOOGLE_HOSTS = new Set(['generativelanguage.googleapis.com']);
 // The handlers receive this same instance, which means recall + storage are
 // backed by real on-device state instead of the previous NoopStorageAdapter.
 let adapter = null;
+// Periodic sync timer — cleared on shutdown.
+let syncTimer = null;
+const SYNC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 // Credentials are loaded once at startup. The agent process is long-lived;
 // re-reading on every request would be cheap but pointless. If the user
 // edits ~/.sci/credentials.env they restart the agent — same shape as
@@ -75,6 +78,18 @@ export async function startProxyServer(config) {
     await sqliteAdapter.connect();
     adapter = sqliteAdapter;
     process.stderr.write(`[sci-agent] memory store ready: ${config.memoryDir}\n`);
+    // Sync immediately on startup (drain any pending-sync.ndjson + upload new
+    // memories since last sync), then every 5 minutes while the agent is live.
+    adapter.sync().catch(err => {
+        process.stderr.write(`[sci-agent] initial sync error: ${err?.message ?? err}\n`);
+    });
+    syncTimer = setInterval(() => {
+        if (!adapter) return;
+        adapter.sync().catch(err => {
+            process.stderr.write(`[sci-agent] sync error: ${err?.message ?? err}\n`);
+        });
+    }, SYNC_INTERVAL_MS);
+    syncTimer.unref(); // don't block process exit if event loop is otherwise idle
     // Warm up the fastembed ONNX model in the background so the first request
     // doesn't block the event loop loading the model mid-stream.
     import('@sci/core').then(({ embed }) => embed('warmup').catch(() => {})).catch(() => {});
@@ -135,8 +150,18 @@ export async function startProxyServer(config) {
  * from the in-memory index don't make it into `sci.idx`.
  */
 export async function closeAdapter() {
+    if (syncTimer) {
+        clearInterval(syncTimer);
+        syncTimer = null;
+    }
     if (!adapter)
         return;
+    // Run a final sync before disconnecting so nothing written since the last
+    // interval is lost.
+    try {
+        await adapter.sync();
+    }
+    catch { /* ignore — we're already shutting down */ }
     try {
         await adapter.disconnect();
     }

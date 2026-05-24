@@ -281,9 +281,10 @@ export class SqliteStorageAdapter extends CloudAdapter {
         let uploaded = 0;
 
         for (const { blobType, record } of batch) {
-            // Look up the embedding from the vector map so the recipient can re-index.
-            const embeddingEntry = this.vectorMap.find(e => e.id === record.id);
-            const embedding = embeddingEntry ? this.index.getPoint(embeddingEntry.index) : null;
+            // Embeddings live in sqlite-vec (managed by the Rust helper); the
+            // hnswlib index is orphaned and getPoint() throws "Label not found".
+            // Pass null — the control plane will re-embed from content if needed.
+            const embedding = null;
 
             const payload = {
                 ...record,
