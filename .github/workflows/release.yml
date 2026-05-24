@@ -50,6 +50,9 @@ jobs:
       - name: Build proxy (needed by agent compile)
         run: npm run build -w packages/telemetry && npm run build -w packages/proxy
 
+      - name: Build MCP server (SCI-252)
+        run: npm run build -w packages/mcp
+
       - name: Compile sci binary
         run: |
           bun build packages/agent/dist/index.js \
@@ -70,10 +73,17 @@ jobs:
 
       - name: Package release tarball
         run: |
+          # Tarball extracts to sci/ — intended install layout is ~/.sci/bin/:
+          #   ~/.sci/bin/sci              ← Bun-compiled agent binary
+          #   ~/.sci/bin/node_modules/    ← native addons (hnswlib-node, better-sqlite3, etc.)
+          #   ~/.sci/bin/mcp/             ← compiled MCP server JS (memory_recall, memory_store, etc.)
+          # The binary uses createRequire relative to process.execPath, so node_modules must
+          # stay alongside the binary. install.sh targets ~/.sci/bin/ for this reason (SCI-213).
           ARCHIVE="sci-${{ matrix.target }}.tar.gz"
           mkdir -p release/sci
           cp sci release/sci/sci
           cp -r native_addons/node_modules release/sci/node_modules
+          cp -r packages/mcp/dist release/sci/mcp
           chmod +x release/sci/sci
           tar -czf "${ARCHIVE}" -C release sci
           shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
