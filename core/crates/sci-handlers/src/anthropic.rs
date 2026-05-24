@@ -302,6 +302,14 @@ pub async fn handle_anthropic_messages(
         sanitize_body_for_oauth(&mut body);
     }
 
+    // SCI-239: safety-net ordering pass. The Anthropic API requires all
+    // cache_control blocks with ttl="1h" to precede any ttl="5m" (or
+    // no-ttl) blocks within system[]. Various mutations above (prefix
+    // split, recall append, project-context inject) can displace 1h
+    // blocks behind 5m blocks → HTTP 400. Stable-sort restores the
+    // invariant without changing relative positions within each group.
+    normalize_cache_control_order(&mut body);
+
     let upstream_body = serde_json::to_vec(&body)
         .map_err(|e| HandlerError::Malformed(format!("re-serialize body: {e}")))?;
 
@@ -2470,6 +2478,38 @@ pub fn inject_project_context(body: &mut Value, state: &Arc<HandlerState>) {
     }
 }
 
+/// SCI-239: Ensure all `cache_control` blocks with `ttl="1h"` appear
+/// before any blocks with `ttl="5m"` (or no TTL, which defaults to 5m)
+/// within the `system` array.
+///
+/// The Anthropic API hard-rejects (HTTP 400) requests where a ttl=1h
+/// cache_control block follows a ttl=5m block. Claude Code stamps ttl=1h
+/// on its large static system-prompt blocks; we append a recall block
+/// (no explicit TTL, i.e. 5m default) and may insert other blocks.
+/// Intermediate manipulations (e.g. `prepend_claude_code_prefix` split)
+/// can displace ttl=1h blocks behind ttl=5m blocks.
+///
+/// This is a **safety-net stable sort**: blocks without cache_control or
+/// with ttl≠1h are left in their relative positions relative to each
+/// other; only the cross-group ordering (1h before 5m) is enforced.
+/// Blocks without cache_control are treated as ttl=5m (same as Anthropic's
+/// default) and thus sort after ttl=1h blocks.
+///
+/// Called unconditionally after all system-array mutations so the
+/// invariant holds regardless of which path was taken.
+fn normalize_cache_control_order(body: &mut Value) {
+    let Some(Value::Array(blocks)) = body.get_mut("system") else { return; };
+
+    // Stable sort: 1h blocks first, everything else after.
+    // We use a key function: 0 for ttl=1h, 1 for all others.
+    blocks.sort_by_key(|b| {
+        let ttl = b.get("cache_control")
+            .and_then(|cc| cc.get("ttl"))
+            .and_then(|v| v.as_str());
+        if ttl == Some("1h") { 0u8 } else { 1u8 }
+    });
+}
+
 /// Idempotent: if the existing system field already starts with the
 /// canonical phrase, nothing changes (so Claude Code → Sci → Anthropic
 /// chains don't accumulate duplicates).
@@ -2542,10 +2582,22 @@ fn prepend_claude_code_prefix(body: &mut Value) {
                 Some(t) if t.starts_with(prefix) => {
                     // Split block[0] so the prefix is alone in block[0]
                     // and the rest moves to block[1].
+                    //
+                    // SCI-239: preserve the original block[0]'s cache_control
+                    // on the `rest` block, NOT on the canonical prefix block.
+                    // CC stamps cache_control: {type:"ephemeral",ttl:"1h"} on
+                    // its big system prompt block. Without this, that ttl=1h
+                    // marker is lost and the system array can end up with a
+                    // ttl=5m block before a ttl=1h block → HTTP 400.
+                    let original_cache_control = blocks[0].get("cache_control").cloned();
                     let rest = t[prefix.len()..].trim_start_matches(['\n', ' ']).to_string();
                     blocks[0] = canonical_block.clone();
                     if !rest.is_empty() {
-                        blocks.insert(1, serde_json::json!({"type":"text","text":rest}));
+                        let mut rest_block = serde_json::json!({"type":"text","text":rest});
+                        if let Some(cc) = original_cache_control {
+                            rest_block["cache_control"] = cc;
+                        }
+                        blocks.insert(1, rest_block);
                     }
                 }
                 _ => {
@@ -3036,6 +3088,71 @@ mod tests {
         let arr = body["system"].as_array().unwrap();
         assert_eq!(arr.len(), 2, "should not have inserted: {arr:?}");
         assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
+    }
+
+    // ── SCI-239: cache_control TTL ordering ───────────────────────────────
+
+    #[test]
+    fn prefix_split_preserves_cache_control_on_rest_block() {
+        // CC sends system[0] that starts with the canonical prefix AND
+        // carries cache_control:{ttl:"1h"}. After split, the rest block
+        // must inherit that cache_control; the prefix block gets none.
+        let mut body: Value = serde_json::json!({
+            "system": [{
+                "type": "text",
+                "text": format!("{}\n\nBe terse.", CLAUDE_CODE_SYSTEM_PREFIX),
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+            }],
+            "messages": []
+        });
+        prepend_claude_code_prefix(&mut body);
+        let arr = body["system"].as_array().expect("array");
+        assert_eq!(arr.len(), 2, "should split into two blocks: {arr:?}");
+        // Block[0]: canonical prefix only, no cache_control.
+        assert_eq!(arr[0]["text"], CLAUDE_CODE_SYSTEM_PREFIX);
+        assert!(arr[0].get("cache_control").is_none(), "prefix block must not carry cache_control");
+        // Block[1]: rest, inherits ttl=1h.
+        assert_eq!(arr[1]["text"], "Be terse.");
+        assert_eq!(arr[1]["cache_control"]["ttl"], "1h",
+            "rest block must inherit ttl=1h from original block[0]");
+    }
+
+    #[test]
+    fn normalize_cache_control_order_puts_1h_before_5m() {
+        // Simulate the post-mutation state: a 5m block before a 1h block.
+        let mut body: Value = serde_json::json!({
+            "system": [
+                {"type": "text", "text": "dynamic recall", "cache_control": {"type": "ephemeral", "ttl": "5m"}},
+                {"type": "text", "text": "static prompt", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+                {"type": "text", "text": "no cache"},
+            ],
+            "messages": []
+        });
+        normalize_cache_control_order(&mut body);
+        let arr = body["system"].as_array().expect("array");
+        // The 1h block must come first.
+        assert_eq!(arr[0]["cache_control"]["ttl"], "1h",
+            "1h block must sort before 5m blocks: {arr:?}");
+        assert_eq!(arr[0]["text"], "static prompt");
+        // 5m and no-ttl blocks follow in their original relative order.
+        assert_eq!(arr[1]["text"], "dynamic recall");
+        assert_eq!(arr[2]["text"], "no cache");
+    }
+
+    #[test]
+    fn normalize_cache_control_order_noop_when_already_ordered() {
+        // If 1h already precedes 5m, the array is unchanged.
+        let mut body: Value = serde_json::json!({
+            "system": [
+                {"type": "text", "text": "static", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+                {"type": "text", "text": "dynamic", "cache_control": {"type": "ephemeral", "ttl": "5m"}},
+            ],
+            "messages": []
+        });
+        normalize_cache_control_order(&mut body);
+        let arr = body["system"].as_array().expect("array");
+        assert_eq!(arr[0]["text"], "static");
+        assert_eq!(arr[1]["text"], "dynamic");
     }
 
     // ── SCI: non-streaming JSON deanonymizer ──────────────────────────────

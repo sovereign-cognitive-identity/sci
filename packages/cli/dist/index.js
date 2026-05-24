@@ -4,6 +4,7 @@ import { runImport } from './import.js';
 import { drainPools, registerAgent, reader, writer, createStorageAdapter } from '@sci/core';
 import { existsSync } from 'fs';
 import { runBackup, runRestore } from './backup.js';
+import { runStatus, runVerify } from './status.js';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 const __filename = fileURLToPath(import.meta.url);
@@ -15,10 +16,24 @@ program.name('sci').description('Sovereign Cognitive Identity').version('0.1.0')
 // ── sci status ────────────────────────────────────────────────────────────────
 program
     .command('status')
+    .description('System-wide health check (proxy, agent, MCP, CA, credentials)')
+    .action(async () => {
+    await runStatus();
+});
+// ── sci verify ────────────────────────────────────────────────────────────────
+program
+    .command('verify')
+    .description('Live smoke test — send a request through the proxy and confirm it works')
+    .action(async () => {
+    await runVerify();
+});
+// ── sci db-status ─────────────────────────────────────────────────────────────
+program
+    .command('db-status')
     .description('Check storage backend and memory counts')
     .action(async () => {
     // Backend-agnostic: honors SCI_STORAGE_BACKEND (sqlite | local/postgres | …).
-    // Defaults to sqlite (~/.sci/memory) so `sci status` works with no Docker.
+    // Defaults to sqlite (~/.sci/memory) so `sci db-status` works with no Docker.
     process.env['SCI_STORAGE_BACKEND'] ??= 'sqlite';
     try {
         const adapter = await createStorageAdapter();
