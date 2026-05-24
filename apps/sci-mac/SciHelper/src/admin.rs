@@ -19,6 +19,7 @@
 //!  POST /sci/memories                     — store a memory (episodic|identity)
 //! DELETE /sci/memories/:id                — delete an episodic memory + vector
 //!   GET /sci/events                       — SSE event stream
+//!   GET /sci/mcp_status                   — MCP server tool counts from recent audit turns
 //!
 //! Bind is hardcoded to `127.0.0.1` (never `0.0.0.0`); the localhost
 //! constraint is what makes CORS permissive safe.
@@ -88,6 +89,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/sci/memories",           get(list_memories).post(store_memory))
         .route("/sci/memories/:id",      delete(delete_memory))
         .route("/sci/events",            get(events_stream))
+        .route("/sci/mcp_status",        get(get_mcp_status))
         .layer(cors)
         .with_state(state)
 }
@@ -657,6 +659,69 @@ fn resolve_profile_id(
     // scan; profile count is in the single digits.
     let profiles = a.list_profiles()?;
     Ok(profiles.into_iter().find(|x| x.id == p).map(|x| x.id))
+}
+
+// ── /sci/mcp_status ────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpServerInfo {
+    name:       String,
+    tool_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct McpStatusResponse {
+    servers: Vec<McpServerInfo>,
+    as_of:   Option<String>,
+}
+
+/// Parse MCP server tool counts from an Anthropic request body.
+///
+/// Tools in LibreChat's MCP convention are named `serverName__toolName`
+/// (double-underscore separator). Tools without a `__` are grouped under
+/// the special key `"_builtin"`. Returns servers sorted by tool_count desc.
+fn parse_mcp_servers_from_body(request_body: &str) -> Vec<McpServerInfo> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(request_body) else {
+        return vec![];
+    };
+    let Some(tools) = value.get("tools").and_then(|t| t.as_array()) else {
+        return vec![];
+    };
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for tool in tools {
+        if let Some(name) = tool.get("name").and_then(|n| n.as_str()) {
+            let server = match name.find("__") {
+                Some(pos) => &name[..pos],
+                None      => "_builtin",
+            };
+            *counts.entry(server.to_owned()).or_insert(0) += 1;
+        }
+    }
+
+    let mut servers: Vec<McpServerInfo> = counts
+        .into_iter()
+        .map(|(name, tool_count)| McpServerInfo { name, tool_count })
+        .collect();
+    servers.sort_by(|a, b| b.tool_count.cmp(&a.tool_count).then(a.name.cmp(&b.name)));
+    servers
+}
+
+async fn get_mcp_status(State(s): State<AdminState>) -> Result<Json<McpStatusResponse>, AdminError> {
+    // List the 5 most recent turns; pick the first one with a request_body.
+    let turns = with_storage(&s, |a| a.list_audit_turns(None, 5))?;
+    let Some((body, created_at)) = turns.iter().find_map(|t| {
+        t.request_body.as_deref().map(|rb| (rb.to_owned(), t.created_at))
+    }) else {
+        return Ok(Json(McpStatusResponse { servers: vec![], as_of: None }));
+    };
+
+    let servers = parse_mcp_servers_from_body(&body);
+    let as_of   = created_at.to_rfc3339();
+
+    Ok(Json(McpStatusResponse { servers, as_of: Some(as_of) }))
 }
 
 // ── Error type ─────────────────────────────────────────────────────────────

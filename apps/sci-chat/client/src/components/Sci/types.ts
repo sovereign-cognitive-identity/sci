@@ -114,3 +114,19 @@ export type HelperEvent =
   | { type: 'flow_completed'; host: string; masked: number; ms: number; status: number; ts: number }
   | { type: 'flow_error';     host: string; error: string; ts: number }
   | { type: string;           [k: string]: unknown };
+
+// ── MCP status ────────────────────────────────────────────────────────────────
+
+/** One MCP server inferred from the `tools` array of the last intercepted turn. */
+export interface McpServer {
+  /** Server name (prefix before `__`), or `"_builtin"` for un-prefixed tools. */
+  name:      string;
+  toolCount: number;
+}
+
+/** Response shape of `GET /sci/mcp_status`. */
+export interface McpStatusResponse {
+  servers: McpServer[];
+  /** ISO-8601 timestamp of the audit turn the tool list was read from. */
+  asOf:    string | null;
+}

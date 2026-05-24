@@ -11,6 +11,7 @@ import type {
   AuditTurn,
   AuditTurnDetail,
   HelperStatus,
+  McpStatusResponse,
   MemoryGraphResponse,
   Profile,
   RecallResult,
@@ -111,6 +112,10 @@ export function listMemories(profile?: string, limit = 200): Promise<MemoryGraph
   const params = new URLSearchParams({ limit: String(limit) });
   if (profile) params.set('profile', profile);
   return getJson<MemoryGraphResponse>(`/sci/memories?${params}`);
+}
+
+export function getMcpStatus(): Promise<McpStatusResponse> {
+  return getJson<McpStatusResponse>('/sci/mcp_status');
 }
 
 export function eventsUrl(): string {

@@ -14,6 +14,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useInspectorControls } from './InspectorContext';
 
 import MemoryGraph from './MemoryGraph';
+import McpStatusPanel from './McpStatusPanel';
 import ProfileSelector from './ProfileSelector';
 import ProjectSelector from './ProjectSelector';
 import RecallPreview from './RecallPreview';
@@ -274,6 +275,9 @@ export default function InspectorPanel() {
                     </div>
                   </div>
                 )}
+
+                {/* ── MCP server status ── */}
+                <McpStatusPanel enabled={open} />
 
                 <div className="flex-1 overflow-y-auto px-3 pb-4 pt-2">
                   <RecallPreview enabled={open} />

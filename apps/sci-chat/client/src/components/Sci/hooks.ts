@@ -18,6 +18,7 @@ import {
   getActiveProfile,
   getActiveProject,
   getAuditTurn,
+  getMcpStatus,
   getStatus,
   listAuditTurns,
   listProfiles,
@@ -29,6 +30,7 @@ import type { HelperEvent } from './types';
 
 const QK_TURNS         = ['sci', 'audit_turns'] as const;
 const QK_STATUS        = ['sci', 'status'] as const;
+const QK_MCP_STATUS    = ['sci', 'mcp_status'] as const;
 const QK_PROFILES      = ['sci', 'profiles'] as const;
 const QK_ACTIVE        = ['sci', 'active_profile'] as const;
 const QK_ACTIVE_PROJ   = ['sci', 'active_project'] as const;
@@ -239,6 +241,21 @@ export function useHelperStatus(enabled = true) {
     queryFn:  getStatus,
     enabled,
     refetchInterval: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/**
+ * MCP server tool counts inferred from the most recent intercepted turn's
+ * `tools` array. Refetches every 5 s so the panel stays current after
+ * new turns arrive.
+ */
+export function useMcpStatus(enabled = true) {
+  return useQuery({
+    queryKey: QK_MCP_STATUS,
+    queryFn:  getMcpStatus,
+    enabled,
+    refetchInterval: 5_000,
     refetchOnWindowFocus: false,
   });
 }
