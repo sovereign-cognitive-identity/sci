@@ -1,100 +1,90 @@
 # Handoff
 
-_Last updated: 2026-05-23 (evening) — recall dedup, identity pipeline (354 facts), and 4 sync bugs fixed. 3 commits ahead of origin._
+_Last updated: 2026-05-24 — identity pipeline shipped, tickets closed, next up is SCI-249/SCI-223 closure then SCI-254 (sci status CLI)._
 
 ## Goal
 
-Sci is a sovereign cognitive identity layer. Data-plane HTTPS proxy anonymizes PII before AI traffic leaves the device, injects recalled memory, and syncs encrypted blobs via a control plane.
+Sci is a sovereign cognitive identity layer. Current focus: get to v0.1.0-alpha — a one-command install that works on a fresh Mac and routes Claude Code through the Sci proxy with memory.
 
 ## Current Progress
 
-### `27848df7` — Recall content-fingerprint dedup
-`core/crates/sci-memory/src/recall.rs`: added a second dedup pass after ID-dedup. Key: first 200 chars of trimmed content. Eliminates the flood of identical chunks that appeared verbatim across 40+ turn groups. Rust helper rebuilt + restarted.
+### This session (identity pipeline + ticket triage)
 
-### `8668accd` — Identity facts pipeline (Phase A + B)
+**`a8c54e05` — Daily identity pipeline**
+- `scripts/dedup-identity.py` — token-Jaccard clustering + Haiku merges, deletes from SQLite directly
+- `scripts/review-stale-facts.py` — future-tense fact review; rewrites completed, deletes abandoned, logs stale
+- `scripts/run-identity-pipeline.sh` — 3-step wrapper: bootstrap → dedup → stale-review
+- `~/Library/LaunchAgents/dev.sci.bootstrap-identity.plist` — daily at 03:00
+- identity_facts: 409 total (background 150, preference 96, skill 74, value 72, relationship 16)
 
-**Phase A — `scripts/bootstrap-identity.py`**
-- Stdlib only (no deps), auth via OAuth Bearer from `~/.sci/oauth.json`
-- Loads ~1300 distinct user-role chunks from episodic_memories (noise-filtered)
-- Batches to Claude Haiku (27 × 50 chunks), extracts preference/skill/value/relationship/background facts
-- Token-overlap Jaccard > 0.7 → skip duplicates; POST new facts to helper `POST /sci/memories?kind=identity`
-- **First run: 354 facts stored** (was 1). Re-runnable safely.
+**Tickets closed: SCI-247, SCI-248, SCI-210** (dedup + launchd pipeline)
 
-**Phase B — session-end hook in `packages/agent/dist/proxy-server.js`**
-- `extractIdentityFacts()` added; called in `closeAdapter()` before sync/disconnect
-- 30s hard cap so shutdown never hangs
-- Uses `getAccessTokenSafe()` (same OAuth path as proxied calls)
-- Fetches last 100 episodic user-role chunks, Claude Haiku extraction, token-overlap conflict check, POSTs new facts
+**Ticket triage completed — alpha release order:**
+- SCI-249 (Phase 1 epic) — **already done**, just needs closing (SCI-239 + SCI-228 shipped)
+- SCI-223 (SQLite-only stack) — **likely already done**, needs verify + close
+- SCI-254 → SCI-253 → SCI-218 → SCI-257 → SCI-250 (the real remaining work)
 
-Research basis: TraceMem (arxiv 2602.09712) distillation step + Mem0 CRUD pattern.
-
-### `12c62575` — 4 sync bugs fixed in `packages/agent/dist/storage-sqlite.js`
-
-| Bug | Fix |
-|---|---|
-| Cursor used `occurred_at` (historical) instead of `created_at` | Changed to `record.created_at` always |
-| `identity_facts` SELECT didn't include `created_at` | Added to all 3 SELECTs |
-| Truncated batch (>200) still advanced cursor to `now` → remaining items permanently lost | Only advance to `now` when `toUpload.length <= BATCH_LIMIT` |
-| SQLite UTC string `'2026-05-24 02:57:37'` parsed as local time by JS (+5h) | Append `'Z'` before `new Date()` |
-
-All 354 identity facts confirmed synced to `control.sci.sh`.
+### Prior sessions
+- Proxy `cache_control` fixes (SCI-239, SCI-228) — shipped in `3e771a95`, `a2dde61f`, `07185e2d`
+- Identity bootstrap Phase A+B, 4 sync bugs fixed, recall content-fingerprint dedup
+- `spawn` command updated to launch `claude-sci` instead of `claude`
 
 ## What Worked
 
-- `cargo build --release` from `apps/sci-mac/SciHelper/` (~30s) + `launchctl kickstart -k gui/$(id -u)/dev.sci.helper`
-- `launchctl kickstart -k "gui/$(id -u)/com.sci.agent"` to restart Node agent
-- OAuth Bearer auth for direct Anthropic API calls: read `~/.sci/oauth.json` → `access_token`, pass as `Authorization: Bearer <token>` with `anthropic-beta: claude-code-20250219`
-- Claude Haiku (`claude-haiku-4-5-20251001`) for batch extraction — fast, cheap, good quality
-- Content fingerprint dedup (`first 200 chars`) collapses near-duplicates without semantic similarity
+- **SQLite direct deletes** for identity facts (admin API DELETE only covers episodic)
+- **`env HTTPS_PROXY="" python3 script.py`** for direct Anthropic API calls (system-wide `HTTPS_PROXY=http://127.0.0.1:3001`)
+- **OAuth Bearer only** — `Authorization: Bearer <token>` + `anthropic-beta: claude-code-20250219`. No `x-api-key`.
+- **Sequential curl with 0.5s sleep** for admin API POSTs (concurrent urllib Python calls → 500)
+- **Iterative dedup** — run `dedup-identity.py` until "Found 0 clusters" (2–3 passes to converge)
 
 ## What Didn't Work
 
-- **Console key (`~/.sci/console-key.env`)** — `ANTHROPIC_CONSOLE_KEY` has no credits. Use OAuth token from `~/.sci/oauth.json` instead.
-- **httpx proxy for Python** — `httpx.HTTPTransport(proxy=...)` + Sci CA cert fails SSL tunnel verification. Use direct API + OAuth Bearer instead.
-- **`new Date(sqliteTimestamp)` without `'Z'`** — parses as local time on CDT machines, adds +5h offset. Always append `'Z'`.
-- **`str.format()` on LLM prompt containing JSON chunks** — chunks contain `{` and `}` → `KeyError`. Use `str.replace('{chunks}', joined)` instead.
+- **Admin API `DELETE /sci/memories/:id`** — only handles episodic; returns 404 for identity fact IDs
+- **`x-api-key` header with OAuth token** — 401; OAuth mode uses only `Authorization: Bearer`
+- **Admin API pagination** (`?offset=100`) — ignored; always returns same 100 rows. Use SQLite directly for full dataset.
+- **Concurrent urllib POSTs** — 500 from helper; use sequential curl instead
 
 ## Next Steps
 
-1. **Push to origin** — 3 commits ahead: `git push`
-2. **Identity facts quality review** — 354 facts likely has semantic overlap (multiple facts saying similar things). Consider a dedup pass: embed all facts → cluster by cosine similarity → LLM merge near-duplicates.
-3. **Bootstrap script as periodic job** — run `scripts/bootstrap-identity.py` on a schedule (weekly?) to keep identity_facts current as new episodic memories accumulate.
-4. **Investigate `identity_facts` confidence distribution** — `GET http://127.0.0.1:3002/sci/identity?limit=100` — are confidence scores well-spread or all clustering at 0.8?
+1. **Close SCI-249** — both sub-tickets (SCI-239: cache_control, SCI-228: auto-route) shipped. Transition epic to Done.
+2. **Verify + close SCI-223** — check that MCP + CLI use SQLite backend (not Postgres). If healthy, close.
+3. **Implement SCI-254** — `sci status` + `sci verify` CLI subcommands in `packages/cli/`:
+   - `sci status`: check helper :3001/:3002, agent :8080, MCP in `~/.claude.json`, CA trust, credentials.env, memory counts
+   - `sci verify`: proxied test request showing anonymization pipeline (PII in → anonymized out → deanonymized back)
+4. **Write SCI-253** — `install.sh`: unpack tarball, CA trust, launchd plists, MCP register, credentials prompt, proxy config, call `sci status`
+5. **Fix SCI-218** — CI macOS-13 runner hangs (needed to produce signed release tarball)
+6. **Tag SCI-257** — v0.1.0-alpha GitHub Release with signed tarballs
+7. **SCI-250** — tester onboarding
 
 ## Context & Gotchas
 
-### Storage
-- **Sci memory** (episodic/vectors): SQLite at `~/.sci/memory/sci.db` — ~43,331 episodic, embeddings in `embeddings_episodic` (sqlite-vec)
-- **identity_facts**: 355 rows (1 original + 354 bootstrapped). Read + written through Rust helper.
-- **Sync state**: `~/.sci/sync.json` — `lastSyncAt` is UTC ISO; all 354 identity facts confirmed synced.
-
-### Starting services
+### Services
 ```bash
-launchctl kickstart -k "gui/$(id -u)/dev.sci.helper"   # restart Rust helper (proxy :3001 + admin :3002)
-launchctl kickstart -k "gui/$(id -u)/com.sci.agent"    # restart Node agent (proxy :8080)
-nc -z 127.0.0.1 3001 && nc -z 127.0.0.1 3002 && echo "helper up"
+launchctl kickstart -k "gui/$(id -u)/dev.sci.helper"   # Rust helper :3001/:3002
+launchctl kickstart -k "gui/$(id -u)/com.sci.agent"    # Node agent :8080
+launchctl start dev.sci.bootstrap-identity              # trigger daily pipeline manually
+tail -f ~/.sci/bootstrap-identity.log                   # watch pipeline
 ```
 
-### Service state at handoff
-| Service | Port | Status |
-|---|---|---|
-| `dev.sci.helper` (Rust proxy + admin) | :3001 / :3002 | ✅ running |
-| `com.sci.agent` (Node proxy + sync) | :8080 | ✅ running (sync bugs fixed) |
-| Sci MCP | stdio | ✅ running |
+### Storage
+- **identity_facts**: 409 rows, no embeddings yet (`embeddings_identity` empty)
+- **episodic_memories**: ~43,532 rows
+- **SQLite**: `~/.sci/memory/sci.db`
 
 ### Codebase conventions
-- `packages/mcp/src/` — TypeScript; `npm run build` after edits. `packages/mcp/dist/` is **gitignored** (built locally).
-- `packages/core/dist/` + `packages/proxy/dist/` — **tracked** (committed compiled output).
-- `packages/agent/dist/` — **tracked** (no src/ directory; dist IS the source of truth).
-- `core/crates/sci-memory/` — Rust storage crate. `apps/sci-mac/SciHelper/` — Rust helper. Rebuild + kickstart to deploy.
+- `packages/cli/` — `@sci/cli`. Add `status` and `verify` subcommands here for SCI-254.
+- `packages/mcp/src/` — TypeScript; `npm run build` after edits. `dist/` is gitignored.
+- `packages/core/dist/` + `packages/proxy/dist/` + `packages/agent/dist/` — **tracked** (compiled output committed).
+- Rust helper: `cargo build --release` from `apps/sci-mac/SciHelper/` (~30s), then kickstart.
 
-### Admin API endpoints (`:3002`)
-`GET /sci/status` · `GET /sci/recall?query=&profile=&limit=` · `GET /sci/identity?query=&category=&limit=` · `POST /sci/memories` (`{content, kind: "episodic"|"identity", category, confidence}`) · `DELETE /sci/memories/:id` · `GET /sci/audit_turns` · `GET /sci/events` (SSE)
-
-### Sci MCP registration
-User-scope entry in `~/.claude.json` (`sci`): node → `packages/mcp/dist/index.js`. Do **not** add a project-scope `.mcp.json` entry (conflicts → connect failure).
+### Admin API (`:3002`)
+`GET /sci/status` · `GET /sci/recall?query=&limit=` · `GET /sci/identity?query=&category=&limit=` · `POST /sci/memories` · `DELETE /sci/memories/:id` (episodic only)
 
 ### Auth
-- **OAuth token**: `~/.sci/oauth.json` → `access_token`. Header: `Authorization: Bearer <token>`, `anthropic-beta: claude-code-20250219`.
-- **Console key** (`~/.sci/console-key.env`): no credits — don't use for API calls.
-- **Agent token**: `~/.sci/agent.token` — for control plane (`control.sci.sh`) auth.
+- **OAuth token**: `~/.sci/oauth.json` → `access_token`. Bearer auth only.
+- **Console key** (`~/.sci/console-key.env`): no credits — don't use.
+- **Agent token**: `~/.sci/agent.token` — control plane (`control.sci.sh`) auth.
+
+### Jira cloud ID
+`e04b7caa-9314-439b-9772-d2bf75440183` (caseyzandbergen.atlassian.net)
+Done transition ID: `31`
