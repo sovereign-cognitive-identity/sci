@@ -35,33 +35,31 @@ function extractText(content) {
         .join('');
 }
 // SCI-147: canonical Claude Code system prefix. Anthropic's OAuth-bearer path
-// exact-matches this as system block[0]; anything else gets throttled to 429.
+// exact-matches this as system block[0]; anything else gets throttled to a 429
+// `{"message":"Error"}`. CC stamps it natively; our memory injection prepends a
+// [Sci Memory] block in front of it, so we must re-stamp it as block[0].
 const CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude.";
 /**
- * Ensure the request body's `system` leads with the exact canonical Claude Code
- * prefix as block[0] (array shape). Port of the Rust helper's
- * prepend_claude_code_prefix — verified by curl bisection that the OAuth gate
- * only checks block[0] in array shape; memory + caller content ride in block[1+].
- * Idempotent.
+ * Ensure `body.system` leads with the exact canonical Claude Code prefix as
+ * block[0] (array shape). Port of the Rust helper's prepend_claude_code_prefix:
+ * the OAuth gate only checks block[0]; memory + caller content ride in block[1+].
+ * Idempotent. Only call on the OAuth path — API keys aren't gated.
  */
 function prependClaudeCodePrefix(body) {
     const prefix = CLAUDE_CODE_SYSTEM_PREFIX;
     const canonical = { type: 'text', text: prefix };
     const sys = body.system;
     if (typeof sys === 'string') {
-        if (sys === prefix) {
+        if (sys === prefix)
             body.system = [canonical];
-        }
         else if (sys.startsWith(prefix)) {
             const rest = sys.slice(prefix.length).replace(/^[\n ]+/, '');
             body.system = rest ? [canonical, { type: 'text', text: rest }] : [canonical];
         }
-        else if (sys.length === 0) {
+        else if (sys.length === 0)
             body.system = [canonical];
-        }
-        else {
+        else
             body.system = [canonical, { type: 'text', text: sys }];
-        }
     }
     else if (Array.isArray(sys)) {
         const first = sys[0];
@@ -239,8 +237,7 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     const originalUserText = lastUserMsg ? extractText(lastUserMsg.content) : '';
     const reqId = `req_${Date.now().toString(36)}`;
     const t0 = Date.now();
-    const clientReqId = (c.req.header('x-client-request-id') ?? c.req.header('x-stainless-session-id') ?? 'unknown').slice(0, 8);
-    process.stderr.write(`\n[${new Date().toISOString()}] ${reqId} ── incoming (${body.model}, ${body.messages.length} msgs) client:${clientReqId}\n`);
+    process.stderr.write(`\n[${new Date().toISOString()}] ${reqId} ── incoming (${body.model}, ${body.messages.length} msgs)\n`);
     const span = tracer.startSpan('sci.llm.request', {
         attributes: {
             'llm.model': body.model,
@@ -259,9 +256,6 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
         }
         span.end();
     };
-    // DIAGNOSTIC toggles — see scripts/diagnose-rate-limit.sh
-    const DISABLE_ANON = process.env['SCI_DISABLE_ANON'] === '1';
-    const DISABLE_MEMORY = process.env['SCI_DISABLE_MEMORY'] === '1';
     // 1. Anonymize all user messages
     let sessionTokenMap = { forward: new Map(), reverse: new Map() };
     // Capture the anonymization result for the LATEST user turn — this is what
@@ -272,25 +266,20 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     let lastUserOriginal = '';
     let lastUserMaskedText = '';
     const lastUserIdx = body.messages.map(m => m.role).lastIndexOf('user');
-    const anonymizedMessages = DISABLE_ANON
-        ? body.messages.slice()
-        : body.messages.map((m, idx) => {
-            if (m.role !== 'user')
-                return m;
-            const { content: anonContent, extractedText, maskedText, result, tokenMap: nextMap } = anonymizeContent(m.content, sessionTokenMap);
-            sessionTokenMap = nextMap;
-            if (idx === lastUserIdx) {
-                lastUserResult = result;
-                lastUserOriginal = extractedText;
-                lastUserMaskedText = maskedText;
-            }
-            return { ...m, content: anonContent };
-        });
+    const anonymizedMessages = body.messages.map((m, idx) => {
+        if (m.role !== 'user')
+            return m;
+        const { content: anonContent, extractedText, maskedText, result, tokenMap: nextMap } = anonymizeContent(m.content, sessionTokenMap);
+        sessionTokenMap = nextMap;
+        if (idx === lastUserIdx) {
+            lastUserResult = result;
+            lastUserOriginal = extractedText;
+            lastUserMaskedText = maskedText;
+        }
+        return { ...m, content: anonContent };
+    });
     // Log what got masked
-    if (DISABLE_ANON) {
-        process.stderr.write(`[${reqId}] ⚠️  anon DISABLED (diagnostic)\n`);
-    }
-    else if (sessionTokenMap.forward.size > 0) {
+    if (sessionTokenMap.forward.size > 0) {
         const masked = [...sessionTokenMap.forward.entries()].map(([e, t]) => `${t}←"${e.slice(0, 30)}"`).join('  ');
         process.stderr.write(`[${reqId}] 🔒 masked ${sessionTokenMap.forward.size}: ${masked}\n`);
     }
@@ -306,13 +295,8 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     // are added), and the deanonymizer below uses the same reference to
     // swap tokens back in the response.
     const anonymizedWithContext = toOpenRouterMessages(anonymizedMessages, body.system);
-    const { messages: withContext, inspector: memoryInspector } = DISABLE_MEMORY
-        ? { messages: anonymizedWithContext, inspector: null }
-        : await injectMemoryContext(anonymizedWithContext, adapter, sessionTokenMap);
-    if (DISABLE_MEMORY) {
-        process.stderr.write(`[${reqId}] ⚠️  memory DISABLED (diagnostic)\n`);
-    }
-    else if (memoryInspector?.injected) {
+    const { messages: withContext, inspector: memoryInspector } = await injectMemoryContext(anonymizedWithContext, adapter, sessionTokenMap);
+    if (memoryInspector?.injected) {
         process.stderr.write(`[${reqId}] 🧠 injected ${memoryInspector.results.length} memory context items (~${memoryInspector.approxTokensAdded} tokens)\n`);
     }
     else if (memoryInspector && memoryInspector.results.length === 0) {
@@ -330,16 +314,25 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     // so TS doesn't lose its type via flow analysis through the `.map()` closure
     // assignment above (an open issue with let + closures).
     const buildAnonPrelude = (r) => {
-        // Keep the prelude SMALL (< 1KB) — the Anthropic SDK fails on large
-        // SSE events before message_start (SCI-219). Full text logged to stderr.
-        const entityCount = r?.entityCount ?? 0;
-        const tokens = entityCount > 0
-            ? r.detected.map((e) => `${sessionTokenMap.forward.get(e.text) ?? '?'}←"${e.text.slice(0, 30)}"`)
-            : [];
-        process.stderr.write(`[${reqId}] 🔒 masked ${entityCount}: ${tokens.join('  ')}\n`);
+        if (!r || r.entityCount === 0) {
+            return `event: sci.anonymized\ndata: ${JSON.stringify({
+                reqId,
+                original: lastUserOriginal,
+                masked: lastUserMaskedText,
+                entities: [],
+                sessionEntityCount: sessionTokenMap.forward.size,
+            })}\n\n`;
+        }
+        const entities = r.detected.map((e) => ({
+            original: e.text,
+            type: e.type,
+            token: sessionTokenMap.forward.get(e.text) ?? sessionTokenMap.forward.get(e.text.toLowerCase()) ?? null,
+        }));
         return `event: sci.anonymized\ndata: ${JSON.stringify({
             reqId,
-            entityCount,
+            original: lastUserOriginal,
+            masked: lastUserMaskedText,
+            entities,
             sessionEntityCount: sessionTokenMap.forward.size,
         })}\n\n`;
     };
@@ -348,9 +341,8 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
     // when the recall actually ran (even if 0 results), so the user can tell
     // the difference between "Sci asked memory" and "Sci skipped memory because
     // the message was too short".
-    // Keep sci.memory prelude small — full content logged to stderr above.
     const sciMemoryPrelude = memoryInspector
-        ? `event: sci.memory\ndata: ${JSON.stringify({ reqId, injected: memoryInspector.injected, count: memoryInspector.results?.length ?? 0, approxTokens: memoryInspector.approxTokensAdded })}\n\n`
+        ? `event: sci.memory\ndata: ${JSON.stringify({ reqId, ...memoryInspector })}\n\n`
         : '';
     const fullPrelude = sciAnonymizedPrelude + sciMemoryPrelude;
     // ── Direct mode: forward to Anthropic with original auth ─────────────────
@@ -363,39 +355,29 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
             system: withContext.find(m => m.role === 'system')?.content ?? body.system,
             stream: true,
         };
-        // Forward all original request headers to Anthropic.
-        // Headers like x-app, x-claude-code-session-id, user-agent, x-stainless-*
-        // are used by Anthropic to authorize features (e.g. context-1m requires
-        // x-app: cli to signal an authorized Claude Code session). Stripping them
-        // causes "Usage credits are required" errors for extended features.
-        const HOP_BY_HOP_REQ = new Set(['host', 'connection', 'keep-alive', 'proxy-authenticate',
-            'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade',
-            'proxy-connection', 'content-length', 'content-type']);
-        const originalHeaders = {};
-        for (const [k, v] of Object.entries(c.req.raw.headers ?? {})) {
-            if (!HOP_BY_HOP_REQ.has(k.toLowerCase()) && v)
-                originalHeaders[k] = v;
-        }
-        // Ensure version is always present
-        if (!originalHeaders['anthropic-version'])
-            originalHeaders['anthropic-version'] = '2023-06-01';
-        // SCI-147 shape-gate: Anthropic's OAuth-bearer (Pro/Max) path throttles
-        // /v1/messages to 429 `{"message":"Error"}` unless the system field LEADS
-        // with the exact canonical Claude Code prefix. CC stamps it natively, but
-        // our memory injection prepends a [Sci Memory] block in front of it,
-        // knocking the prefix out of position. Re-stamp it as system block[0]
-        // (array shape: only block[0] must match exactly; memory + caller content
-        // ride in block[1+]). Only on the OAuth path — API keys aren't gated.
-        const authHeader = String(originalHeaders['authorization'] ?? originalHeaders['Authorization'] ?? '');
-        const oauthActive = /sk-ant-oat01/.test(authHeader);
-        if (oauthActive) {
+        // Extract original auth headers to forward to Anthropic.
+        //
+        // `anthropic-beta` matters for OAuth-authenticated requests: Sci-native UI
+        // sends `anthropic-beta: oauth-2025-04-20` so Anthropic accepts the OAuth
+        // Bearer at the inference layer. Stripping it would cause Anthropic to
+        // treat the request as a missing-API-key error. We forward whatever the
+        // client sent (could also be e.g. `prompt-caching-2024-07-31`).
+        const authHeader = c.req.header('authorization') ?? c.req.header('x-api-key');
+        const betaHeader = c.req.header('anthropic-beta');
+        const originalHeaders = {
+            'anthropic-version': c.req.header('anthropic-version') ?? '2023-06-01',
+            ...(betaHeader ? { 'anthropic-beta': betaHeader } : {}),
+            ...(authHeader?.startsWith('Bearer ')
+                ? { 'authorization': authHeader }
+                : { 'x-api-key': authHeader ?? '' }),
+        };
+        // SCI-147 shape-gate: re-stamp the canonical Claude Code prefix as system
+        // block[0] on the OAuth path so memory-injected requests aren't throttled.
+        if (/sk-ant-oat01/.test(authHeader ?? '')) {
             prependClaudeCodePrefix(anonymizedBody);
         }
         const deanonStream = new DeanonymizingStreamV2(sessionTokenMap);
-        // Preserve the original request URL including query params (e.g. ?beta=true)
-        // so Anthropic returns the expected response format for extended features.
-        const forwardPath = c.req.raw.url ?? '/v1/messages';
-        const readable = await streamDirectAnthropic(forwardPath, anonymizedBody, originalHeaders, (text) => deanonStream.push(text), () => deanonStream.end(), () => {
+        const readable = await streamDirectAnthropic('/v1/messages', anonymizedBody, originalHeaders, (text) => deanonStream.push(text), () => deanonStream.end(), () => {
             const ms = Date.now() - t0;
             process.stderr.write(`[${reqId}] ✓  complete in ${ms}ms, storing to memory\n`);
             storeInteraction(originalUserText, deanonStream.fullResponse, adapter).catch(() => { });
@@ -405,8 +387,6 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
             prelude: fullPrelude,
             // Postlude — fired after deanon drains. Reports how many tokens
             // Anthropic's response contained that we had to swap back.
-            // Postlude — fired after deanon drains. Reports how many tokens
-            // Anthropic's response contained that we had to swap back.
             postlude: () => `event: sci.deanonymized\ndata: ${JSON.stringify({
                 reqId,
                 tokensReplaced: deanonStream.replacementCount,
@@ -414,9 +394,11 @@ export async function handleAnthropicMessages(c, adapter, openrouterKey) {
             })}\n\n`,
         });
         endSpan('ok');
-        // streamDirectAnthropic returns either a Response (for upstream errors)
-        // or a ReadableStream (for success). Return errors directly.
-        if (readable instanceof Response) return readable;
+        // streamDirectAnthropic returns a Response directly on upstream 4xx/5xx
+        // so the actual HTTP status reaches the SDK. Otherwise wrap the
+        // ReadableStream in our standard SSE response.
+        if (readable instanceof Response)
+            return readable;
         return new Response(readable, {
             headers: {
                 'Content-Type': 'text/event-stream',

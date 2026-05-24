@@ -5,7 +5,8 @@
  *   1. Anonymizes messages
  *   2. Injects memory context
  *   3. Forwards to api.anthropic.com with the ORIGINAL Authorization header
- *   4. Streams back Anthropic SSE, deanonymizes text deltas on the fly
+ *   4. Streams back Anthropic SSE verbatim, patching only text_delta events
+ *      to deanonymize
  *   5. Stores interaction to memory
  *
  * No OpenRouter involved. Your subscription usage counts normally.
@@ -18,10 +19,12 @@ import { getPhysicalInterfaceIP } from './physical-iface.js';
 const ANTHROPIC_HOSTNAME = 'api.anthropic.com';
 // Persistent HTTP/2 client session. Anthropic rate-limits HTTP/1.1 proxy
 // requests (429) but not HTTP/2 — same behavior as direct Claude Code.
-// Exported so passthroughForward() can share the same session for init requests.
+// Exported so passthroughForward() (agent) can share the same session for
+// init requests, keeping all traffic on one connection.
 let _h2Client = null;
 export function getH2Client() {
-    if (_h2Client && !_h2Client.destroyed && !_h2Client.closed) return _h2Client;
+    if (_h2Client && !_h2Client.destroyed && !_h2Client.closed)
+        return _h2Client;
     _h2Client = http2.connect(`https://${ANTHROPIC_HOSTNAME}`);
     _h2Client.on('error', () => { _h2Client = null; });
     _h2Client.on('close', () => { _h2Client = null; });
@@ -39,32 +42,48 @@ function makeH2Request(path, h1Headers, bodyStr) {
             'content-length': Buffer.byteLength(bodyStr).toString(),
         };
         // Forward all client headers verbatim (minus HTTP/2 pseudo-headers and
-        // hop-by-hop). The previous oat01-detection stripping was a workaround
-        // for a now-removed auth-swap that put requests on sci's rate-limited
-        // OAuth identity; with passthrough auth the client's own betas/fields
-        // are exactly what Anthropic expects.
-        const skip = new Set([':method',':path',':scheme',':authority','host','connection','transfer-encoding','content-length','content-type','accept-encoding']);
+        // hop-by-hop). Previous oat01-detection stripping was a workaround for a
+        // now-removed auth-swap that put requests on sci's rate-limited OAuth
+        // identity; with passthrough auth the client's own betas/fields are
+        // exactly what Anthropic expects.
+        const skip = new Set([
+            ':method', ':path', ':scheme', ':authority',
+            'host', 'connection', 'transfer-encoding', 'content-length',
+            'content-type', 'accept-encoding',
+        ]);
         for (const [k, v] of Object.entries(h1Headers)) {
             const lk = k.toLowerCase();
-            if (skip.has(lk)) continue;
+            if (skip.has(lk))
+                continue;
+            if (v === undefined)
+                continue;
             h2Req[lk] = String(v);
         }
         h2Req['accept-encoding'] = 'identity';
         const req = client.request(h2Req, { endStream: false });
         let status = 200;
-        req.on('response', headers => { status = Number(headers[':status'] ?? 200); });
-        req.on('error', reject);
         let resolved = false;
-        // Return as soon as we have status + readable stream
-        req.on('response', () => {
-            if (!resolved) { resolved = true; resolve({ status, stream: req }); }
+        req.on('response', headers => {
+            status = Number(headers[':status'] ?? 200);
+            if (!resolved) {
+                resolved = true;
+                resolve({ status, stream: req });
+            }
         });
-        // Timeout fallback: resolve after first data/end if response event was missed
+        req.on('error', reject);
+        // Fallbacks if the response event was missed (rare, but observed under
+        // some H2 edge cases): resolve on first data or end.
         req.once('data', (chunk) => {
-            if (!resolved) { resolved = true; resolve({ status, stream: req, firstChunk: chunk }); }
+            if (!resolved) {
+                resolved = true;
+                resolve({ status, stream: req, firstChunk: chunk });
+            }
         });
         req.once('end', () => {
-            if (!resolved) { resolved = true; resolve({ status, stream: req }); }
+            if (!resolved) {
+                resolved = true;
+                resolve({ status, stream: req });
+            }
         });
         req.write(bodyStr);
         req.end();
@@ -113,7 +132,6 @@ async function requestViaRealIP(path, body, originalHeaders) {
 export async function* streamFromAnthropic(path, body, originalHeaders) {
     let stream;
     if (TUN_MODE || VPN_MODE) {
-        // Must use real IP + SNI to avoid routing loop — fetch() can't do this
         const res = await requestViaRealIP(path, body, originalHeaders);
         if ((res.statusCode ?? 0) >= 400) {
             const chunks = [];
@@ -124,8 +142,6 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
         stream = res;
     }
     else {
-        // Normal mode: fetch works fine, no routing concern
-        const bodyStr = JSON.stringify(body);
         const response = await fetch(`https://${ANTHROPIC_HOSTNAME}${path}`, {
             method: 'POST',
             headers: { ...originalHeaders, 'content-type': 'application/json' },
@@ -137,7 +153,6 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
         }
         if (!response.body)
             throw new Error('No response body from Anthropic');
-        // Convert ReadableStream to AsyncIterable
         const reader = response.body.getReader();
         stream = {
             [Symbol.asyncIterator]() {
@@ -145,12 +160,11 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
                     async next() {
                         const { done, value } = await reader.read();
                         return done ? { done: true, value: undefined } : { done: false, value: Buffer.from(value) };
-                    }
+                    },
                 };
-            }
+            },
         };
     }
-    // Parse SSE stream
     const decoder = new TextDecoder();
     let buf = '';
     for await (const chunk of stream) {
@@ -186,6 +200,10 @@ export async function* streamFromAnthropic(path, body, originalHeaders) {
  * All other events (tool_use, input_json_delta, message_start with real IDs,
  * token counts, stop_reason, etc.) are forwarded unchanged.
  *
+ * On upstream error (4xx/5xx) returns a Response with the actual HTTP status
+ * so the SDK can parse it correctly. The SDK chokes on `event: error` carried
+ * inside an HTTP 200 body.
+ *
  * `extra.prelude` is emitted BEFORE the first Anthropic event.
  * `extra.postlude` is emitted AFTER message_stop.
  */
@@ -193,20 +211,18 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
     const encoder = new TextEncoder();
     // Fetch from Anthropic BEFORE creating the ReadableStream so we can return
     // the correct HTTP status code for errors (rate_limit, auth, etc.).
-    // The SDK correctly parses 4xx/5xx but fails on event: error in HTTP 200.
     let asyncStream;
     if (TUN_MODE || VPN_MODE) {
         asyncStream = await requestViaRealIP(path, requestBody, originalHeaders);
     }
     else {
-        // Use HTTP/2 to avoid rate limiting on HTTP/1.1 for sci OAuth tokens.
         const bodyStr = JSON.stringify(requestBody);
         const { status, stream, firstChunk } = await makeH2Request(path, originalHeaders, bodyStr);
         if (status >= 400) {
             const chunks = firstChunk ? [firstChunk] : [];
-            for await (const c of stream) chunks.push(c);
+            for await (const c of stream)
+                chunks.push(c);
             const errText = Buffer.concat(chunks).toString('utf8');
-            process.stderr.write(`[sci-pipe] upstream ${status} body: ${errText}\n`);
             onComplete();
             return new Response(errText, {
                 status,
@@ -214,30 +230,29 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
             });
         }
         asyncStream = (async function* () {
-            if (firstChunk) yield firstChunk;
-            for await (const chunk of stream) yield chunk;
+            if (firstChunk)
+                yield firstChunk;
+            for await (const chunk of stream)
+                yield chunk;
         })();
     }
     return new ReadableStream({
         async start(controller) {
-            // Sci transparency events first (clients that don't recognise them ignore them).
             if (extra?.prelude) {
                 controller.enqueue(encoder.encode(extra.prelude));
             }
             try {
-                // Parse SSE events (split on double-newline) and forward,
-                // patching only text_delta events for deanonymization.
+                // SSE events are separated by \n\n. Parse, forward verbatim, only
+                // patch text_delta events to swap anonymized tokens back.
                 const decoder = new TextDecoder();
                 let buf = '';
                 for await (const chunk of asyncStream) {
                     buf += decoder.decode(chunk, { stream: true });
-                    // SSE events are separated by \n\n
                     const events = buf.split('\n\n');
                     buf = events.pop() ?? '';
                     for (const rawEvent of events) {
                         if (!rawEvent.trim())
                             continue;
-                        // Extract event type and data line
                         let eventType = '';
                         let dataStr = '';
                         for (const line of rawEvent.split('\n')) {
@@ -255,7 +270,6 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
                             if (data.type === 'content_block_delta' &&
                                 data.delta?.type === 'text_delta' &&
                                 typeof data.delta.text === 'string') {
-                                // Deanonymize in-place; fall back to original if deanon buffers
                                 const deanon = deanonPush(data.delta.text);
                                 data.delta.text = deanon ?? data.delta.text;
                                 const patched = (eventType ? `event: ${eventType}\n` : '') +
@@ -271,13 +285,11 @@ export async function streamDirectAnthropic(path, requestBody, originalHeaders, 
                         }
                     }
                 }
-                // Flush any remaining deanon buffer
                 deanonEnd();
             }
             catch (err) {
                 controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: String(err) } })}\n\n`));
             }
-            // Postlude (sci.deanonymized stats) after the Anthropic stream ends.
             if (extra?.postlude) {
                 const post = extra.postlude();
                 if (post)

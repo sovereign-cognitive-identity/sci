@@ -30,8 +30,8 @@ const CONTEXT_SUFFIX = `Treat as authoritative facts. Tokens like [PERSON_n], [E
 // Final number of unique memories injected.
 const MAX_CONTEXT_RESULTS = 3;
 // Each recalled memory is truncated to this many characters before injection.
-// Episodic memories can be full conversation transcripts (10k+ chars). Without
-// a cap, items can add 90k+ tokens to the request → Anthropic 429.
+// Episodic memories can be full conversation transcripts (10k+ chars); without
+// a cap, items add 90k+ tokens to the request → Anthropic 429.
 const MAX_CHARS_PER_ITEM = 250;
 // Hard ceiling on total injected context content (~150 tokens). Plus prefix
 // (~12 tokens) + suffix (~55 tokens) = ~220 token budget per request. The
@@ -157,8 +157,8 @@ export async function injectMemoryContext(messages, adapter, sessionTokenMap) {
             const tag = r.type === 'episodic'
                 ? (isQuestion(r.content) ? '(user previously asked)' : '(user previously said)')
                 : `(${r.type})`;
-            // Truncate each item to prevent full conversation transcripts from
-            // blowing up the request (can be 10k+ chars per episodic memory).
+            // Truncate each item so a full conversation transcript doesn't blow
+            // up the request (some episodic memories are 10k+ chars).
             const truncated = r.content.length > MAX_CHARS_PER_ITEM
                 ? r.content.slice(0, MAX_CHARS_PER_ITEM) + '…'
                 : r.content;
