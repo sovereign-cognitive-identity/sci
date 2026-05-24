@@ -9,6 +9,7 @@ jobs:
   build:
     name: Build sci (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     continue-on-error: ${{ matrix.continue_on_error == true }}
     strategy:
       fail-fast: false
