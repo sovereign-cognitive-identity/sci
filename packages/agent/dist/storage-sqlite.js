@@ -249,20 +249,20 @@ export class SqliteStorageAdapter extends CloudAdapter {
         const toUpload = [
             ...this.db.prepare(
                 `SELECT e.id, e.profile_id, e.content, e.source, e.agent_id, e.occurred_at, e.metadata,
-                        p.name AS profile_name
+                        p.name AS profile_name, e.created_at
                    FROM episodic_memories e JOIN profiles p ON p.id = e.profile_id
                   WHERE e.created_at > ? ORDER BY e.created_at ASC`
             ).all(since).map(r => ({ blobType: 'episodic', record: r })),
 
             ...this.db.prepare(
                 `SELECT s.id, s.profile_id, s.content, s.category, s.confidence, s.metadata,
-                        p.name AS profile_name
+                        p.name AS profile_name, s.created_at
                    FROM semantic_nodes s JOIN profiles p ON p.id = s.profile_id
                   WHERE s.created_at > ? ORDER BY s.created_at ASC`
             ).all(since).map(r => ({ blobType: 'semantic', record: r })),
 
             ...this.db.prepare(
-                `SELECT id, content, category, confidence, metadata
+                `SELECT id, content, category, confidence, metadata, created_at
                    FROM identity_facts
                   WHERE created_at > ? ORDER BY created_at ASC`
             ).all(since).map(r => ({ blobType: 'identity', record: r })),
@@ -313,11 +313,18 @@ export class SqliteStorageAdapter extends CloudAdapter {
                 });
                 if (res.ok) {
                     uploaded++;
-                    // Save progress incrementally so interruptions don't lose work.
-                    // Use occurred_at (what's in the record) as the sync watermark.
-                    const ts = record.occurred_at ?? record.created_at;
+                    // Advance the cursor to this item's created_at so crash/interrupt
+                    // recovery resumes from the right position.  Always use created_at
+                    // (the DB write timestamp, which the WHERE clause filters on) —
+                    // occurred_at can be a historical timestamp and must not be used
+                    // as the cursor or future syncs re-upload already-pushed memories.
+                    //
+                    // SQLite datetime('now') stores UTC without a 'Z' suffix, e.g.
+                    // '2026-05-24 02:57:37'.  new Date(ts) would parse that as LOCAL
+                    // time on CDT machines, adding +5h.  Appending 'Z' forces UTC.
+                    const ts = record.created_at;
                     if (ts) {
-                        saveSyncState(this.#configDir, { ...syncState, lastSyncAt: new Date(ts).toISOString() });
+                        saveSyncState(this.#configDir, { ...syncState, lastSyncAt: new Date(ts + 'Z').toISOString() });
                     }
                 } else {
                     appendFileSync(pendingPath, JSON.stringify({ blobType, encryptedBlob }) + '\n');
@@ -327,7 +334,13 @@ export class SqliteStorageAdapter extends CloudAdapter {
             }
         }
 
-        saveSyncState(this.#configDir, { ...syncState, lastSyncAt: new Date().toISOString() });
+        // Only advance lastSyncAt to 'now' when the full queue was drained.
+        // When truncated (toUpload.length > BATCH_LIMIT) the incremental cursor
+        // saves inside the loop already placed the watermark at the last uploaded
+        // item's created_at — advancing to 'now' here would skip the remainder.
+        if (toUpload.length <= BATCH_LIMIT) {
+            saveSyncState(this.#configDir, { ...syncState, lastSyncAt: new Date().toISOString() });
+        }
         if (uploaded > 0) process.stderr.write(`[sci] pushed ${uploaded} memory blob(s) to control plane\n`);
         return { uploaded, downloaded: 0 };
     }
