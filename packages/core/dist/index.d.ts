@@ -12,4 +12,5 @@ export type { TokenMap, AnonymizeResult, Entity, EntityType } from './anonymizer
 export { embed, embedBatch, MODEL_ID, DIMENSIONS } from './embeddings.js';
 export { Augmentor } from './augmentor.js';
 export type { MemoryInput, SemanticNodeInput } from './augmentor.js';
+export { RateLimiter, rateLimitFetch, getGlobalLimiter } from './rate-limiter.js';
 //# sourceMappingURL=index.d.ts.map
