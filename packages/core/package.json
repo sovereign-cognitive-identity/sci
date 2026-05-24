@@ -32,6 +32,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1042.0",
+    "@caseyzandbergen/rate-limiter": "^1.0.0",
     "better-sqlite3": "^12.9.0",
     "compromise": "^14.15.0",
     "fastembed": "^1.14.0",
