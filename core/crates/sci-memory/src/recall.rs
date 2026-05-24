@@ -21,7 +21,7 @@ use crate::error::Result;
 use crate::types::{Metadata, RecallQuery, RecallResult, RecallType};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ── Serialisation helpers ────────────────────────────────────────────────────
 
@@ -109,21 +109,29 @@ pub fn recall(conn: &Connection, q: &RecallQuery<'_>) -> Result<Vec<RecallResult
     // a meaningful relevance signal rather than a narrow RRF rank band.
     all_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut seen: HashMap<String, ()> = HashMap::new();
+    let mut seen_ids:     HashMap<String, ()> = HashMap::new();
+    let mut seen_content: HashSet<String>     = HashSet::new();
     let mut out: Vec<RecallResult> = Vec::with_capacity(q.limit);
     for hit in all_hits {
-        if seen.insert(hit.id.clone(), ()).is_none() {
-            out.push(RecallResult {
-                id:          hit.id,
-                kind:        hit.kind,
-                content:     hit.content,
-                score:       hit.score as f64,
-                metadata:    hit.metadata,
-                occurred_at: hit.occurred_at,
-            });
-            if out.len() >= q.limit {
-                break;
-            }
+        if seen_ids.insert(hit.id.clone(), ()).is_some() {
+            continue; // exact ID duplicate
+        }
+        // Content fingerprint: first 200 chars (trimmed) — collapses identical
+        // chunks that appear verbatim across many turn groups.
+        let fingerprint: String = hit.content.trim().chars().take(200).collect();
+        if !seen_content.insert(fingerprint) {
+            continue; // near-identical duplicate; best-scored copy already kept
+        }
+        out.push(RecallResult {
+            id:          hit.id,
+            kind:        hit.kind,
+            content:     hit.content,
+            score:       hit.score as f64,
+            metadata:    hit.metadata,
+            occurred_at: hit.occurred_at,
+        });
+        if out.len() >= q.limit {
+            break;
         }
     }
     Ok(out)
