@@ -79,7 +79,7 @@ server.tool(
       const category = rules.identityCategoryFilter
         ? (args.category ?? rules.identityCategoryFilter[0])
         : args.category
-      const result = await memoryIdentity({ ...args, category }, adapter)
+      const result = await memoryIdentity({ ...args, category })
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       const msg = err instanceof AuthError ? `Access denied: ${err.message}` : (err instanceof Error ? err.message : String(err))

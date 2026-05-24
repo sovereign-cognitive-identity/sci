@@ -83,3 +83,24 @@ export function helperStoreIdentity(input: {
 }): Promise<{ id: string; stored: boolean }> {
   return postJson('/sci/memories', { kind: 'identity', ...input })
 }
+
+export interface HelperIdentityFact {
+  id: string
+  content: string
+  category: string | null
+  confidence: number
+  createdAt: string
+  metadata: Record<string, unknown>
+}
+
+export function helperIdentity(opts: {
+  query?: string
+  category?: string
+  limit?: number
+}): Promise<HelperIdentityFact[]> {
+  const params = new URLSearchParams()
+  if (opts.query)    params.set('query',    opts.query)
+  if (opts.category) params.set('category', opts.category)
+  if (opts.limit)    params.set('limit',    String(opts.limit))
+  return getJson<HelperIdentityFact[]>(`/sci/identity?${params}`)
+}

@@ -14,6 +14,7 @@
 //!   GET /sci/audit_turns/count?original=  — count_token_original
 //!   GET /sci/profiles                     — profile list
 //!   GET /sci/recall?query=&profile=&limit — recall preview (no store)
+//!   GET /sci/identity?query=&category=&limit — identity facts (semantic or confidence-ranked)
 //!   GET /sci/memories?profile=&limit=     — all memories for graph
 //!  POST /sci/memories                     — store a memory (episodic|identity)
 //! DELETE /sci/memories/:id                — delete an episodic memory + vector
@@ -49,8 +50,8 @@ use std::collections::HashMap;
 
 use sci_core::handlers::HandlerState;
 use sci_core::memory::{
-    AuditTurn, Profile, RecallQuery, RecallResult, StorageStats, StoreEpisodicInput,
-    StoreIdentityInput, TokenMapping,
+    AuditTurn, IdentityFact, Profile, RecallQuery, RecallResult, RecallType, StorageStats,
+    StoreEpisodicInput, StoreIdentityInput, TokenMapping,
 };
 
 use crate::events::EventBus;
@@ -83,6 +84,7 @@ pub fn admin_router(state: AdminState) -> Router {
         .route("/sci/active_profile",    get(get_active_profile).post(set_active_profile))
         .route("/sci/active_project",    get(get_active_project).post(set_active_project))
         .route("/sci/recall",            get(preview_recall))
+        .route("/sci/identity",          get(list_identity))
         .route("/sci/memories",           get(list_memories).post(store_memory))
         .route("/sci/memories/:id",      delete(delete_memory))
         .route("/sci/events",            get(events_stream))
@@ -422,6 +424,69 @@ async fn preview_recall(
         })
     })?;
     Ok(Json(hits))
+}
+
+// ── /sci/identity ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct IdentityParams {
+    query:    Option<String>,
+    category: Option<String>,
+    limit:    Option<usize>,
+}
+
+/// `GET /sci/identity` — retrieve identity facts.
+///
+/// Without `query`: returns facts ordered by confidence descending (optionally
+/// filtered by `category`). This is the "load Casey's profile" path.
+///
+/// With `query`: runs a semantic search over `embeddings_identity` then joins
+/// back to `identity_facts` to include `category` and `confidence`.
+async fn list_identity(
+    State(s): State<AdminState>,
+    Query(q): Query<IdentityParams>,
+) -> Result<Json<Vec<IdentityFact>>, AdminError> {
+    let limit = q.limit.unwrap_or(20).min(100);
+
+    if let Some(query) = q.query {
+        // Semantic search path.  Embed the query, recall identity-type only,
+        // then join to identity_facts to get category/confidence.
+        let embedding = s.handler_state.embedder.embed(&query).await
+            .map_err(|e| AdminError::Internal(format!("embed: {e}")))?;
+
+        let hits = with_storage(&s, |a| {
+            // profile_id is ignored for RecallType::Identity — pass empty str.
+            a.recall(&RecallQuery {
+                query_embedding: &embedding,
+                query:           &query,
+                profile_id:      "",
+                limit,
+                types:           &[RecallType::Identity],
+            })
+        })?;
+
+        // Join each hit back to identity_facts for the full row.
+        let facts = with_storage(&s, |a| {
+            let mut out: Vec<IdentityFact> = Vec::with_capacity(hits.len());
+            for hit in &hits {
+                let fact_opt: Option<IdentityFact> = a.query_identity_facts(None, usize::MAX)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|f| f.id == hit.id);
+                if let Some(f) = fact_opt {
+                    out.push(f);
+                }
+            }
+            Ok(out)
+        })?;
+        Ok(Json(facts))
+    } else {
+        // Confidence-ranked list path.
+        let facts = with_storage(&s, |a| {
+            a.query_identity_facts(q.category.as_deref(), limit)
+        })?;
+        Ok(Json(facts))
+    }
 }
 
 // ── /sci/memories (POST: store) ──────────────────────────────────────────────

@@ -1,22 +1,14 @@
-import { embed } from '@sci/core'
-import type { StorageAdapter } from '@sci/core'
+import { helperIdentity } from '../helper.js'
 
-export async function memoryIdentity(
-  args: {
-    query?: string
-    category?: string
-    limit?: number
-  },
-  adapter: StorageAdapter
-) {
-  const limit = args.limit ?? 20
-
-  const facts = await adapter.queryIdentityFacts({
-    query: args.query,
-    queryEmbedding: args.query ? await embed(args.query) : undefined,
+export async function memoryIdentity(args: {
+  query?: string
+  category?: string
+  limit?: number
+}) {
+  const facts = await helperIdentity({
+    query:    args.query,
     category: args.category,
-    limit,
+    limit:    args.limit ?? 20,
   })
-
   return { facts }
 }
