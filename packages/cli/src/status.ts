@@ -10,6 +10,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import { createConnection } from 'net'
 import http from 'http'
+import { spawnSync } from 'child_process'
 
 // ── color helpers ─────────────────────────────────────────────────────────────
 
@@ -65,10 +66,11 @@ async function checkHelper(): Promise<Check> {
     if (res.status === 200) {
       const data = JSON.parse(res.body) as Record<string, unknown>
       const version = (data['version'] as string | undefined) ?? 'unknown'
-      const memories = (data['memories'] as number | undefined) ?? 0
-      const identity = (data['identity_facts'] as number | undefined) ?? 0
+      const stats = (data['stats'] as Record<string, number> | undefined) ?? {}
+      const episodic = stats['episodic'] ?? 0
+      const identity = stats['identity'] ?? 0
       const portStr = [proxyUp && ':3001', adminUp && ':3002'].filter(Boolean).join(' ')
-      return { label, pass: true, detail: `${portStr} up (v${version}, ${memories}k memories, ${identity} identity facts)` }
+      return { label, pass: true, detail: `${portStr} up (v${version}, ${episodic.toLocaleString()} episodic, ${identity} identity)` }
     }
   } catch {
     // admin API unreachable — partial pass
@@ -110,7 +112,6 @@ function checkCA(): Check {
   }
 
   // Optionally check System Keychain (macOS only, best-effort)
-  const { spawnSync } = require('child_process') as typeof import('child_process')
   const res = spawnSync('security', [
     'find-certificate', '-c', 'Sci', '/Library/Keychains/System.keychain',
   ], { encoding: 'utf-8' })
