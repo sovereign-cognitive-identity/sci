@@ -1,64 +1,61 @@
 # Sci Alpha — Install Guide
 
-> Alpha v0.1.0 · macOS · Invite only
+> Alpha v0.1.0 · macOS · Apple Silicon · Invite only
 
 ## What you're getting
 
-Sci is a local proxy that sits between Claude Code and Anthropic. Before any request leaves your machine, it substitutes your real name, email, and other PII with stable placeholder tokens, then restores them in the response. It also injects relevant memory context — facts about you, your projects, and past decisions — into every session via an MCP server connected to a local Postgres + pgvector store. The alpha proves the core pipeline: anonymization, memory injection, and deanonymization all working end-to-end with Claude Code. What's not included yet: auto-update, a GUI, multi-provider routing, and cloud storage sync.
+Sci is a local proxy that sits between Claude Code and Anthropic. Before any request leaves your machine, it substitutes your real name, email, and other PII with stable placeholder tokens, then restores them in the response. It also injects relevant memory context — facts about you, your projects, and past decisions — into every session via an MCP server connected to a local store. The alpha proves the core pipeline: anonymization, memory injection, and deanonymization all working end-to-end with Claude Code. What's not included yet: auto-update, a GUI, multi-provider routing, and cloud storage sync.
 
 ---
 
 ## Prerequisites
 
-- macOS 13 or later (Apple Silicon recommended; Intel supported)
+- macOS 13 or later, **Apple Silicon (M1 or newer)** — Intel Macs are not supported in the alpha
 - Claude Code installed and working (`claude --version` should succeed)
-- Anthropic API key (`sk-ant-...`)
-- Docker Desktop running
-- An invite token (provided by Casey)
+- An Anthropic API key (`sk-ant-...`)
+- An invite link from Casey
+
+Storage is local SQLite — **no Docker or Postgres required**.
 
 ---
 
 ## Install
 
-```bash
-SCI_TOKEN=<your-token> curl -fsSL https://sci.sh/install | sh
-```
-
-Without a token (if you're on the open list):
+Run the installer in your terminal:
 
 ```bash
-curl -fsSL https://sci.sh/install | sh
+curl -fsSL https://raw.githubusercontent.com/sovereign-cognitive-identity/sci/main/scripts/install.sh | bash
 ```
 
-> **Note:** The install URL is a placeholder — the real URL will be in your invite email. The installer requires `sudo` for two steps: trusting the CA certificate and writing to `/usr/local/bin`.
+> The installer asks for `sudo` for two steps: trusting the CA certificate in your System Keychain and writing the launchd services.
 
 The installer will:
 
-1. Detect your architecture (Apple Silicon or Intel) and download the matching binary
-2. Install `sci` to `/usr/local/bin/` (or `~/.sci/bin/` if you decline sudo)
-3. Generate a local CA certificate and trust it in your macOS Keychain
-4. Start Postgres via Docker Compose and apply the schema
-5. Register the `sci` MCP server with Claude Code (`claude mcp add`)
-6. Write `HTTPS_PROXY` and `ANTHROPIC_BASE_URL` to your `~/.zshrc`
-7. Prompt for your Anthropic API key and write it to `~/.sci/credentials.env`
+1. Download the Sci binary for Apple Silicon and install it to `~/.sci/bin/`
+2. Add `~/.sci/bin` to your `PATH` in `~/.zshrc`
+3. Generate a local CA certificate and trust it in your macOS System Keychain
+4. Register the `sci` MCP server in `~/.claude.json`
+5. Write `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS` into Claude Code's `settings.json`
+6. Install and start the launchd services — `dev.sci.helper` (proxy, :3001) and `com.sci.agent` (:8080)
+7. Prompt for your Anthropic API key and save it to `~/.sci/credentials.env`
+
+When it finishes, you'll see a status summary.
 
 ---
 
 ## First-run setup
 
-After the installer finishes, run the setup wizard:
+The installer completes setup for you — there is no separate wizard to run. If you ever need to re-enter your API key or re-register the MCP server, run:
 
 ```bash
-sci setup
+sci --setup
 ```
-
-This verifies the database connection, checks the schema, generates a trusted token for Claude Code, and outputs the exact `claude mcp add` command if the installer didn't already run it.
 
 ---
 
 ## Verify it's working
 
-Open a new terminal (so the shell exports take effect), then:
+Open a **new** terminal (so the `PATH` change takes effect), then:
 
 ```bash
 sci status
@@ -80,10 +77,10 @@ Counts are zero on a fresh install. That's expected — they grow as you use Cla
 Then run a live privacy check:
 
 ```bash
-node demo/privacy-demo.mjs
+sci verify
 ```
 
-This sends a real request through the proxy and prints a before/after comparison showing what left your machine. All 6 checks must pass before you trust the system with real conversations.
+This sends a real request through the proxy and prints a before/after comparison showing what left your machine. The check must PASS before you trust the system with real conversations.
 
 Sample output:
 
@@ -107,25 +104,23 @@ Sample output:
 
 1. Open a new terminal (PATH and proxy env must be inherited)
 2. Start Claude Code in any project: `claude`
-3. Confirm the proxy env is active — ask Claude to run `echo $ANTHROPIC_BASE_URL`. It should print `http://127.0.0.1:3001`.
+3. Confirm the proxy env is active — ask Claude to run `echo $HTTPS_PROXY`. It should print `http://127.0.0.1:3001`.
 4. Use Claude Code normally. Sci intercepts each request transparently.
 5. Start a **second** Claude Code session in a different directory. This is where memory injection becomes visible — Sci will include context from the first session without you doing anything.
+
+See [Using Sci](/guide/using-sci) for day-to-day usage.
 
 ---
 
 ## Confirming memory is flowing
 
-Sci injects a system prompt prefix into each Claude Code session. It looks like this (visible if you ask Claude what's in its system prompt):
+Sci exposes memory to Claude Code through the `sci` MCP server. Ask Claude directly:
 
-```
-[Sci memory context]
-Identity: Casey Zandbergen, software engineer, works in TypeScript/Node
-Active projects: Sci (cognitive identity layer), Threadline
-Recent: implemented identity_facts pipeline (2026-05-22)
-[/Sci memory context]
-```
+> "What do you know about me and my active projects?"
 
-The injected content grows as you store more memories. To seed it immediately from your Claude conversation history:
+Claude will call `memory_identity` and `memory_recall` and summarize what it finds.
+
+To seed memory immediately from your Claude conversation history:
 
 ```bash
 # Export from: claude.ai/settings/account → Privacy → Export Data
@@ -137,24 +132,22 @@ sci import --claude ~/Downloads/conversations.json
 ## Uninstall
 
 ```bash
-# Stop the background service
-brew services stop sci          # if installed via brew
-# or
-launchctl unload ~/Library/LaunchAgents/com.cognitive-os.sci.plist
-
-# Remove the binary
-sudo rm /usr/local/bin/sci
-
-# Remove config and data (destructive — removes all stored memories)
-rm -rf ~/.sci
+# Stop and remove the background services
+launchctl unload ~/Library/LaunchAgents/dev.sci.helper.plist
+launchctl unload ~/Library/LaunchAgents/com.sci.agent.plist
+rm ~/Library/LaunchAgents/dev.sci.helper.plist ~/Library/LaunchAgents/com.sci.agent.plist
 
 # Remove MCP registration
 claude mcp remove sci
 
-# Remove shell exports (edit ~/.zshrc manually and remove the Sci block)
+# Remove config, binary, and data (destructive — erases all stored memories)
+rm -rf ~/.sci
 
-# Remove CA from Keychain (optional)
-# Open Keychain Access → search "Sci" → delete the certificate
+# Manually remove the PATH line from ~/.zshrc and the proxy env block
+# (HTTPS_PROXY / NODE_EXTRA_CA_CERTS) from Claude Code's settings.json
+
+# Remove CA from Keychain (optional):
+# Keychain Access → search "Sci" → delete the certificate
 ```
 
 ---
@@ -163,15 +156,14 @@ claude mcp remove sci
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `curl: (60) SSL certificate problem` | CA not trusted in Keychain | `sci-helper --trust-ca` |
-| `Connection refused` on port 3001 | Proxy not running | `brew services start sci` or check `~/Library/Logs/sci/sci-helper.log` |
-| First request hangs 30–120 seconds | BGE embedding model downloading on first run (~110 MB) | Wait — check progress with `brew services log sci` |
-| 401 from Anthropic | API key missing or not loaded | `sci-helper --setup` to re-enter key, or `curl -s http://127.0.0.1:3002/reload-credentials` |
 | `sci: command not found` | PATH not updated | Open a new terminal or run `source ~/.zshrc` |
-| Claude Code bypasses proxy | `ANTHROPIC_BASE_URL` not set in Claude Code's environment | Launch Claude Code from a terminal, not from the Dock/Spotlight |
-| `brew update` fails with port 3001 error | `NO_PROXY` not excluding brew hosts | Add `export NO_PROXY=localhost,127.0.0.1,*.brew.sh,formulae.brew.sh,raw.githubusercontent.com` to `~/.zshrc` |
+| `Connection refused` on port 3001 | Proxy not running | `launchctl load ~/Library/LaunchAgents/dev.sci.helper.plist`, then check `~/Library/Logs/sci-helper.log` |
+| First request hangs 30–120 seconds | Embedding model downloading on first run (~110 MB) | Wait — `tail -f ~/Library/Logs/sci-helper.log` to watch progress |
+| `curl: (60) SSL certificate problem` | CA not trusted in Keychain | Re-run the installer, or trust `~/.sci/ca.crt` in Keychain Access manually |
+| 401 from Anthropic | API key missing or not loaded | `sci --setup` to re-enter your key |
+| Claude Code bypasses proxy | `HTTPS_PROXY` not set in Claude Code's environment | Launch Claude Code from a terminal, not the Dock/Spotlight |
 
-See [INSTALL.md](../INSTALL.md) for detailed diagnosis steps for each of these.
+See [INSTALL.md](../INSTALL.md) for detailed diagnosis steps.
 
 ---
 
@@ -182,4 +174,4 @@ This is alpha software. Things will break. Please report what you find:
 - **GitHub Issues:** [github.com/sovereign-cognitive-identity/sci/issues](https://github.com/sovereign-cognitive-identity/sci/issues) (preferred)
 - **Email:** casey.zandbergen@gmail.com
 
-When reporting a bug, include the output of `sci status` and the relevant lines from `~/Library/Logs/sci/sci-helper.log`.
+When reporting a bug, include the output of `sci status` and the relevant lines from `~/Library/Logs/sci-helper.log`.
