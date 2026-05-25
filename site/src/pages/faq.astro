@@ -1,0 +1,73 @@
+---
+import Base from '../layouts/Base.astro';
+
+const faqs = [
+  {
+    q: 'Does my API key or data go to Casey or a Sci server?',
+    a: 'No. Your key lives in <code>~/.sci/credentials.env</code> on your machine. Memory is local SQLite. Sci forwards your requests straight to Anthropic with your own key.',
+  },
+  {
+    q: 'What does Anthropic actually receive?',
+    a: 'Your prompt with PII replaced by placeholder tokens. Run <code>sci verify</code> to see a real before/after.',
+  },
+  {
+    q: 'Can I turn it off?',
+    a: 'Yes — <code>launchctl unload ~/Library/LaunchAgents/dev.sci.helper.plist</code> stops the proxy. Full uninstall steps are in the install guide.',
+  },
+  {
+    q: 'Where are the logs?',
+    a: '<code>~/Library/Logs/sci-helper.log</code> (proxy) and <code>~/.sci/sci.log</code> (agent).',
+  },
+  {
+    q: 'Why Apple Silicon only?',
+    a: 'The alpha ships a single macOS arm64 build. Intel Mac support is deferred — most users are on Apple Silicon.',
+  },
+  {
+    q: 'How do I report a bug?',
+    a: 'Include <code>sci status</code> output and recent <code>~/Library/Logs/sci-helper.log</code> lines, then open a <a href="https://github.com/sovereign-cognitive-identity/sci/issues">GitHub issue</a> or email casey.zandbergen@gmail.com.',
+  },
+];
+---
+
+<Base title="FAQ" description="Frequently asked questions about the Sci alpha.">
+  <div class="prose">
+    <h1>FAQ</h1>
+    <div class="faq">
+      {faqs.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <div class="answer" set:html={item.a} />
+        </details>
+      ))}
+    </div>
+  </div>
+
+  <style>
+    .faq { margin-top: 8px; }
+    details {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 10px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    summary {
+      cursor: pointer;
+      padding: 14px 18px;
+      font-weight: 600;
+      color: #f1f5f9;
+      list-style: none;
+      position: relative;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::after {
+      content: '+';
+      position: absolute; right: 18px; top: 12px;
+      color: var(--accent); font-size: 20px; font-weight: 400;
+    }
+    details[open] summary::after { content: '−'; }
+    .answer { padding: 0 18px 16px; color: var(--text-dim); }
+    .answer :global(code) { font-size: 0.85em; }
+    .answer :global(a) { color: var(--accent); }
+  </style>
+</Base>

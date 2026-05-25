@@ -1,0 +1,141 @@
+---
+const { title, description, frontmatter } = Astro.props;
+const pageTitle = title ?? frontmatter?.title ?? 'Sci';
+const pageDesc =
+  description ??
+  frontmatter?.description ??
+  'A local proxy between you and every AI system you use. Protects your privacy, preserves your context.';
+
+const nav = [
+  { href: '/', label: 'Home' },
+  { href: '/what-is-sci', label: 'What is Sci' },
+  { href: '/how-it-works', label: 'How it works' },
+  { href: '/install', label: 'Install' },
+  { href: '/using-sci', label: 'Using Sci' },
+  { href: '/what-to-test', label: 'What to test' },
+  { href: '/faq', label: 'FAQ' },
+];
+
+const path = Astro.url.pathname.replace(/\/$/, '') || '/';
+const isMarkdown = !!frontmatter; // markdown pages render into a prose wrapper
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle === 'Sci' ? 'Sci — Sovereign Cognitive Identity' : `${pageTitle} · Sci`}</title>
+    <meta name="description" content={pageDesc} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDesc} />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/">Sci<span class="brand-dot">.</span></a>
+      <nav>
+        {nav.map((item) => (
+          <a href={item.href} class={path === item.href ? 'active' : ''}>{item.label}</a>
+        ))}
+      </nav>
+      <a class="gh" href="https://github.com/sovereign-cognitive-identity/sci" target="_blank" rel="noopener">GitHub ↗</a>
+    </header>
+
+    <main>
+      {isMarkdown ? <article class="prose"><slot /></article> : <slot />}
+    </main>
+
+    <footer class="site-footer">
+      <div>
+        <strong>Sci</strong> — Sovereign Cognitive Identity. Alpha v0.1.0.
+      </div>
+      <div class="footer-links">
+        <a href="https://sovereign-cognitive-identity.github.io/sci/" target="_blank" rel="noopener">Technical docs ↗</a>
+        <a href="https://github.com/sovereign-cognitive-identity/sci" target="_blank" rel="noopener">GitHub ↗</a>
+        <a href="https://github.com/sovereign-cognitive-identity/sci/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0</a>
+      </div>
+      <div class="muted">© 2026 Casey Zandbergen</div>
+    </footer>
+
+    <style is:global>
+      :root {
+        --bg: #0a0d14;
+        --panel: #0f172a;
+        --panel-2: #0f1b2d;
+        --border: #1e293b;
+        --border-accent: #1e3a5f;
+        --text: #e2e8f0;
+        --text-dim: #94a3b8;
+        --muted: #64748b;
+        --accent: #7dd3fc;
+        --accent-strong: #38bdf8;
+        --code: #fbbf24;
+        --green: #86efac;
+        --maxw: 1080px;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html { scroll-behavior: smooth; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ── header ── */
+      .site-header {
+        display: flex; align-items: center; gap: 24px;
+        max-width: var(--maxw); margin: 0 auto;
+        padding: 18px 32px;
+        border-bottom: 1px solid var(--border);
+        flex-wrap: wrap;
+      }
+      .brand { font-size: 20px; font-weight: 800; color: #f8fafc; text-decoration: none; letter-spacing: -0.02em; }
+      .brand-dot { color: var(--accent); }
+      .site-header nav { display: flex; gap: 18px; flex: 1; flex-wrap: wrap; }
+      .site-header nav a { color: var(--text-dim); text-decoration: none; font-size: 14px; font-weight: 500; }
+      .site-header nav a:hover { color: var(--text); }
+      .site-header nav a.active { color: var(--accent); }
+      .site-header .gh { color: var(--text-dim); text-decoration: none; font-size: 14px; font-weight: 600; }
+      .site-header .gh:hover { color: var(--text); }
+
+      /* ── main / prose ── */
+      main { max-width: var(--maxw); margin: 0 auto; padding: 48px 32px 64px; }
+      .prose { max-width: 760px; }
+      .prose h1 { font-size: 32px; font-weight: 800; color: #f8fafc; letter-spacing: -0.02em; margin-bottom: 18px; }
+      .prose h2 { font-size: 22px; font-weight: 700; color: #f1f5f9; margin: 36px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+      .prose h3 { font-size: 17px; font-weight: 600; color: #cbd5e1; margin: 24px 0 8px; }
+      .prose p { margin-bottom: 14px; color: #cbd5e1; }
+      .prose ul, .prose ol { margin: 12px 0 16px 24px; }
+      .prose li { margin-bottom: 6px; color: #cbd5e1; }
+      .prose a { color: var(--accent); text-decoration: none; }
+      .prose a:hover { text-decoration: underline; }
+      .prose strong { color: #f1f5f9; }
+      .prose blockquote { border-left: 3px solid var(--border-accent); padding: 4px 16px; margin: 14px 0; color: var(--text-dim); background: var(--panel); border-radius: 0 8px 8px 0; }
+      .prose hr { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+      .prose table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14px; }
+      .prose th, .prose td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .prose th { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+      code { font-family: "SF Mono", Menlo, monospace; font-size: 0.88em; background: var(--border); color: var(--code); padding: 1px 6px; border-radius: 4px; }
+      pre { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; overflow-x: auto; margin: 14px 0; }
+      pre code { background: none; color: #93c5fd; padding: 0; font-size: 13px; line-height: 1.7; }
+
+      /* ── footer ── */
+      .site-footer {
+        max-width: var(--maxw); margin: 0 auto;
+        padding: 28px 32px 48px;
+        border-top: 1px solid var(--border);
+        display: flex; flex-direction: column; gap: 8px;
+        font-size: 13.5px; color: var(--text-dim);
+      }
+      .footer-links { display: flex; gap: 18px; flex-wrap: wrap; }
+      .footer-links a { color: var(--accent); text-decoration: none; }
+      .footer-links a:hover { text-decoration: underline; }
+      .muted { color: var(--muted); font-size: 12.5px; }
+    </style>
+  </body>
+</html>
