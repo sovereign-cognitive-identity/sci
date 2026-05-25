@@ -25,6 +25,7 @@ export default defineConfig({
           items: [
             { text: 'What is Sci?', link: '/guide/what-is-sci' },
             { text: 'Alpha Install (v0.1.0)', link: '/guide/alpha-install' },
+            { text: 'Using Sci', link: '/guide/using-sci' },
             { text: 'Quick Start (Dev)', link: '/guide/quick-start' },
             { text: 'The Privacy Guarantee', link: '/guide/privacy' },
             { text: 'Connecting Agents', link: '/guide/connecting-agents' },
