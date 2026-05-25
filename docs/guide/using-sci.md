@@ -8,7 +8,7 @@ Once Sci is installed, most of what it does is invisible — the proxy runs in t
 
 Every time you run `claude` in a terminal:
 
-1. **Proxy intercepts the session.** Claude Code's `HTTPS_PROXY` is set to `http://127.0.0.1:3001`, so all requests route through Sci before reaching Anthropic. Your API key never changes — Sci forwards it.
+1. **Proxy intercepts the session.** Claude Code's `HTTPS_PROXY` is set to `http://127.0.0.1:3001`, so all requests route through Sci before reaching Anthropic. Your login is untouched — Sci forwards whatever credentials Claude Code already uses (OAuth or an API key).
 2. **PII is anonymized outbound.** Your name, email, and other identity tokens are replaced with stable placeholders (`[PERSON_1]`, `[EMAIL_1]`) before the request leaves your machine.
 3. **PII is restored inbound.** Claude's response comes back through the proxy, where placeholders are swapped back to your real values. You never see the substitution.
 4. **Memory is available as tools.** The `sci` MCP server is registered in Claude Code, giving Claude access to `memory_recall`, `memory_store`, `memory_identity`, and `memory_status`.

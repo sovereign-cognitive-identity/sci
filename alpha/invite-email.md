@@ -19,10 +19,9 @@ You're one of the first handful of people running it. It's alpha — rough edges
 ### Before you start
 
 - A Mac on **Apple Silicon** (M1 or newer), macOS 13+
-- Claude Code installed (`claude --version` should work)
-- Your own Anthropic API key (`sk-ant-…`)
+- Claude Code installed and signed in (`claude --version` should work)
 
-No Docker, no database setup — the alpha runs on local SQLite.
+No API key to dig up — Sci uses the Claude Code login you already have (Pro/Max via OAuth is fine). No Docker, no database setup either; the alpha runs on local SQLite.
 
 ### Install (about 3 minutes)
 
@@ -32,7 +31,7 @@ Paste this into a terminal:
 curl -fsSL https://raw.githubusercontent.com/sovereign-cognitive-identity/sci/main/scripts/install.sh | bash
 ```
 
-It'll ask for `sudo` twice (to trust a local certificate and install the background service) and prompt for your Anthropic API key. When it finishes, open a **new** terminal and run:
+It'll ask for `sudo` twice — to trust a local certificate and install the background service. (If it offers to save an API key, just press Enter; your Claude Code login already works.) When it finishes, open a **new** terminal and run:
 
 ```bash
 sci status     # should print  ok: true

@@ -25,7 +25,7 @@ const isMarkdown = !!frontmatter; // markdown pages render into a prose wrapper
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{pageTitle === 'Sci' ? 'Sci — Sovereign Cognitive Identity' : `${pageTitle} · Sci`}</title>
+    <title>{pageTitle === 'Sci' ? 'Sci — Sovereign Cognitive Identity · DancingBits' : `${pageTitle} · Sci`}</title>
     <meta name="description" content={pageDesc} />
     <meta property="og:title" content={pageTitle} />
     <meta property="og:description" content={pageDesc} />
@@ -34,7 +34,7 @@ const isMarkdown = !!frontmatter; // markdown pages render into a prose wrapper
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/">Sci<span class="brand-dot">.</span></a>
+      <a class="brand" href="/">Sci<span class="brand-dot">.</span><span class="brand-by">by dancingbits</span></a>
       <nav>
         {nav.map((item) => (
           <a href={item.href} class={path === item.href ? 'active' : ''}>{item.label}</a>
@@ -49,14 +49,14 @@ const isMarkdown = !!frontmatter; // markdown pages render into a prose wrapper
 
     <footer class="site-footer">
       <div>
-        <strong>Sci</strong> — Sovereign Cognitive Identity. Alpha v0.1.0.
+        <strong>Sci</strong> — the first product from <strong>DancingBits</strong>. Alpha v0.1.0.
       </div>
       <div class="footer-links">
         <a href="https://sovereign-cognitive-identity.github.io/sci/" target="_blank" rel="noopener">Technical docs ↗</a>
         <a href="https://github.com/sovereign-cognitive-identity/sci" target="_blank" rel="noopener">GitHub ↗</a>
         <a href="https://github.com/sovereign-cognitive-identity/sci/blob/main/LICENSE" target="_blank" rel="noopener">AGPL-3.0</a>
       </div>
-      <div class="muted">© 2026 Casey Zandbergen</div>
+      <div class="muted">© 2026 DancingBits</div>
     </footer>
 
     <style is:global>
@@ -93,8 +93,9 @@ const isMarkdown = !!frontmatter; // markdown pages render into a prose wrapper
         border-bottom: 1px solid var(--border);
         flex-wrap: wrap;
       }
-      .brand { font-size: 20px; font-weight: 800; color: #f8fafc; text-decoration: none; letter-spacing: -0.02em; }
+      .brand { font-size: 20px; font-weight: 800; color: #f8fafc; text-decoration: none; letter-spacing: -0.02em; display: inline-flex; align-items: baseline; gap: 8px; }
       .brand-dot { color: var(--accent); }
+      .brand-by { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; text-transform: lowercase; }
       .site-header nav { display: flex; gap: 18px; flex: 1; flex-wrap: wrap; }
       .site-header nav a { color: var(--text-dim); text-decoration: none; font-size: 14px; font-weight: 500; }
       .site-header nav a:hover { color: var(--text); }

@@ -6,7 +6,14 @@ description: How to use Sci day-to-day — what happens automatically, checking 
 
 # Using Sci
 
-Once installed, most of what Sci does is invisible — the proxy runs in the background and memory flows automatically.
+Once installed, most of what Sci does is invisible — the proxy runs in the background and memory flows automatically. You keep using Claude Code exactly as before. Below is what's happening underneath, and the few things worth doing deliberately.
+
+## Your first session, end to end
+
+1. Open a **new** terminal (so the proxy environment is inherited) and run `claude` in any project.
+2. Work normally. Behind the scenes, every request is routed through Sci, anonymized, and the reply de-anonymized — you won't notice a thing except, on the very first request, a brief pause while the embedding model downloads.
+3. Tell Claude something worth keeping: *"Remember we're standardizing on Vitest for this repo."*
+4. Tomorrow, open a session in a **different** directory and ask: *"What testing framework are we using?"* The answer is already there. That's memory injection — the moment it becomes visible.
 
 ## What happens automatically
 

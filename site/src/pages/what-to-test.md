@@ -10,7 +10,7 @@ Work through these in order. For each, note: did it work, how long it took, and 
 
 ## 1. Install (target: under 10 minutes, cold)
 
-- Does the one-liner complete without intervention beyond the two `sudo` prompts and the API-key prompt?
+- Does the one-liner complete without intervention beyond the two `sudo` prompts? (The API-key prompt is optional — skip it and use your Claude Code login.)
 - After a new terminal, does `sci status` print `ok: true`?
 - **Report:** total time from paste to green, and any step that needed guessing.
 
@@ -41,13 +41,14 @@ Work through these in order. For each, note: did it work, how long it took, and 
 ## 6. Resilience
 
 - Restart your Mac. Do the services come back automatically (`sci status` still green)?
-- Rotate your API key with `sci --setup`. Does the next request use the new key?
+- If you use an API key, rotate it with `sci --setup` — does the next request pick it up? (On OAuth, confirm a re-login is respected.)
 - **Report:** anything that needed a manual kick to recover.
 
 ---
 
 ## Known issues (please don't file duplicates)
 
+- **Claude Code only.** The alpha supports Claude Code on macOS. Claude Desktop, Cursor, and the web app aren't supported yet — broader agent and provider coverage is on the roadmap.
 - **Intel Macs are not supported** in this alpha — Apple Silicon only.
 - **First request after install can hang 30–120s** while the local embedding model downloads (~110 MB). Expected once.
 - **No auto-update.** New versions require re-running the installer.

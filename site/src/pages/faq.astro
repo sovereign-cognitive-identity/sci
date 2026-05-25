@@ -3,24 +3,44 @@ import Base from '../layouts/Base.astro';
 
 const faqs = [
   {
-    q: 'Does my API key or data go to Casey or a Sci server?',
-    a: 'No. Your key lives in <code>~/.sci/credentials.env</code> on your machine. Memory is local SQLite. Sci forwards your requests straight to Anthropic with your own key.',
+    q: 'Do I need an Anthropic API key?',
+    a: 'No. Sci is a transparent proxy — it forwards whatever credentials Claude Code already sends, including your OAuth session from a Claude Pro or Max subscription. You don\'t paste a key anywhere, and Sci doesn\'t store one. (If you <em>prefer</em> key-based auth, that works too — but it\'s optional.)',
+  },
+  {
+    q: 'Does my data or credentials go to a Sci server?',
+    a: 'There is no Sci server. There\'s no account to create and nothing is phoned home. Memory lives in a local SQLite database, embeddings are computed on your machine, and your auth is forwarded straight to Anthropic untouched.',
+  },
+  {
+    q: 'What does Sci work with today?',
+    a: 'The alpha supports <b>Claude Code on macOS (Apple Silicon)</b> — that\'s where both halves are wired end-to-end. The privacy proxy anonymizes the Anthropic API path Claude Code uses, and the four memory tools are registered with Claude Code over MCP. It\'s deliberately narrow: we\'re getting the core pipeline right before widening it.',
+  },
+  {
+    q: 'Will it support Claude Desktop, Cursor, and other tools?',
+    a: 'That\'s the plan. The memory layer is built on MCP, so any MCP-capable client can use the memory tools — and the proxy already has handlers for OpenAI, OpenRouter, and Google endpoints, not just Anthropic. A tiered access model (<code>sci connect</code> for trusted/standard/public agents like Cursor or Copilot) is designed and coming. <b>Claude Desktop and the web app</b> are a special case: they talk to claude.ai\'s backend rather than the API path Sci anonymizes, and don\'t route through the local proxy, so they\'re <b>not supported in the alpha</b>. Broader agent and provider coverage is on the roadmap.',
   },
   {
     q: 'What does Anthropic actually receive?',
-    a: 'Your prompt with PII replaced by placeholder tokens. Run <code>sci verify</code> to see a real before/after.',
+    a: 'Your prompt with PII replaced by stable placeholder tokens like <code>[PERSON_1]</code>. The model reasons over the tokens; your real name and email never appear in the outbound request. Run <code>sci verify</code> to see a real before/after on your own machine.',
+  },
+  {
+    q: 'Does it slow Claude Code down?',
+    a: 'The proxy adds a local hop and a substitution pass — negligible in normal use. The one exception is the very first request after install, which can take 30–120 seconds while the on-device embedding model downloads (~110 MB). After that it\'s cached.',
+  },
+  {
+    q: 'What happens to memory I\'ve stored if I uninstall?',
+    a: 'It\'s in <code>~/.sci</code> as a SQLite database. Removing that directory erases all stored memories. Until you do, it stays entirely local — back it up like any other file.',
+  },
+  {
+    q: 'Why is it MITM-ing my HTTPS traffic? Is that safe?',
+    a: 'Sci trusts a local CA certificate so it can read <em>your own</em> traffic on <em>your own</em> machine — the same approach as corporate proxies and debugging tools. The CA private key never leaves <code>~/.sci</code>, and you can distrust or delete it in Keychain Access any time.',
   },
   {
     q: 'Can I turn it off?',
-    a: 'Yes — <code>launchctl unload ~/Library/LaunchAgents/dev.sci.helper.plist</code> stops the proxy. Full uninstall steps are in the install guide.',
-  },
-  {
-    q: 'Where are the logs?',
-    a: '<code>~/Library/Logs/sci-helper.log</code> (proxy) and <code>~/.sci/sci.log</code> (agent).',
+    a: 'Yes — <code>launchctl unload ~/Library/LaunchAgents/dev.sci.helper.plist</code> stops the proxy. Full uninstall steps are in the <a href="/install">install guide</a>.',
   },
   {
     q: 'Why Apple Silicon only?',
-    a: 'The alpha ships a single macOS arm64 build. Intel Mac support is deferred — most users are on Apple Silicon.',
+    a: 'The alpha ships a single macOS arm64 build to keep the surface small. Intel Mac support is deferred — most users are on Apple Silicon.',
   },
   {
     q: 'How do I report a bug?',

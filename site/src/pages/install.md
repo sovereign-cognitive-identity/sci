@@ -11,10 +11,9 @@ description: Install the Sci alpha on Apple Silicon macOS — one command, then 
 ## Prerequisites
 
 - macOS 13 or later, **Apple Silicon (M1 or newer)** — Intel Macs are not supported in the alpha
-- Claude Code installed and working (`claude --version` should succeed)
-- An Anthropic API key (`sk-ant-...`)
+- Claude Code installed and signed in (`claude --version` should succeed)
 
-Storage is local SQLite — **no Docker or Postgres required**.
+That's it. **No API key required** — Sci uses the Claude Code login you already have, including Claude Pro or Max via OAuth. Storage is local SQLite, so there's **no Docker or Postgres** to install either.
 
 ## Install
 
@@ -24,7 +23,9 @@ Run the installer in your terminal:
 curl -fsSL https://raw.githubusercontent.com/sovereign-cognitive-identity/sci/main/scripts/install.sh | bash
 ```
 
-It asks for `sudo` twice (to trust the CA certificate and install the launchd services) and prompts for your Anthropic API key. The installer downloads the binary, trusts a local CA, registers the `sci` MCP server with Claude Code, configures the proxy, and starts the background services.
+It asks for `sudo` twice — to trust the local CA certificate and to install the launchd services. The installer downloads the binary, trusts the CA, registers the `sci` MCP server with Claude Code, configures the proxy, and starts the background services.
+
+> If the installer offers to store an Anthropic API key, you can **skip it** (just press Enter) — your existing Claude Code login already works through the proxy. A key is only needed if you prefer key-based auth over OAuth.
 
 ## Verify
 

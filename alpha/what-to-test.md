@@ -45,7 +45,7 @@ The guiding principle is **sovereignty by default**: your data lives on your mac
 Work through these in order. For each, note: did it work, how long it took, and anything surprising.
 
 ### 1. Install (target: under 10 minutes, cold)
-- Does the one-liner complete without manual intervention beyond the two `sudo` prompts and the API-key prompt?
+- Does the one-liner complete without manual intervention beyond the two `sudo` prompts? (The API-key prompt is optional — skip it and use your Claude Code login.)
 - After opening a new terminal, does `sci status` print `ok: true`?
 - **Report:** total time from paste to green, and any step that needed guessing.
 
@@ -71,13 +71,14 @@ Work through these in order. For each, note: did it work, how long it took, and 
 
 ### 6. Resilience
 - Restart your Mac. Do the services come back automatically (`sci status` still green)?
-- Rotate your API key with `sci --setup`. Does the next request use the new key?
+- If you use an API key, rotate it with `sci --setup` — does the next request pick it up? (On OAuth, confirm a re-login is respected.)
 - **Report:** anything that needed a manual kick to recover.
 
 ---
 
 ## Known issues (please don't file duplicates)
 
+- **Claude Code only.** The alpha supports Claude Code on macOS. Claude Desktop, Cursor, and the web app aren't supported yet — broader agent and provider coverage is on the roadmap.
 - **Intel Macs are not supported** in this alpha — Apple Silicon only.
 - **First request after install can hang 30–120s** while the local embedding model downloads (~110 MB). This is expected once.
 - **No auto-update.** New versions require re-running the installer.
@@ -88,8 +89,8 @@ Work through these in order. For each, note: did it work, how long it took, and 
 
 ## FAQ
 
-**Does my API key or data go to Casey / a Sci server?**
-No. Your key lives in `~/.sci/credentials.env` on your machine. Memory is local SQLite. Sci forwards your requests straight to Anthropic with your own key.
+**Does my data or credentials go to Casey / a Sci server?**
+No — there is no Sci server. Sci forwards whatever login Claude Code already uses (your OAuth session, or an API key if you set one) straight to Anthropic, untouched. Memory is local SQLite on your machine.
 
 **What does Anthropic actually receive?**
 Your prompt with PII replaced by placeholder tokens. Run `sci verify` to see a real before/after.

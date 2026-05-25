@@ -11,11 +11,10 @@ Sci is a local proxy that sits between Claude Code and Anthropic. Before any req
 ## Prerequisites
 
 - macOS 13 or later, **Apple Silicon (M1 or newer)** — Intel Macs are not supported in the alpha
-- Claude Code installed and working (`claude --version` should succeed)
-- An Anthropic API key (`sk-ant-...`)
+- Claude Code installed and signed in (`claude --version` should succeed)
 - An invite link from Casey
 
-Storage is local SQLite — **no Docker or Postgres required**.
+**No API key required** — Sci uses the Claude Code login you already have, including Claude Pro or Max via OAuth. Storage is local SQLite — **no Docker or Postgres** either.
 
 ---
 
@@ -37,9 +36,10 @@ The installer will:
 4. Register the `sci` MCP server in `~/.claude.json`
 5. Write `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS` into Claude Code's `settings.json`
 6. Install and start the launchd services — `dev.sci.helper` (proxy, :3001) and `com.sci.agent` (:8080)
-7. Prompt for your Anthropic API key and save it to `~/.sci/credentials.env`
 
 When it finishes, you'll see a status summary.
+
+> If the installer offers to store an Anthropic API key, you can **skip it** (press Enter) — your existing Claude Code login already works through the proxy. A key is only needed if you prefer key-based auth over OAuth.
 
 ---
 
@@ -160,7 +160,7 @@ rm -rf ~/.sci
 | `Connection refused` on port 3001 | Proxy not running | `launchctl load ~/Library/LaunchAgents/dev.sci.helper.plist`, then check `~/Library/Logs/sci-helper.log` |
 | First request hangs 30–120 seconds | Embedding model downloading on first run (~110 MB) | Wait — `tail -f ~/Library/Logs/sci-helper.log` to watch progress |
 | `curl: (60) SSL certificate problem` | CA not trusted in Keychain | Re-run the installer, or trust `~/.sci/ca.crt` in Keychain Access manually |
-| 401 from Anthropic | API key missing or not loaded | `sci --setup` to re-enter your key |
+| 401 from Anthropic | Claude Code isn't signed in (or a stale key is set) | Run `claude` and sign in; if you use an API key, `sci --setup` to re-enter it |
 | Claude Code bypasses proxy | `HTTPS_PROXY` not set in Claude Code's environment | Launch Claude Code from a terminal, not the Dock/Spotlight |
 
 See [INSTALL.md](../INSTALL.md) for detailed diagnosis steps.
