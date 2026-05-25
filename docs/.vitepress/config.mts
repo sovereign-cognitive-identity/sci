@@ -12,7 +12,7 @@ export default defineConfig({
 
   themeConfig: {
     nav: [
-      { text: 'Guide', link: '/guide/quick-start' },
+      { text: 'Guide', link: '/guide/alpha-install' },
       { text: 'Reference', link: '/reference/cli' },
       { text: 'Architecture', link: '/architecture/overview' },
       { text: 'GitHub', link: 'https://github.com/sovereign-cognitive-identity/sci' },
@@ -24,7 +24,8 @@ export default defineConfig({
           text: 'Getting Started',
           items: [
             { text: 'What is Sci?', link: '/guide/what-is-sci' },
-            { text: 'Quick Start', link: '/guide/quick-start' },
+            { text: 'Alpha Install (v0.1.0)', link: '/guide/alpha-install' },
+            { text: 'Quick Start (Dev)', link: '/guide/quick-start' },
             { text: 'The Privacy Guarantee', link: '/guide/privacy' },
             { text: 'Connecting Agents', link: '/guide/connecting-agents' },
             { text: 'Storage Backends', link: '/guide/storage' },

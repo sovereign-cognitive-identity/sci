@@ -171,7 +171,7 @@ claude mcp remove sci
 | Claude Code bypasses proxy | `ANTHROPIC_BASE_URL` not set in Claude Code's environment | Launch Claude Code from a terminal, not from the Dock/Spotlight |
 | `brew update` fails with port 3001 error | `NO_PROXY` not excluding brew hosts | Add `export NO_PROXY=localhost,127.0.0.1,*.brew.sh,formulae.brew.sh,raw.githubusercontent.com` to `~/.zshrc` |
 
-See [docs/INSTALL.md](INSTALL.md) for detailed diagnosis steps for each of these.
+See [INSTALL.md](../INSTALL.md) for detailed diagnosis steps for each of these.
 
 ---
 
