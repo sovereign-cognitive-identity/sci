@@ -1,0 +1,17 @@
+server {
+    listen 80;
+    server_name dancingbits.ai www.dancingbits.ai;
+
+    root {{ web_root }};
+    index index.html;
+
+    # Astro static output: serve .html files without extension
+    location / {
+        try_files $uri $uri/ $uri.html =404;
+    }
+
+    # Security: block dotfiles
+    location ~ /\. {
+        deny all;
+    }
+}

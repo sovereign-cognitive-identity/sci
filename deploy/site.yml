@@ -1,0 +1,78 @@
+---
+# Deploy dancingbits.ai static site to the Contabo VPS.
+#
+# Usage:
+#   cd deploy/
+#   ansible-playbook site.yml
+#
+# Prerequisites:
+#   - site/dist/ must exist: cd ../site && npm run build
+#   - SSH access: ssh contabo (alias for root@195.26.249.211 via ~/.ssh/contabo_vps)
+#   - Cloudflare: dancingbits.ai + www BOTH pointing to 195.26.249.211 (proxied)
+#
+# TLS: handled by Cloudflare (orange-cloud proxy) — no certbot needed.
+
+- name: Deploy dancingbits.ai static site
+  hosts: dancingbits
+  become: true
+
+  vars:
+    web_root: /var/www/dancingbits.ai
+    nginx_vhost: dancingbits.ai
+    site_dist: "{{ playbook_dir }}/../site/dist/"
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+  tasks:
+
+    # ── Web root ───────────────────────────────────────────────────────────────
+    - name: Ensure web root exists
+      file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    # ── Sync static files ──────────────────────────────────────────────────────
+    - name: Sync site/dist to web root
+      ansible.posix.synchronize:
+        src: "{{ site_dist }}"
+        dest: "{{ web_root }}/"
+        archive: false
+        recursive: true
+        delete: true
+        rsync_opts:
+          - "--exclude=.DS_Store"
+      notify: reload nginx
+
+    - name: Set ownership on synced files
+      file:
+        path: "{{ web_root }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        recurse: true
+
+    # ── nginx vhost ────────────────────────────────────────────────────────────
+    - name: Write nginx vhost
+      template:
+        src: templates/dancingbits.ai.conf.j2
+        dest: /etc/nginx/sites-available/{{ nginx_vhost }}
+        mode: "0644"
+      notify: reload nginx
+
+    - name: Enable vhost (symlink into sites-enabled)
+      file:
+        src: /etc/nginx/sites-available/{{ nginx_vhost }}
+        dest: /etc/nginx/sites-enabled/{{ nginx_vhost }}
+        state: link
+
+    # ── Validate before reload ─────────────────────────────────────────────────
+    - name: Test nginx config
+      command: nginx -t
+      changed_when: false
