@@ -8,9 +8,11 @@
 # Prerequisites:
 #   - site/dist/ must exist: cd ../site && npm run build
 #   - SSH access: ssh contabo (alias for root@195.26.249.211 via ~/.ssh/contabo_vps)
-#   - Cloudflare: dancingbits.ai + www BOTH pointing to 195.26.249.211 (proxied)
+#   - DNS: dancingbits.ai + www A records → 195.26.249.211 (grey-cloud / DNS-only, propagated)
 #
-# TLS: handled by Cloudflare (orange-cloud proxy) — no certbot needed.
+# TLS: run certbot after this playbook:
+#   ssh contabo "certbot --nginx -d dancingbits.ai -d www.dancingbits.ai"
+# Certbot adds the 443 block and HSTS redirect automatically.
 
 - name: Deploy dancingbits.ai static site
   hosts: dancingbits
