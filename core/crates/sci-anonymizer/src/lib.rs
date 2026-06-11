@@ -55,6 +55,6 @@ pub use custom_entities::{Fact, extract_entities_from_facts};
 pub use ner::extract_nlp_entities;
 pub use regex_extract::{extract_camelcase_entities, extract_regex_entities};
 pub use token_map::{
-    AnonymizeResult, Entity, EntityType, TokenMap, anonymize, anonymize_with_custom,
-    apply_token_map, build_token_map, deanonymize,
+    AnonymizeResult, Entity, EntityType, SerializedSession, SessionError, SESSION_FORMAT_VERSION,
+    TokenMap, anonymize, anonymize_with_custom, apply_token_map, build_token_map, deanonymize,
 };

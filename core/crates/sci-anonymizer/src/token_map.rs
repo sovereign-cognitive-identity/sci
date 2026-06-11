@@ -445,6 +445,62 @@ pub fn anonymize(text: &str, existing: Option<TokenMap>) -> AnonymizeResult {
     }
 }
 
+// ── Session serialization ────────────────────────────────────────────────────
+//
+// The token map IS the session: persisting and transporting it is how a
+// conversation keeps a stable `[PERSON_1]` across turns and across the MCP /
+// language-binding boundary. We wrap it in a versioned envelope so the
+// on-disk / on-wire format can evolve without silently mis-parsing an older
+// session.
+
+/// Current version of the serialized session envelope. Bump when the envelope
+/// shape changes in a backward-incompatible way.
+pub const SESSION_FORMAT_VERSION: u32 = 1;
+
+/// Errors from session (de)serialization.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("session JSON is malformed: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("unsupported session format version {found} (this build supports {supported})")]
+    UnsupportedVersion { found: u32, supported: u32 },
+}
+
+/// Versioned envelope for a serialized session token map — the stable contract
+/// the MCP server and the WASM / Python bindings use to persist and reload a
+/// session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializedSession {
+    pub version: u32,
+    #[serde(rename = "tokenMap")]
+    pub token_map: TokenMap,
+}
+
+impl TokenMap {
+    /// Serialize into the versioned session envelope (JSON).
+    pub fn to_session_json(&self) -> Result<String, SessionError> {
+        let env = SerializedSession {
+            version: SESSION_FORMAT_VERSION,
+            token_map: self.clone(),
+        };
+        Ok(serde_json::to_string(&env)?)
+    }
+
+    /// Parse a versioned session envelope produced by
+    /// [`TokenMap::to_session_json`]. Rejects envelopes from a newer,
+    /// unsupported format version rather than risk a silent mis-parse.
+    pub fn from_session_json(json: &str) -> Result<TokenMap, SessionError> {
+        let env: SerializedSession = serde_json::from_str(json)?;
+        if env.version > SESSION_FORMAT_VERSION {
+            return Err(SessionError::UnsupportedVersion {
+                found: env.version,
+                supported: SESSION_FORMAT_VERSION,
+            });
+        }
+        Ok(env.token_map)
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -497,6 +553,29 @@ mod tests {
         let r1 = anonymize("see https://one.com", None);
         let r2 = anonymize("see https://two.com", Some(r1.token_map));
         assert!(r2.text.contains("[URL_2]"));
+    }
+
+    #[test]
+    fn session_json_round_trips() {
+        let original = "email bob@example.com and see https://example.com";
+        let r = anonymize(original, None);
+        let json = r.token_map.to_session_json().unwrap();
+        // A reloaded session must deanonymize a response identically.
+        let restored_map = TokenMap::from_session_json(&json).unwrap();
+        assert_eq!(deanonymize(&r.text, &restored_map), original);
+    }
+
+    #[test]
+    fn session_json_is_versioned() {
+        let json = TokenMap::new().to_session_json().unwrap();
+        assert!(json.contains("\"version\":1"), "got: {json}");
+    }
+
+    #[test]
+    fn session_json_rejects_future_version() {
+        let future = r#"{"version":999,"tokenMap":{"forward":{},"reverse":{}}}"#;
+        let err = TokenMap::from_session_json(future).unwrap_err();
+        assert!(matches!(err, SessionError::UnsupportedVersion { found: 999, .. }));
     }
 
     #[test]
