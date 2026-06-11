@@ -232,7 +232,11 @@ fn check_shape(shape: &[usize], seq_len: usize) -> Result<()> {
 fn build_session(model_path: &Path) -> Result<Session> {
     #[allow(unused_mut)]
     let mut builder = Session::builder()?
-        .with_optimization_level(GraphOptimizationLevel::Level3)?;
+        // Level3 runs extended graph rewrites that take 10-15 min of CPU on
+        // cold start for BGE-base, triggering macOS Jetsam kills in a restart
+        // loop. Level1 (basic fusions) is equally fast at inference time for a
+        // simple BERT encoder and starts in milliseconds.
+        .with_optimization_level(GraphOptimizationLevel::Level1)?;
 
     // Execution provider configuration. Each EP is feature-flagged so a
     // build doesn't pull in CoreML on Linux or CUDA on macOS. The
