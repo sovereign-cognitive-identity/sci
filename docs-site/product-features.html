@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Features — Sci</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-features.html" class="active">Product</a>
+  <a href="tech-architecture.html">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="page">
+  <span class="kicker">Sci Capabilities</span>
+  <h1><em>Features</em></h1>
+  <p class="sub">Privacy-first cognitive identity. What works today, what's in flight, what's ahead.</p>
+</header>
+
+<div class="panel tip">
+  <h3>Honesty by Design</h3>
+  <p>We label every feature by maturity. <span class="tag t-good">working</span> = shipping today and reliable. <span class="tag t-warn">in progress</span> = actively built, partially functional. <span class="tag t-info">planned</span> = on the roadmap, design-phase or scoped. This transparency helps you build with confidence—or plan accordingly.</p>
+</div>
+
+<h2>Core Privacy Layer</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Feature</th>
+      <th>Description</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Reversible Anonymization</strong></td>
+      <td>7 entity types (PERSON, ORG, PLACE, EMAIL, PHONE, URL, HANDLE) replaced with tokens outbound, restored inbound. Masks PII at the message boundary.</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>Session-Scoped Token Maps</strong></td>
+      <td>Reversible within a single conversation. Tokens live in-process only—never persisted to provider-visible logs or storage.</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>Anonymizing Proxy (Claude)</strong></td>
+      <td>Sci sits in front of Claude, intercepting and de-anonymizing responses in real time. Zero data leakage to Anthropic.</td>
+      <td><span class="tag t-good">working (Claude)</span></td>
+    </tr>
+    <tr>
+      <td><strong>Multi-Provider Support</strong></td>
+      <td>Extend anonymization to OpenAI, Gemini, Ollama, and local models. Round-trip encryption and token restoration.</td>
+      <td><span class="tag t-info">planned</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Memory Architecture</h2>
+
+<h3>Three-Layer Storage</h3>
+<p>Sci's memory stack separates concerns for scalability and recall precision:</p>
+<ul class="clean">
+  <li><strong>Episodic:</strong> Conversation turns, session context, raw exchanges. Short-lived, high-fidelity.</li>
+  <li><strong>Semantic:</strong> Extracted facts, patterns, decisions. Indexed for dense/hybrid search. Medium lifespan.</li>
+  <li><strong>Identity:</strong> Persistent user identity, preferences, values. Slow-moving, always accessible.</li>
+</ul>
+<p><span class="tag t-good">working</span> All three layers operational. <span class="tag t-warn">in progress</span> Consolidation and promotion logic (decay + episodic→semantic→identity migration).</p>
+
+<h3>Retrieval & Indexing</h3>
+<table>
+  <thead>
+    <tr>
+      <th>Method</th>
+      <th>Details</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>On-Device Embeddings</strong></td>
+      <td>BAAI/bge-base-en-v1.5, 768-dim, via ONNX Runtime. No per-query data exposure. Sovereignty by default.</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>Dense Vector Search</strong></td>
+      <td>pgvector + cosine similarity. Powers semantic memory lookup.</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>Full-Text Search</strong></td>
+      <td>PostgreSQL native FTS for keyword queries.</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>Hybrid Fusion</strong></td>
+      <td>Merge dense + full-text results using Reciprocal Rank Fusion.</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Integration & Control</h2>
+
+<h3>MCP Server</h3>
+<p>Sci exposes a live Model Context Protocol server with six tools:</p>
+<ul class="clean">
+  <li><code>memory_recall</code> — Query episodic, semantic, or identity memory with natural language.</li>
+  <li><code>memory_store</code> — Persist facts, decisions, and context updates.</li>
+  <li><code>memory_identity</code> — Load or refresh user identity (preferences, expertise, values).</li>
+  <li><code>memory_status</code> — Inspect memory health, token usage, storage stats.</li>
+  <li><code>message_anonymize</code> — Manually anonymize a message or snippet.</li>
+  <li><code>message_deanonymize</code> — Restore PII in a de-anonymized response.</li>
+</ul>
+<p><span class="tag t-good">working</span> All six tools ready for Claude Desktop and Claude Code integration.</p>
+
+<h3>Authentication & Permissions</h3>
+<p>Three auth tiers with granular read/write enforcement:</p>
+<ul class="clean">
+  <li><strong>Trusted:</strong> Full read + write. Internal agents, same-device clients.</li>
+  <li><strong>Standard:</strong> Read + selective write. External tools, verified origins.</li>
+  <li><strong>Public:</strong> Read-only. Shared links, third-party integrations.</li>
+</ul>
+<p><span class="tag t-good">working</span> Capability enforcement across all memory tiers.</p>
+
+<h2>Platform & Deployment</h2>
+
+<h3>macOS App</h3>
+<p>Native app for memory inspection, consolidation control, and sync configuration.</p>
+<p><span class="tag t-warn">alpha, being re-scoped</span> Currently transitioning to a UI layer over the MCP server. Simpler, more composable.</p>
+
+<h3>Cross-Device Sync</h3>
+<p>Replicate memory and identity across devices while respecting privacy boundaries.</p>
+<p><span class="tag t-warn">one adapter planned</span> Design phase. Will use encrypted sync with per-device key derivation.</p>
+
+<h2>Matrix: Features at a Glance</h2>
+
+<div class="grid">
+  <div class="card">
+    <h4>Privacy (7/7)</h4>
+    <p>Entity anonymization, session tokens, proxy mode, credential isolation. <span class="tag t-good">ready</span></p>
+  </div>
+  <div class="card">
+    <h4>Memory (3/4)</h4>
+    <p>Three-layer storage, hybrid search, embeddings. Consolidation in progress. <span class="tag t-warn">partial</span></p>
+  </div>
+  <div class="card">
+    <h4>Integration (2/3)</h4>
+    <p>MCP server live. Claude proxy working. Multi-provider on roadmap. <span class="tag t-good">mostly ready</span></p>
+  </div>
+  <div class="card">
+    <h4>Platform (1/2)</h4>
+    <p>MCP + CLI core solid. App and sync adapters incoming. <span class="tag t-warn">in progress</span></p>
+  </div>
+</div>
+
+<h2>What's Next?</h2>
+<p>See the <a href="roadmap.html">roadmap</a> for prioritized next steps: memory consolidation, OpenAI/Gemini proxies, sync adapters, and the macOS UI refresh.</p>
+
+<p>For architecture details, visit <a href="tech-architecture.html">Architecture</a>. For an overview of Sci's mission and user experience, see <a href="product-overview.html">Product Overview</a>.</p>
+
+<footer>
+  <p><em>Sci</em> is a sovereign cognitive identity layer. Privacy by default. Designed for the real world.</p>
+</footer>
+
+</div>
+
+</body>
+</html>

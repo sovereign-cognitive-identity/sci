@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memory & Embeddings – Sci</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html" class="active">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="page">
+  <span class="kicker">Technical Deep Dive</span>
+  <h1><em>Memory & Embeddings</em></h1>
+  <p class="sub">Three-layer memory model with sovereign, local embeddings and hybrid retrieval.</p>
+</header>
+
+<h2>The Three Memory Layers</h2>
+
+<p>Sci structures memory as three distinct layers, each optimized for different recall patterns and time horizons:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Layer</th>
+      <th>What It Stores</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Episodic</strong></td>
+      <td>Raw events, messages, sessions, and raw interactions — the full event log with timestamps and context.</td>
+      <td><span class="tag t-good">Implemented</span></td>
+    </tr>
+    <tr>
+      <td><strong>Semantic</strong></td>
+      <td>Distilled facts, patterns, and insights extracted from episodes — abstracted knowledge without timestamp noise.</td>
+      <td><span class="tag t-warn">Partial</span></td>
+    </tr>
+    <tr>
+      <td><strong>Identity</strong></td>
+      <td>Durable facts about the person: preferences, values, expertise, relationships, ongoing decisions.</td>
+      <td><span class="tag t-good">Implemented</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Each layer is queryable by dense embedding + optional full-text search. The consolidation pipeline (episodic → semantic → identity promotion) is stubbed and deferred; see below.</p>
+
+<h2>Embeddings: Sovereignty by Default</h2>
+
+<p>Sci embeds text using <strong>BAAI/bge-base-en-v1.5</strong>, a 768-dimensional BERT encoder. Critically: embeddings are computed <strong>locally via ONNX Runtime</strong> in the <code>sci-embeddings</code> crate (~695 LoC), not sent to a cloud provider.</p>
+
+<p>This design choice is deliberate:</p>
+<ul class="clean">
+  <li><strong>Sovereignty.</strong> No per-query data exposure. Text never leaves the machine.</li>
+  <li><strong>Parity.</strong> Rust and TypeScript implementations achieve >0.999 cosine similarity, verified by integration tests.</li>
+  <li><strong>No vendor lock-in.</strong> Swap embedding models locally; the system doesn't depend on Voyage AI, OpenAI, or other APIs.</li>
+</ul>
+
+<div class="panel tip">
+  <strong>Performance note:</strong> ONNX graph optimization is set to Level 1, not Level 3. Level 3's extended graph rewrites took 10–15 minutes on cold start for BGE-base and triggered macOS Jetsam kills in restart loops. Level 1 starts in milliseconds and achieves equivalent inference speed for a simple BERT encoder.
+</div>
+
+<h2>Storage & Retrieval: Hybrid Search</h2>
+
+<p>Sci stores embeddings and text in <strong>PostgreSQL + pgvector</strong> with an HNSW index. At query time, retrieval is <strong>hybrid</strong>:</p>
+
+<div class="flow">
+  <div class="node">Text input</div>
+  <div class="arrow">→</div>
+  <div class="node">Embed (BGE/ONNX, 768-d)</div>
+  <div class="arrow">→</div>
+  <div class="node">Store (pgvector + tsvector)</div>
+</div>
+
+<div class="flow">
+  <div class="node">Query text</div>
+  <div class="arrow">→</div>
+  <div class="node">Dense vector search (pgvector cosine)</div>
+  <div class="arrow">→</div>
+  <div class="node">Full-text search (tsvector / plainto_tsquery)</div>
+  <div class="arrow">→</div>
+  <div class="node">RRF merge (k=60)</div>
+  <div class="arrow">→</div>
+  <div class="node">Ranked results</div>
+</div>
+
+<p><strong>Why hybrid beats pure-vector:</strong> Dense embeddings excel at semantic similarity but fail on exact lexical matches (e.g., searching for a specific tool name or date). Full-text search is the inverse — precise for keyword queries but insensitive to synonymy. Hybrid search via Reciprocal Rank Fusion merges both signals, giving users the best of both worlds: semantic recall for open-ended queries plus exact matches where needed.</p>
+
+<p>The retrieval backend lives in <code>packages/core/src/storage/local-adapter.ts</code>.</p>
+
+<h2>Embeddings Crate: ~695 Lines</h2>
+
+<p>The <code>sci-embeddings</code> crate implements ONNX Runtime inference for BGE-base-en-v1.5. Key responsibilities:</p>
+
+<ul class="clean">
+  <li>Load the BERT model and tokenizer.</li>
+  <li>Encode text to 768-dimensional vectors.</li>
+  <li>Normalize outputs for cosine similarity.</li>
+  <li>Maintain embedding parity with TypeScript implementations (>0.999 cosine).</li>
+</ul>
+
+<p>The crate is intentionally minimal — it does one thing well. Graph optimization, tokenization, and normalization are all standard ONNX practices; the code is straightforward and testable.</p>
+
+<h2>Consolidation: Known Gap (Deferred)</h2>
+
+<div class="panel warn">
+  <strong>Consolidation is incomplete.</strong> The episodic→semantic→identity promotion pipeline is stubbed. Decay and consolidation logic exist in <code>decay.ts</code> (~72 LoC, partial) and <code>consolidator.ts</code> (~100 LoC, stubbed), but are not production-ready.
+</div>
+
+<p>This is intentional. Consolidation — deciding which episodic facts bubble up to semantic knowledge, and which become identity beliefs — is the most opinionated part of the system. It requires user feedback to tune: which memories resurface often? Which fade too quickly? Which feel permanent?</p>
+
+<p>The decision: defer consolidation until the anonymization wedge has real users. Then, driven by observed recall complaints and usage patterns, build the promotion rules that matter. Premature consolidation logic is technical debt; observed consolidation is gold.</p>
+
+<h2>Fallback: SQLite + hnswlib</h2>
+
+<p>For single-machine deployment (no Postgres), Sci has planned stubs for SQLite + hnswlib (lightweight HNSW). This is not yet integrated. When needed, the swap is mechanical: implement the same <code>StorageAdapter</code> interface, swap the backend, and the rest of the system remains unchanged.</p>
+
+<h2>Testing & Verification</h2>
+
+<ul class="clean">
+  <li><strong>Retrieval integration tests</strong> confirm that hybrid search returns expected memories in expected order.</li>
+  <li><strong>Embedding parity tests</strong> verify Rust vs TypeScript implementations achieve >0.999 cosine similarity across a corpus.</li>
+  <li><strong>Performance tests</strong> track embedding latency and graph optimization impact.</li>
+</ul>
+
+<h2>Next Steps</h2>
+
+<p>See the <a href="tech-architecture.html">architecture overview</a> for the full system context, and the <a href="roadmap.html">roadmap</a> for consolidation timing and other planned work.</p>
+
+<footer>
+  <p><em>Sci</em> — a cognitive identity layer for humans and agents. <span class="dim">Sovereignty by default.</span></p>
+</footer>
+
+</div>
+
+</body>
+</html>

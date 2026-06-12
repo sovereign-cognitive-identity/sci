@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anonymization Engine — Sci docs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html" class="active">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+<header class="page">
+  <div class="kicker">Deep Dive: The Core Engine</div>
+  <h1>Anonymization: reversible <em>round-trip</em> entity masking</h1>
+  <p class="sub">Sci's differentiator is not destructive redaction — it's reversible anonymization. This page walks through how the hand-crafted Rust engine detects entities, substitutes tokens, and restores identity without ever exposing real data to the LLM provider.</p>
+</header>
+
+<h2>The round-trip: from identity to tokens and back</h2>
+
+<p>Most privacy tools do one-way destructive redaction: you lose information forever. Sci does something rarer. Every piece of sensitive data goes through a four-step cycle:</p>
+
+<div class="flow">
+  <div class="node">Input (real data)</div>
+  <div class="arrow">→</div>
+  <div class="node">Detect</div>
+  <div class="arrow">→</div>
+  <div class="node">Tokenize</div>
+  <div class="arrow">→</div>
+  <div class="node">LLM sees tokens</div>
+</div>
+
+<div class="flow">
+  <div class="node">LLM response</div>
+  <div class="arrow">→</div>
+  <div class="node">De-tokenize</div>
+  <div class="arrow">→</div>
+  <div class="node">Restored identity</div>
+  <div class="arrow">→</div>
+  <div class="node">You receive real data</div>
+</div>
+
+<p>The token map lives in-process only, held in memory as a Rust <code>HashMap&lt;String, String&gt;</code>. It is never persisted to any storage visible to the provider. This is the key: the session is the trust boundary. Within a session, the assistant knows who you are. Outside the session, the provider sees only stable tokens.</p>
+
+<h2>Detection: two paths to entity extraction</h2>
+
+<p>Sci identifies sensitive entities via two complementary detection mechanisms.</p>
+
+<h3>Path 1: Regex-based deterministic extraction</h3>
+
+<p>For entity types with well-defined structure, Sci uses hand-tuned regex patterns. These are <b>fast, certain, and have zero false-negatives within their scope:</b></p>
+
+<ul class="clean">
+  <li><b>EMAIL:</b> standard email pattern (user@domain.ext)</li>
+  <li><b>PHONE:</b> US/international phone formats including +1, (xxx) xxx-xxxx, and variants</li>
+  <li><b>URL:</b> http(s), ftp, and common schemes with domain and path extraction</li>
+  <li><b>HANDLE:</b> social media handles (@username, #hashtags, Discord snowflakes)</li>
+  <li><b>API_SECRET:</b> common API key patterns — AWS, OpenAI, Stripe, GitHub tokens, and private keys</li>
+</ul>
+
+<p class="small dim">These patterns are compile-time static and zero-copy. Each regex is tested against a corpus of real examples to avoid over-matching.</p>
+
+<h3>Path 2: Lexicon-based Named Entity Recognition (NER)</h3>
+
+<p>For less-structured entity types (PERSON, ORG, PLACE), Sci uses bundled lexicons:</p>
+
+<ul class="clean">
+  <li><b>~500 common first names</b> (US, UK, international) for PERSON detection</li>
+  <li><b>US states and territories</b> for PLACE recognition</li>
+  <li><b>Bundled geographic and organizational lexicons</b> loaded at startup</li>
+  <li><b>Compound-entity detection:</b> sequences like "John Smith" or "Apple Inc." are recognized as single entities, not split across tokens</li>
+  <li><b>Allowlist filtering:</b> entities tagged with high certainty are promoted to <code>identity_facts</code> after 3+ occurrences in a session — strengthening recall and mitigating lexicon gaps for repeated names</li>
+</ul>
+
+<h2>The seven entity types</h2>
+
+<table>
+<tr>
+<th>Type</th>
+<th>Detection</th>
+<th>Token Format</th>
+<th>Example</th>
+</tr>
+<tr>
+<td>PERSON</td>
+<td>Lexicon-based NER + compound</td>
+<td>PERSON_N</td>
+<td>"Casey" → PERSON_1</td>
+</tr>
+<tr>
+<td>ORG</td>
+<td>Lexicon + allowlist promotion</td>
+<td>ORG_N</td>
+<td>"Anthropic" → ORG_1</td>
+</tr>
+<tr>
+<td>PLACE</td>
+<td>Geographic lexicon + states</td>
+<td>PLACE_N</td>
+<td>"Portland" → PLACE_1</td>
+</tr>
+<tr>
+<td>EMAIL</td>
+<td>Regex (RFC-like)</td>
+<td>EMAIL_N</td>
+<td>"user@example.com" → EMAIL_1</td>
+</tr>
+<tr>
+<td>PHONE</td>
+<td>Regex (US/intl format)</td>
+<td>PHONE_N</td>
+<td>"+1 (555) 123-4567" → PHONE_1</td>
+</tr>
+<tr>
+<td>URL</td>
+<td>Regex (scheme + domain)</td>
+<td>URL_N</td>
+<td>"https://anthropic.com/api" → URL_1</td>
+</tr>
+<tr>
+<td>HANDLE</td>
+<td>Regex (@, #, Discord IDs)</td>
+<td>HANDLE_N</td>
+<td>"@casey_dev" → HANDLE_1</td>
+</tr>
+</table>
+
+<h2>Reversibility: the session token map</h2>
+
+<p>Each session maintains a single source of truth: a <code>HashMap&lt;String, String&gt;</code> that maps entity → token. This map is:</p>
+
+<ul class="clean">
+  <li><b>Session-scoped:</b> created fresh at session start, destroyed at session close</li>
+  <li><b>In-process only:</b> never serialized, never uploaded, never stored in a database visible to the provider</li>
+  <li><b>Deterministic:</b> the same entity always maps to the same token (PERSON_1 is always PERSON_1 within the session)</li>
+  <li><b>Queryable:</b> <code>deanonymize()</code> walks the response token-by-token and restores the real data using the same map</li>
+</ul>
+
+<p>This design has a profound implication: <b>you never lose context.</b> The LLM learns about your situation, your relationships, your problems — but always through a pseudonymous lens. On the receiving end, you get the LLM's response with your real identity restored.</p>
+
+<pre><code>Session start: token_map = {}
+
+Input: "Casey emailed support@example.com about the outage."
+
+Detect: [PERSON: "Casey", EMAIL: "support@example.com"]
+
+Tokenize:
+  token_map["Casey"] = "PERSON_1"
+  token_map["support@example.com"] = "EMAIL_1"
+
+Output to LLM: "PERSON_1 emailed EMAIL_1 about the outage."
+
+---
+
+LLM responds: "PERSON_1 should check with EMAIL_1 immediately."
+
+Deanonymize:
+  token_map["PERSON_1"] = "Casey" ✓
+  token_map["EMAIL_1"] = "support@example.com" ✓
+
+Output to you: "Casey should check with support@example.com immediately."</code></pre>
+
+<h2>Cascade feedback: learning from repetition</h2>
+
+<p>A session feedback mechanism strengthens entity recognition over time. If an entity appears 3+ times within a session, it is promoted to <code>identity_facts</code> — a higher-confidence store that informs future sessions and mitigates lexicon gaps for names that appear repeatedly.</p>
+
+<p>Example:</p>
+
+<ul class="clean">
+  <li><b>First mention:</b> "Sarah" detected via lexicon, tagged PERSON_1</li>
+  <li><b>Second mention:</b> "Sarah" re-detected, re-mapped to PERSON_1 (deterministic)</li>
+  <li><b>Third mention:</b> "Sarah" promoted to identity_fact — will be recognized with higher confidence in future sessions</li>
+</ul>
+
+<p>Recent fixes (SCI-259, SCI-260) addressed proxy crashes and false-positive cascades when handling repeated entities in high-volume conversations. The engine now gracefully deduplicates cascade feedback and avoids re-promotion of already-promoted entities.</p>
+
+<h2>Honest limitation: lexicon gaps and proper nouns</h2>
+
+<div class="panel warn">
+  <p><b>The NER is lexicon-based, not neural.</b> This means Sci can miss single-capital proper nouns that aren't in its bundled lexicons. A name like "Xandra" or a company like "Databricks" may not be recognized on first mention if it doesn't match a regex or appear in the name lexicon.</p>
+
+  <p>The cascade-feedback design partly mitigates this: once the name appears in the second prompt of a session, it will be recognized and promoted to identity_facts for future reference. But there is a real ceiling: a one-shot mention of an obscure proper noun has a real risk of leakage.</p>
+
+  <p>The planned evolution: hybrid on-device transformer NER (e.g. small distilled BERT or similar) to catch proper nouns with higher recall, while keeping the lexicon path as a fast fallback. This is on the roadmap.</p>
+</div>
+
+<h2>Scale and testing</h2>
+
+<p><b>Codebase:</b> ~2,842 lines of hand-crafted Rust across the <code>sci-anonymizer</code> crate, covering entity detection, token mapping, session lifecycle, and the cascade-feedback system.</p>
+
+<p><b>Coverage:</b></p>
+
+<ul class="clean">
+  <li><b>17 integration tests</b> covering real-world text anonymization end-to-end</li>
+  <li><b>3 parity tests</b> validating Rust implementation against the TypeScript reference implementation</li>
+  <li><b>Documented edge cases</b> (SCI-195, SCI-196, SCI-197) including compound entities, single-cap proper nouns, and cascading feedback deduplication</li>
+</ul>
+
+<p><b>Benchmarking:</b> Sci publishes honest benchmarks against Microsoft Presidio rather than hiding the ceiling. The lexicon approach is deterministic and fast for structured types (EMAIL, PHONE, URL) but trades recall for precision on proper nouns. This is intentional — false negatives in proper noun detection are addressable via cascade; false positives in regex detection are critical failures.</p>
+
+<h2>Connections to the broader system</h2>
+
+<p>Anonymization is the wedge. It exists to serve the two higher layers of the stack:</p>
+
+<ul class="clean">
+  <li><b>Memory:</b> The anonymized tokens are what get embedded and stored. Sci's memory system uses the same token map to retrieve pseudonymous context without ever materializing real identity to the embedding provider.</li>
+  <li><b>Sovereignty:</b> The token map is held locally. No cloud service, no external NER API, no reliance on a third-party privacy vendor. The guarantee is auditable because the evidence is on your hardware.</li>
+</ul>
+
+<p>For architectural context, see <a href="tech-architecture.html">Architecture</a>. For why this privacy model matters as a product, see <a href="product-overview.html">Product Overview</a>.</p>
+
+<footer>
+  Sci — sovereign cognitive identity layer · Reversible anonymization is the foundation of credible privacy.
+</footer>
+</div>
+</body>
+</html>

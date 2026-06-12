@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture — Sci Docs</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html" class="active">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="page">
+  <span class="kicker">System Design</span>
+  <h1><em>Architecture</em></h1>
+  <p class="sub">Monorepo spanning Rust core, TypeScript surface, and native distribution.</p>
+</header>
+
+<h2>Overview</h2>
+
+<p>Sci is a polyglot system designed for sovereignty, correctness, and iteration speed. The Rust core handles security-critical operations (anonymization, embedding) with performance and portability guarantees. TypeScript packages layer on storage, MCP transport, and HTTP proxy. The macOS app wraps the system for end-user distribution.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>Rust Core</h3>
+    <p>~3,500 LoC across four crates. Portable, verifiable, compiled to WASM and native binaries.</p>
+  </div>
+  <div class="card">
+    <h3>TypeScript Surface</h3>
+    <p>~10,000+ LoC. Storage adapters, MCP/HTTP servers, CLI, database layer, UI scaffolding.</p>
+  </div>
+  <div class="card">
+    <h3>Native Distribution</h3>
+    <p>macOS app bundles the system as a desktop + system service with native system integration.</p>
+  </div>
+</div>
+
+<h2>Directory Map</h2>
+
+<table>
+  <tr>
+    <th>Path</th>
+    <th>Purpose</th>
+    <th>Language</th>
+  </tr>
+  <tr>
+    <td><code>core/crates/</code></td>
+    <td>Anonymizer, embeddings (ONNX), OAuth, request handlers</td>
+    <td>Rust</td>
+  </tr>
+  <tr>
+    <td><code>packages/</code></td>
+    <td>Core (storage, decay), MCP server, HTTP proxy, CLI, telemetry, UI</td>
+    <td>TypeScript</td>
+  </tr>
+  <tr>
+    <td><code>apps/sci-mac/</code></td>
+    <td>Native macOS application bundle</td>
+    <td>Swift / TypeScript</td>
+  </tr>
+  <tr>
+    <td><code>site/</code></td>
+    <td>Marketing homepage</td>
+    <td>HTML / CSS</td>
+  </tr>
+  <tr>
+    <td><code>db/</code></td>
+    <td>PostgreSQL schema, migrations, audit tables</td>
+    <td>SQL</td>
+  </tr>
+</table>
+
+<h2>Core Crates (Rust)</h2>
+
+<p>Four production-focused crates in <code>core/crates/</code>:</p>
+
+<table>
+  <tr>
+    <th>Crate</th>
+    <th>LoC</th>
+    <th>Purpose</th>
+    <th>Status</th>
+  </tr>
+  <tr>
+    <td><strong>sci-anonymizer</strong></td>
+    <td>~2,842</td>
+    <td>NER + regex + reversible token maps. Strips PII before LLM calls; reverses output.</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>sci-embeddings</strong></td>
+    <td>~695</td>
+    <td>ONNX Runtime running BGE-base-en-v1.5. Embeds messages for vector search.</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>sci-oauth</strong></td>
+    <td>~400</td>
+    <td>OAuth 2.0 + JWT token handling for secure API access.</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>sci-handlers</strong></td>
+    <td>~300</td>
+    <td>Request dispatching, context setup, error handling.</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+</table>
+
+<div class="panel tip">
+  <strong>Embedding Parity:</strong> Rust and TypeScript reference implementations verified at >0.999 cosine similarity. Reproducible across platforms.
+</div>
+
+<h2>TypeScript Packages</h2>
+
+<p>Layered on top of Rust core via FFI and WASM bindings:</p>
+
+<table>
+  <tr>
+    <th>Package</th>
+    <th>Purpose</th>
+    <th>Status</th>
+  </tr>
+  <tr>
+    <td><strong>core</strong></td>
+    <td>Storage adapter interface, decay scheduler, consolidator, TS anonymizer reference</td>
+    <td><span class="tag t-warn">partial</span></td>
+  </tr>
+  <tr>
+    <td><strong>mcp</strong></td>
+    <td>Claude Model Context Protocol server (stdio transport, four tool endpoints)</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>proxy</strong></td>
+    <td>Hono HTTP server on :3001, request routing, session lifecycle</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>cli</strong></td>
+    <td>Command-line interface for ops and testing</td>
+    <td><span class="tag t-info">planned</span></td>
+  </tr>
+  <tr>
+    <td><strong>telemetry</strong></td>
+    <td>Metrics, error tracking, observability hooks</td>
+    <td><span class="tag t-info">scaffolding</span></td>
+  </tr>
+  <tr>
+    <td><strong>database</strong></td>
+    <td>Postgres client, type generation, schema migrations</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>ui</strong></td>
+    <td>React components, browser-based inspection tools</td>
+    <td><span class="tag t-info">scaffolding</span></td>
+  </tr>
+</table>
+
+<h2>Storage Backends</h2>
+
+<p>Pluggable storage layer supporting multiple databases and sync strategies:</p>
+
+<table>
+  <tr>
+    <th>Backend</th>
+    <th>Vector Index</th>
+    <th>Tested</th>
+    <th>Status</th>
+  </tr>
+  <tr>
+    <td><strong>PostgreSQL + pgvector</strong></td>
+    <td>HNSW (pgvector native)</td>
+    <td>Yes, production</td>
+    <td><span class="tag t-good">working</span></td>
+  </tr>
+  <tr>
+    <td><strong>SQLite + hnswlib</strong></td>
+    <td>hnswlib (via Node binding)</td>
+    <td>Scaffolded, TS stubs</td>
+    <td><span class="tag t-warn">partial</span></td>
+  </tr>
+  <tr>
+    <td><strong>Cloud Sync</strong></td>
+    <td>—</td>
+    <td>No; TS adapters only</td>
+    <td><span class="tag t-info">planned</span></td>
+  </tr>
+</table>
+
+<p>Cloud sync targets (not yet implemented): Dropbox, S3, iCloud. Two-file model: `.db` (SQLite) and `.index` (HNSW binary), synced as atomic units.</p>
+
+<h2>Data Flow</h2>
+
+<div class="flow">
+  <div class="node">User Message</div>
+  <div class="arrow">↓</div>
+  <div class="node">Proxy / MCP Server</div>
+  <div class="arrow">↓</div>
+  <div class="node">Anonymize (Rust sci-anonymizer)</div>
+  <div class="arrow">↓</div>
+  <div class="node">LLM Provider (sees tokens only)</div>
+  <div class="arrow">↓</div>
+  <div class="node">De-anonymize Response</div>
+  <div class="arrow">↓</div>
+  <div class="node">Embed (Rust sci-embeddings → pgvector)</div>
+  <div class="arrow">↓</div>
+  <div class="node">Store & Index in Memory</div>
+</div>
+
+<p class="small dim">Each step is isolated. Rust handles crypto-sensitive operations; TypeScript handles orchestration and storage.</p>
+
+<h2>Database Schema</h2>
+
+<p>Located in <code>db/init.sql</code> (~250+ lines). Features:</p>
+
+<ul class="clean">
+  <li>Message and session tables with pgvector columns for embeddings</li>
+  <li>HNSW index configuration for semantic search</li>
+  <li>Audit tables for compliance and debugging</li>
+  <li>CHECK constraints for data integrity (no application-layer validation needed)</li>
+  <li>Migration scripts for schema versioning</li>
+</ul>
+
+<h2>Design Philosophy</h2>
+
+<div class="panel">
+  <h3>Why This Stack?</h3>
+  <ul class="clean">
+    <li><strong>Rust Core:</strong> Portability (compile to WASM, native, serverless), correctness (type system, memory safety), transparency (code auditable).</li>
+    <li><strong>TypeScript Surface:</strong> Fast iteration on storage, protocol, and UI. Strong ecosystem for HTTP/MCP servers.</li>
+    <li><strong>PostgreSQL:</strong> Proven vector search via pgvector + HNSW. Built-in audit, transactions, replication.</li>
+    <li><strong>macOS App:</strong> End-user distribution with system integration (launch on login, system tray, local API).</li>
+  </ul>
+</div>
+
+<div class="panel warn">
+  <h3>Known Scaffolding</h3>
+  <p>Several components are placeholders or incomplete:</p>
+  <ul class="clean">
+    <li><strong>Consolidator / Decay:</strong> Message consolidation logic is partial; decay scheduler not yet tested at scale.</li>
+    <li><strong>Cloud Sync:</strong> Dropbox, S3, iCloud adapters are TS stubs. Model is designed; implementation pending.</li>
+    <li><strong>Multi-provider:</strong> Extensible design for LLM providers; currently hardcoded to one provider per session.</li>
+    <li><strong>SQLite Backend:</strong> Full integration deferred. Use PostgreSQL for production.</li>
+  </ul>
+</div>
+
+<h2>Deployment & Distribution</h2>
+
+<p>Three deployment modes:</p>
+
+<table>
+  <tr>
+    <th>Mode</th>
+    <th>Entry Point</th>
+    <th>Transport</th>
+    <th>Use Case</th>
+  </tr>
+  <tr>
+    <td><strong>macOS App</strong></td>
+    <td><code>apps/sci-mac/</code></td>
+    <td>Native + local API</td>
+    <td>End users, desktop</td>
+  </tr>
+  <tr>
+    <td><strong>MCP Server</strong></td>
+    <td><code>packages/mcp/</code></td>
+    <td>stdio (Claude Desktop)</td>
+    <td>Claude integration</td>
+  </tr>
+  <tr>
+    <td><strong>HTTP Proxy</strong></td>
+    <td><code>packages/proxy/</code></td>
+    <td>Hono on :3001</td>
+    <td>Custom clients, agents</td>
+  </tr>
+</table>
+
+<h2>Cross-Links</h2>
+
+<p>Detailed documentation on specific systems:</p>
+
+<ul class="clean">
+  <li><a href="tech-anonymization.html">Anonymization & De-anonymization</a> — PII handling, token maps, reversibility guarantees</li>
+  <li><a href="tech-memory.html">Memory & Recall</a> — Embedding, vector search, decay, consolidation</li>
+  <li><a href="tech-distribution.html">Distribution & Deployment</a> — macOS app build, updates, system integration</li>
+</ul>
+
+</div>
+
+<footer class="page-footer">
+  <p><em>Sci</em> is a sovereign cognitive identity layer. Built for privacy, transparency, and portability.</p>
+</footer>
+
+</body>
+</html>
