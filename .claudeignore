@@ -1,0 +1,43 @@
+# 1. Package dependencies
+node_modules/
+
+# 2. Build & output (compiled JS, Rust, Xcode, static sites — all generated)
+dist/
+*.js.map
+core/target/
+apps/*/target/
+apps/sci-mac/SciHelper/target/
+apps/sci-mac/build/
+apps/sci-mac/DerivedData/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+site/dist/
+
+# 3. Toolchain / framework noise (Xcode user state)
+apps/sci-mac/**/xcuserdata/
+apps/sci-mac/**/*.xcuserstate
+apps/sci-mac/Pods/
+
+# 4. Caches & logs
+*.log
+__pycache__/
+**/Cargo.lock.bak
+
+# 5. Large data & generated artifacts
+package-lock.json
+local_cache/                 # fastembed BGE model cache (downloaded at runtime)
+sci-brief.html               # 290KB rendered brief artifact
+
+# 6. IDE & OS noise
+.DS_Store
+.idea/
+.vscode/
+
+# 7. Secrets & config (read-blocking layer, separate from .gitignore)
+deploy/.env.prod
+deploy/ansible/vars.yml
+*.pem
+*.key
+*.p12
+*.mobileprovision
+*.xcconfig

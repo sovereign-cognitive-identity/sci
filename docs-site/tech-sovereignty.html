@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sovereignty & Local-First – Sci</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html" class="active">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="page">
+  <span class="kicker">Sci Architecture</span>
+  <h1><em>Sovereignty & Local-First</em></h1>
+  <p class="sub">Why Sci's approach to privacy is architectural, not contractual—and what that means in code.</p>
+</header>
+
+<section class="flow">
+
+<h2>The Core Claim</h2>
+
+<p>Sci's answer to "where does your identity live?" is radically simple: <strong>only on your device</strong>. Every fact about who you are—your identity anchor, your memory, your embeddings—exists in a local database on hardware you control. Cloud services never see your real identity at all.</p>
+
+<p>This is not a privacy promise. It's an architecture.</p>
+
+<h2>Local-First by Default</h2>
+
+<p>Sci requires no cloud credentials to function. Here's what that means in practice:</p>
+
+<h3>Embeddings Run On-Device</h3>
+
+<p>Instead of sending text to a remote embedding service, Sci uses BGE-base-en-v1.5 via ONNX—a model that runs locally, in-process. When you store a memory or anonymize a message, the embedding happens on your machine. Nothing leaves your device until <em>after</em> the anonymization round-trip has stripped identifying information.</p>
+
+<h3>Memory Lives in Local Storage</h3>
+
+<p>Identity facts and memory live in a Postgres instance (or the planned SQLite fallback) running on your machine. You own the database file. You control backups. You can inspect it. No sync to cloud storage unless you explicitly configure it.</p>
+
+<h3>Token Maps Stay In-Process</h3>
+
+<p>The sci-oauth crate maintains token maps—the binding between your real identity and anonymized personas—entirely in-process memory. These maps are never persisted to provider-visible storage. LLM providers see only the anonymized data; they never receive the key that would map it back to you.</p>
+
+<h2>Architectural vs. Contractual Privacy</h2>
+
+<div class="panel tip">
+  <strong>This distinction is the moat.</strong> Provider "privacy modes" are contractual promises: "We received your data, but we promise to delete it." Sci's guarantee is architectural: "The provider never received your real identity in the first place." No contract can be broken if there's nothing to break—the data simply doesn't exist in the provider's system.
+</div>
+
+<p>When you use an LLM through Sci:</p>
+
+<ol>
+  <li><strong>Your real identity stays local.</strong> It never enters a request payload.</li>
+  <li><strong>Your memory is anonymized.</strong> Identifying entities are replaced with stable pseudonyms.</li>
+  <li><strong>The provider sees context, not you.</strong> They can't reverse-engineer your identity even if they wanted to.</li>
+  <li><strong>The token map lives with you.</strong> Only you can deanonymize responses back to your real identity.</li>
+</ol>
+
+<p>This is why Sci can work with <em>any</em> LLM provider—OpenAI, Anthropic, Llama, local models. The architectural guarantee holds regardless of the provider's privacy policy or terms of service.</p>
+
+<h2>Access Control & Auth Tiers</h2>
+
+<p>Sovereignty without access control is just exposure. Sci gates capabilities using an auth model with three tiers:</p>
+
+<ul class="clean">
+  <li><strong>Trusted:</strong> Full read/write on memory and anonymization. Local auth only (your device, your app).</li>
+  <li><strong>Standard:</strong> Read-only on anonymized memory; write to conversation context. For authenticated remote clients.</li>
+  <li><strong>Public:</strong> Read-only on non-identifying data. For public-facing integrations.</li>
+</ul>
+
+<p>The sci-oauth crate enforces these boundaries. Your memory endpoint is not a public API; it's a local service with token-based gating.</p>
+
+<h2>Data Portability</h2>
+
+<p>Sovereignty includes the right to leave. Sci's storage layer uses standard databases (Postgres with pgvector, or SQLite)—not proprietary formats. A two-file sync model (database + vector index) underpins planned cross-device sync. You can export your identity and memory, move it to another device, or migrate to a different system entirely.</p>
+
+<p>This is enabled by architecture, not goodwill.</p>
+
+<h2>What Sovereignty Is <em>Not</em> (Today)</h2>
+
+<div class="panel warn">
+  <strong>Honest status:</strong> Sovereignty today is primarily an architectural stance plus local-first defaults rather than a feature checklist. Some planned capabilities remain stubs or will be consolidated:
+
+  <ul class="clean">
+    <li><strong>Cross-device sync adapters</strong> (Dropbox, S3, iCloud) are currently placeholders. These will be consolidated to a single well-tested adapter before general availability.</li>
+    <li><strong>Self-sovereign-identity standards</strong> (Solid, W3C DIDs) are deliberately <em>not</em> integrated. These are potentially valuable long-term, but today they're weak signals in the LLM ecosystem. Sci is watching, not building on them yet.</li>
+    <li><strong>At-rest encryption</strong> is not a claimed feature. The guarantee is local ownership of a database you control and can audit. Encryption is orthogonal—something you can layer on top (full-disk encryption, encrypted backups) if your threat model demands it.</li>
+  </ul>
+</div>
+
+<h2>The Moat</h2>
+
+<p>Sci's sovereignty story is strong because it's <strong>architectural and portable</strong>, not <strong>contractual and platform-locked</strong>. Three implications:</p>
+
+<ol>
+  <li><strong>Provider-agnostic.</strong> Use OpenAI today, Anthropic tomorrow, run Llama locally next week. Your identity and memory don't move; your integrations do.</li>
+  <li><strong>Transparent.</strong> Every entity anonymization, every token map, every memory store can be audited. No hidden cloud syncs. No background data collection.</li>
+  <li><strong>User-controlled.</strong> Your database is your database. Your sync strategy is your sync strategy. You're not locked into Sci's infrastructure choices.</li>
+</ol>
+
+<p>That's the difference between privacy as marketing and privacy as design.</p>
+
+<h2>Next Steps</h2>
+
+<p>For deeper technical details on how anonymization and auth work, see <a href="tech-architecture.html">Sci Architecture</a>. For the product positioning and governance model, see the broader <a href="product-overview.html">Product Overview</a>.</p>
+
+</section>
+
+<footer class="page">
+  <p><em>Sci</em> is a sovereign cognitive identity layer. You own your memories. You own your context. You own your identity. Built in the open, for the long term.</p>
+</footer>
+
+</div>
+
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Product Overview — Sci docs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html" class="active">Product</a>
+  <a href="tech-architecture.html">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+<header class="page">
+  <div class="kicker">Overview &amp; the Three Pillars</div>
+  <h1>How <em>anonymity, memory, and sovereignty</em> stack</h1>
+  <p class="sub">Sci is a sovereign cognitive identity layer — a local-first privacy boundary between you and any LLM. The three pillars aren't features; they're a stack that builds credibility from the bottom up.</p>
+</header>
+
+<h2>The wedge: reversible anonymization</h2>
+<p>Sci's core insight is simple: most privacy tools do destructive redaction — you lose information forever. Sci does something rarer: <b>reversible round-trip anonymization</b>. Everything you send to an LLM is anonymized. Everything it sends back is de-anonymized. The provider never sees who you actually are.</p>
+
+<div class="flow">
+  <div class="node">You (real identity)</div>
+  <div class="arrow">→</div>
+  <div class="node">[anonymize]</div>
+  <div class="arrow">→</div>
+  <div class="node">LLM provider (tokens only)</div>
+  <div class="arrow">→</div>
+  <div class="node">[de-anonymize]</div>
+  <div class="arrow">→</div>
+  <div class="node">You (real identity)</div>
+</div>
+
+<p>This is the product wedge. It's how Sci gets its foot in the door. The question it poses: <i>Do you trust your LLM provider with your real identity in every prompt?</i> Most people don't; most tools don't protect it.</p>
+
+<h2>Why this matters: the three pillars</h2>
+
+<p>Anonymity, Memory, and Sovereignty are not three co-equal features. They form a stack. Each layer justifies the one above it.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>Anonymity</h3>
+    <p><span class="tag t-good">working</span></p>
+    <p>The wedge. The entry point. Reversible anonymization means your identity stays hidden from the LLM provider — but your assistant still knows you. This is how you get privacy without sacrificing context.</p>
+    <p class="small dim">What it does: NER + regex extraction, reversible session token maps, edge-case scrubbing.</p>
+  </div>
+
+  <div class="card">
+    <h3>Memory</h3>
+    <p><span class="tag t-warn">works, consolidation in progress</span></p>
+    <p>The retention layer. The wedge is sticky because of memory. Your local memory persists even though the provider has never seen your real identity. The same pseudonymous you, same local context, across Claude, GPT, or any local model.</p>
+    <p class="small dim">What it does: BGE embeddings, pgvector + SQLite, hybrid retrieval, cross-provider continuity.</p>
+  </div>
+
+  <div class="card">
+    <h3>Sovereignty</h3>
+    <p><span class="tag t-info">architectural</span></p>
+    <p>The brand. The "why Sci exists" layer. Local-first by default: no cloud credentials, on-device embeddings, the only copy of who-you-are lives on hardware you control. Portability is not bolted on; it's foundational.</p>
+    <p class="small dim">What it means: data ownership, no central server, migration without lock-in.</p>
+  </div>
+</div>
+
+<h2>Why a stack, not three features?</h2>
+
+<p>Anonymity alone is a party trick — you lose context. <b>Anonymity + Memory</b> gets you privacy that actually works for reasoning: you're still you, the LLM still learns about you, but the provider never sees the real picture. That's the product.</p>
+
+<p>Sovereignty is why you believe it. If your memory, your identity map, your embeddings live in a cloud account you don't control, then Sci is just another SaaS privacy theater. Sovereignty says: trust this because the evidence lives on your hardware. You can verify it. You can export it. You own it.</p>
+
+<p>This is the stack. Anonymity is the feature. Memory is what makes it real. Sovereignty is why you can believe both.</p>
+
+<h2>Where we are today (alpha)</h2>
+
+<p><b>Anonymity:</b> working end-to-end. We anonymize your prompts, de-anonymize responses, and the provider never sees your real data. This is live in the <a href="tech-distribution.html">proxy, CLI, and MCP server</a>.</p>
+
+<p><b>Memory:</b> working for single-provider workflows. You can use Sci with Claude, and your local memory persists across sessions. We're consolidating memory across providers — so your memory works the same way whether you're using Claude, GPT, or a local model. That work is in progress.</p>
+
+<p><b>Sovereignty:</b> architectural and in beta. All data lives locally by default (on-device embeddings, local SQLite + pgvector). There's no central Sci server you depend on. This is testable and auditable today.</p>
+
+<h2>What this is not</h2>
+
+<div class="panel warn">
+  <p><b>Sci is not:</b> A VPN, a jailbreak, a model replacement, or guaranteed privacy (no system is). It's not a guarantee that an LLM provider won't make mistakes with your data. It's an architectural layer that removes them from the loop entirely — the provider still sees LLM-facing tokens; we just make sure your identity doesn't leak through them.</p>
+</div>
+
+<h2>What's next</h2>
+
+<p>See the <a href="roadmap.html">six-phase roadmap</a> for the path from here to cross-provider memory consolidation, the killer demo, and the full vision of a portable cognitive identity layer.</p>
+
+<p>For a deeper dive into features and user-facing value, read <a href="product-features.html">Features</a>. For positioning and competitive context, see <a href="product-positioning.html">Why Sci</a>. For the technical architecture, jump to <a href="tech-architecture.html">Architecture</a>.</p>
+
+<footer>
+  Sci — sovereign cognitive identity layer · TypeScript + Rust monorepo · Anonymity is the wedge, memory is the stick, sovereignty is the why.
+</footer>
+</div>
+</body>
+</html>

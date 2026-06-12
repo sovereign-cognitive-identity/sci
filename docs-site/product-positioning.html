@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sci — Product Positioning</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-positioning.html" class="active">Product</a>
+  <a href="tech-architecture.html">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="page">
+  <div class="kicker">Why Sci</div>
+  <h1>The Unowned Market <em>Nobody Else Protects</em></h1>
+  <p class="sub">Reversible anonymization for LLMs is a gap the industry left open. We're filling it.</p>
+</header>
+
+<h2>The Core Insight</h2>
+
+<p>Every PII tool on the market does the same thing: strip your data, send clean data to the LLM, get a response, and hope it still makes sense. When Presidio redacts "Alice" to "[PERSON]" and sends it to Claude, Claude can't say "Alice should do X" in the response—because it never learned who Alice was.</p>
+
+<p>Reversible round-trip anonymization is different: anonymize outbound, have the LLM reason over the anonymous data, then restore the original entities back into the response. The model sees enough structure to think clearly. Your identity stays off the wire. The answer stays legible.</p>
+
+<p><strong>This capability is essentially unowned.</strong></p>
+
+<h2>The Competitive Landscape (Mid-2026)</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Player</th>
+      <th>What It Does</th>
+      <th>The Gap</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Microsoft Presidio</strong><br><span class="small dim">(12.5k★)</span></td>
+      <td>One-way PII redaction & detection</td>
+      <td>No round-trip restore — redacted data stays redacted in responses</td>
+    </tr>
+    <tr>
+      <td><strong>LLM Guard</strong></td>
+      <td>Guardrails + redaction</td>
+      <td>One-way destructive redaction; privacy bolted on</td>
+    </tr>
+    <tr>
+      <td><strong>Private AI / Skyflow</strong></td>
+      <td>Enterprise de-identification + tokenization vaults</td>
+      <td>Enterprise-only pricing; designed for healthcare/fin, not LLM round-trip</td>
+    </tr>
+    <tr>
+      <td><strong>Portkey / Kong AI Gateway / Cloudflare AI Gateway</strong></td>
+      <td>LLM proxy + redaction add-ons</td>
+      <td>One-way redaction; privacy is a bolt-on feature, not architecture</td>
+    </tr>
+    <tr>
+      <td><strong>Mem0, Letta, Zep, Graphiti, Cognee</strong><br><span class="small dim">(Mem0: 8.5k★, Series A)</span></td>
+      <td>Agent memory frameworks</td>
+      <td>Cloud-centric; no reversible anonymization or local-first sovereignty</td>
+    </tr>
+    <tr>
+      <td><strong>Khoj</strong><br><span class="small dim">(6.5k★)</span></td>
+      <td>Local-first personal search</td>
+      <td>Not built for LLM interaction; no reversible anonymization</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Why Memory Alone Won't Work for Sci</h2>
+
+<p>The agent memory market is crowded, VC-funded, and converging on a commodity feature set: conversation history, retrieval augmentation, fine-tuning. Competing there head-on as "another memory layer" is a losing fight for a small, open-source project.</p>
+
+<p>But memory built on <em>reversible anonymization as the foundation</em>? That's defensible. That's new.</p>
+
+<h2>Why Self-Sovereign Identity Isn't Ready</h2>
+
+<p>Solid, DIDs, and decentralized identity have the right principles. They also have zero LLM provider integration, minimal mainstream adoption, and no obvious path to production for the next 18 months. Watch the space. Don't bet the product on it yet.</p>
+
+<h2>The Tailwinds Are Real</h2>
+
+<ul class="clean">
+  <li><strong>EU AI Act enforcement</strong> — regulators will force LLM providers to tighten data handling. Sci-first workflows suddenly look like compliance insurance.</li>
+  <li><strong>GDPR pressure on LLM providers</strong> — the lawsuits are coming. Companies that can prove "the model never saw PII" have an asymmetric defense.</li>
+  <li><strong>Local-first movement</strong> — Obsidian, Logseq, Replicache, and others are proving that users will adopt software that keeps their data off the cloud.</li>
+  <li><strong>On-device inference</strong> — Apple Intelligence, Ollama, and quantized models shrink the surface area for data exposure. Sci fits the era.</li>
+</ul>
+
+<h2>The Strategic Sentence</h2>
+
+<p class="panel tip"><strong>Use any LLM without it ever seeing who you are — and keep your own memory on your own machine.</strong></p>
+
+<p>That sentence owns a quadrant. It's not "another memory tool." It's not "another privacy add-on." It's the only product that makes that trade-off primary and the rest secondary.</p>
+
+<h2>The Brand Stance</h2>
+
+<div class="grid">
+  <div class="card">
+    <h3>Anonymity</h3>
+    <p>The product. Round-trip redaction that keeps your identity off the wire and your responses legible.</p>
+  </div>
+  <div class="card">
+    <h3>Memory</h3>
+    <p>The retention. Local-first conversation history that compounds value over time without cloud leakage.</p>
+  </div>
+  <div class="card">
+    <h3>Sovereignty</h3>
+    <p>The brand. You own your data, your inference, your identity. No backdoors. No compliance surprises.</p>
+  </div>
+</grid>
+
+<h2>A Note on Numbers</h2>
+
+<p class="small dim"><strong>Caveat:</strong> Market-size figures floating around (memory layer TAM, LLM safety market growth, EU AI Act impact) are soft estimates. The durable findings are structural: reversible anonymization is unowned, memory tooling is crowded and consolidating, and regulatory tailwind for privacy is real and accelerating.</p>
+
+<h2>What's Next</h2>
+
+<p>Start with the <a href="product-overview.html">product overview</a> to see the feature set and use cases. Then dive into the <a href="tech-architecture.html">architecture</a> to understand how reversible anonymization works under the hood. Check the <a href="roadmap.html">roadmap</a> for what's shipping next.</p>
+
+<footer>
+  <p><em>Sci</em> — sovereign memory for LLM agents. Keep your identity. Keep your data. Keep control.</p>
+</footer>
+
+</div>
+
+</body>
+</html>

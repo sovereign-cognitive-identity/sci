@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Distribution surfaces — Sci docs</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html" class="active">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+
+<header class="page">
+  <p class="kicker">How developers integrate with Sci</p>
+  <h1><em>Distribution surfaces</em></h1>
+  <p class="sub">Four distribution channels. One shared core. A strategic shift toward lower-maintenance, cross-platform integration.</p>
+</header>
+
+<h2>Overview</h2>
+
+<p>Sci exposes the memory and identity layer through four surfaces, each optimized for a different use case. The MCP server is the primary, strategic integration point; the others provide CLI, proxy, and consumer UI access.</p>
+
+<div class="grid">
+
+<div class="card">
+  <h3>MCP Server</h3>
+  <p>Model Context Protocol integration. The primary distribution surface.</p>
+  <p><span class="tag t-good">working</span></p>
+</div>
+
+<div class="card">
+  <h3>HTTP Proxy</h3>
+  <p>TLS-terminating HTTP server for traffic anonymization. Operationally heavier.</p>
+  <p><span class="tag t-good">working</span></p>
+</div>
+
+<div class="card">
+  <h3>Command-line interface</h3>
+  <p>Direct CLI access to memory operations and queries.</p>
+  <p><span class="tag t-good">working</span></p>
+</div>
+
+<div class="card">
+  <h3>macOS app</h3>
+  <p>Alpha consumer UI. Transitioning to a layer over MCP.</p>
+  <p><span class="tag t-warn">alpha / re-scoping</span></p>
+</div>
+
+</div>
+
+<h2>MCP Server</h2>
+
+<p>The MCP (Model Context Protocol) server is the strategic distribution surface — the best integration point for agents, developers, and multi-model AI workflows.</p>
+
+<h3>What it is</h3>
+
+<p>A stdio-based MCP server that exposes six core tools:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Tool</th>
+      <th>Purpose</th>
+      <th>Tier</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>memory_recall</code></td>
+      <td>Query stored memories by topic or agent session</td>
+      <td>read</td>
+    </tr>
+    <tr>
+      <td><code>memory_store</code></td>
+      <td>Persist a memory with optional tagging and source</td>
+      <td>write</td>
+    </tr>
+    <tr>
+      <td><code>memory_identity</code></td>
+      <td>Load identity context (preferences, projects, expertise)</td>
+      <td>read</td>
+    </tr>
+    <tr>
+      <td><code>memory_status</code></td>
+      <td>Inspect server health and memory stats</td>
+      <td>read</td>
+    </tr>
+    <tr>
+      <td><code>message_anonymize</code></td>
+      <td>Strip PII from a text payload</td>
+      <td>read</td>
+    </tr>
+    <tr>
+      <td><code>message_deanonymize</code></td>
+      <td>Restore previously anonymized text</td>
+      <td>read</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Integration example</h3>
+
+<p>Register the MCP server in Claude Desktop or Code:</p>
+
+<pre>npx @sci/mcp add</pre>
+
+<p>Or manually in <code>claude.config.json</code>:</p>
+
+<pre>{
+  "mcpServers": {
+    "sci": {
+      "command": "npx",
+      "args": ["@sci/mcp"],
+      "env": {
+        "SCI_HOME": "~/.sci"
+      }
+    }
+  }
+}</pre>
+
+<h3>Auth tiers</h3>
+
+<p>The MCP server enforces three capability tiers (configured per client):</p>
+
+<ul class="clean">
+  <li><strong>Trusted</strong> — read and write to identity, memories, and message operations</li>
+  <li><strong>Standard</strong> — read and write to memories only; identity is read-only</li>
+  <li><strong>Public</strong> — read-only to memories; no identity or message ops</li>
+</ul>
+
+<p><span class="tag t-good">working</span></p>
+
+<h2>HTTP Proxy</h2>
+
+<p>A Hono-based HTTP server (port :3001) that terminates TLS and anonymizes outbound traffic. Useful when Sci acts as a gateway for Claude API calls, stripping headers and session state before forwarding.</p>
+
+<h3>Why this exists</h3>
+
+<p>In early Sci deployments, the proxy provided a single point for anonymization and rate limiting. It remains useful for certain deployment topologies.</p>
+
+<h3>Operational cost</h3>
+
+<p>TLS termination is a maintenance tax. Recent work (SCI-259, SCI-260) stabilized crash-on-reconnect and false-positive cascade behavior, but the proxy remains operationally heavier than the MCP server.</p>
+
+<p><span class="tag t-good">working</span> (after stability fixes)</p>
+
+<h2>CLI</h2>
+
+<p>Direct command-line access to memory operations, useful for scripts and local development.</p>
+
+<pre>sci recall "recent decisions about embeddings"
+sci store "Chose BGE-base-en-v1.5 over Voyage. Reason: sovereignty."
+sci identity
+sci status</pre>
+
+<p><span class="tag t-good">working</span></p>
+
+<h2>macOS app</h2>
+
+<p>Alpha consumer-facing UI for onboarding, identity inspection, and session status. Currently being re-scoped: rather than a parallel, independent implementation, it will layer over the MCP server, reducing code duplication and maintenance burden.</p>
+
+<p><span class="tag t-warn">alpha / re-scoping</span></p>
+
+<h2>Strategic direction</h2>
+
+<div class="panel tip">
+  <h3>MCP is the primary surface</h3>
+  <p>The agent ecosystem is consolidating around MCP. Sci's future is MCP-native:</p>
+  <ul class="clean">
+    <li>Cross-platform (macOS, Linux, Windows via Node.js)</li>
+    <li>Lower maintenance burden than a proxy</li>
+    <li>Aligns with how developers integrate AI tooling today</li>
+    <li>Single distribution channel for CLI, agents, and consumer apps</li>
+  </ul>
+  <p><strong>Next step:</strong> One-command install via <code>npx</code>, Homebrew, and Docker. Today, distribution is via alpha tarballs.</p>
+  <p><span class="tag t-info">planned</span></p>
+</div>
+
+<h2>Comparison matrix</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th>Surface</th>
+      <th>Use case</th>
+      <th>Maintenance</th>
+      <th>Cross-platform</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>MCP server</strong></td>
+      <td>Agents, developers, integrations</td>
+      <td>Low</td>
+      <td>Yes (Node.js)</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>HTTP proxy</strong></td>
+      <td>Gateway, traffic anonymization</td>
+      <td>Medium</td>
+      <td>Yes</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>CLI</strong></td>
+      <td>Scripts, local dev</td>
+      <td>Low</td>
+      <td>Yes</td>
+      <td><span class="tag t-good">working</span></td>
+    </tr>
+    <tr>
+      <td><strong>macOS app</strong></td>
+      <td>Consumer onboarding, status UI</td>
+      <td>Medium</td>
+      <td>macOS only</td>
+      <td><span class="tag t-warn">alpha</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Related reading</h2>
+
+<ul class="clean">
+  <li><a href="tech-architecture.html">Tech architecture</a> — Core components and data flow</li>
+  <li><a href="roadmap.html">Roadmap</a> — Planned distribution improvements and one-command install</li>
+</ul>
+
+</div>
+
+<footer class="page">
+  <p class="dim small">Sci — sovereign cognitive identity layer. Documentation alpha 2026-06.</p>
+</footer>
+
+</body>
+</html>

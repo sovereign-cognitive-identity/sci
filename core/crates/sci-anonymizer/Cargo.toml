@@ -3,8 +3,11 @@ name         = "sci-anonymizer"
 version      = { workspace = true }
 edition      = { workspace = true }
 rust-version = { workspace = true }
-license      = { workspace = true }
-description  = "Entity extraction + token mapping for outbound prompts. Mirrors @sci/core's anonymizer."
+# Permissively licensed (overrides the workspace BUSL-1.1): this crate is the
+# embeddable wedge, meant to be vendored into other tools. See LICENSE-APACHE
+# and LICENSE-MIT.
+license      = "Apache-2.0 OR MIT"
+description  = "Reversible entity anonymization + token mapping for LLM round-trips. Mirrors @sci/core's anonymizer."
 
 [dependencies]
 serde         = { workspace = true }

@@ -1,0 +1,64 @@
+/* Sci documentation — shared theme */
+:root {
+  --bg:#0f1117; --panel:#171a23; --panel2:#1d2230; --ink:#e8eaf0; --dim:#9aa3b5;
+  --accent:#5eead4; --accent2:#818cf8; --warn:#fbbf24; --bad:#f87171; --good:#4ade80;
+  --line:#2a2f3d; --code:#0b0d13;
+}
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--ink); margin:0;
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; padding-bottom:80px; }
+.wrap { max-width:1000px; margin:0 auto; padding:0 32px; }
+
+/* top nav */
+nav.top { position:sticky; top:0; z-index:10; background:rgba(15,17,23,.92);
+  backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+nav.top .wrap { display:flex; align-items:center; gap:24px; height:56px; }
+nav.top a { color:var(--dim); text-decoration:none; font-size:14px; font-weight:500; }
+nav.top a:hover, nav.top a.active { color:var(--accent); }
+nav.top .brand { color:var(--ink); font-weight:700; font-size:16px; margin-right:8px; }
+nav.top .brand em { color:var(--accent); font-style:normal; }
+nav.top .spacer { flex:1; }
+.badge { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--dim); }
+
+header.page { padding:52px 0 28px; border-bottom:1px solid var(--line); margin-bottom:36px; }
+header.page .kicker { color:var(--accent2); font-size:13px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+header.page h1 { font-size:34px; margin:8px 0 10px; line-height:1.15; }
+header.page h1 em { color:var(--accent); font-style:normal; }
+header.page .sub { color:var(--dim); font-size:18px; max-width:70ch; }
+
+h2 { font-size:24px; margin:44px 0 14px; padding-top:14px; border-top:1px solid var(--line); }
+h3 { font-size:18px; margin:26px 0 8px; color:var(--accent); }
+p { max-width:74ch; } a { color:var(--accent); }
+
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px 24px; margin:16px 0; }
+.panel.tip { border-left:4px solid var(--accent); }
+.panel.warn { border-left:4px solid var(--warn); }
+.panel.bad { border-left:4px solid var(--bad); }
+.panel.good { border-left:4px solid var(--good); }
+
+.grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); margin:20px 0; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px 22px; text-decoration:none; color:inherit; display:block; transition:border-color .15s,transform .15s; }
+.card:hover { border-color:var(--accent); transform:translateY(-2px); }
+.card h3 { margin-top:0; }
+.card .meta { color:var(--dim); font-size:13px; }
+
+table { width:100%; border-collapse:collapse; margin:16px 0; font-size:14px; }
+th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.06em; font-weight:600; }
+
+code { background:var(--code); border:1px solid var(--line); border-radius:5px; padding:1px 6px; font-size:13px; font-family:ui-monospace,'SF Mono',Menlo,monospace; }
+pre { background:var(--code); border:1px solid var(--line); border-radius:10px; padding:16px 18px; overflow:auto; font-size:13px; line-height:1.5; }
+pre code { background:none; border:none; padding:0; }
+
+.tag { display:inline-block; padding:1px 9px; border-radius:99px; font-size:12px; font-weight:600; white-space:nowrap; }
+.t-good { background:#0d3321; color:var(--good); } .t-warn { background:#3a2e0d; color:var(--warn); }
+.t-bad { background:#3a1414; color:var(--bad); } .t-info { background:#15233a; color:var(--accent2); }
+
+.dim { color:var(--dim); } .small { font-size:13px; }
+ul.clean { list-style:none; padding-left:0; } ul.clean li { padding:6px 0; border-bottom:1px solid var(--line); }
+
+.flow { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:18px 0; }
+.flow .node { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px 14px; font-size:14px; }
+.flow .arrow { color:var(--accent); font-size:20px; }
+
+footer { margin-top:60px; padding-top:24px; border-top:1px solid var(--line); color:var(--dim); font-size:13px; }

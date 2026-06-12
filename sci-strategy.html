@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sci — Strategic Direction, June 2026</title>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --ink:#e8eaf0; --dim:#9aa3b5; --accent:#5eead4; --warn:#fbbf24; --bad:#f87171; --good:#4ade80; --line:#2a2f3d; }
+  body { background:var(--bg); color:var(--ink); font:16px/1.6 -apple-system,'Segoe UI',sans-serif; margin:0; padding:0 0 80px; }
+  .wrap { max-width:980px; margin:0 auto; padding:0 32px; }
+  header { padding:56px 0 24px; border-bottom:1px solid var(--line); margin-bottom:40px; }
+  h1 { font-size:34px; margin:0 0 8px; } h1 em { color:var(--accent); font-style:normal; }
+  .sub { color:var(--dim); }
+  h2 { font-size:24px; margin:48px 0 16px; padding-top:16px; border-top:1px solid var(--line); }
+  h3 { font-size:18px; margin:28px 0 10px; color:var(--accent); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px 24px; margin:16px 0; }
+  .verdict { border-left:4px solid var(--accent); }
+  .kill { border-left:4px solid var(--bad); }
+  .keep { border-left:4px solid var(--good); }
+  table { width:100%; border-collapse:collapse; margin:16px 0; font-size:14px; }
+  th, td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:600; text-transform:uppercase; font-size:11px; letter-spacing:.06em; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; }
+  .t-good { background:#0d3321; color:var(--good); } .t-warn { background:#3a2e0d; color:var(--warn); } .t-bad { background:#3a1414; color:var(--bad); }
+  .dim { color:var(--dim); } .small { font-size:13px; }
+  ol.road li { margin-bottom:14px; }
+  .pill-row { display:flex; gap:12px; flex-wrap:wrap; margin:20px 0; }
+  .pill { flex:1; min-width:240px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+  .pill b { display:block; margin-bottom:6px; }
+  code { background:#21253144; border:1px solid var(--line); border-radius:4px; padding:1px 5px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Where <em>Sci</em> Should Go</h1>
+  <div class="sub">An opinionated strategy synthesis — codebase audit + competitive landscape, June 2026</div>
+</header>
+
+<div class="panel verdict">
+  <b>The one-sentence verdict:</b> Sci's defensible, rare asset is <b>reversible anonymization for LLM round-trips</b> — nobody else in OSS or commercial does it well — and the project should reorganize around that wedge, distribute it through the MCP/agent ecosystem, and let memory and sovereignty be what the wedge <i>unlocks</i> rather than three co-equal pillars fighting crowded markets.
+</div>
+
+<h2>1 · Honest audit: what Sci actually is today</h2>
+<table>
+  <tr><th>Pillar</th><th>State</th><th>Reality check</th></tr>
+  <tr><td><b>Anonymity</b></td><td><span class="tag t-good">Strongest</span></td>
+      <td>2.8k LoC Rust anonymizer, regex + lexicon NER, session-scoped reversible token maps, real tests, documented edge cases (SCI-195/196/197), proxy works end-to-end for Claude. Genuinely production-track.</td></tr>
+  <tr><td><b>Memory</b></td><td><span class="tag t-warn">Works, but mid-pack</span></td>
+      <td>Hybrid retrieval (pgvector + tsvector + RRF), local BGE embeddings via ONNX — solid. But consolidation/decay/promotion are stubs, and this exact feature set is what Mem0/Letta/Zep ship with far more ecosystem traction.</td></tr>
+  <tr><td><b>Sovereignty</b></td><td><span class="tag t-warn">Real principle, fuzzy product</span></td>
+      <td>Local-first is genuine (no cloud creds, on-device embeddings). But sync adapters are stubs, multi-provider (OpenAI/Google) is stubbed, distribution is macOS-only. "Sovereignty" today = an architectural stance, not a feature a user can point at.</td></tr>
+</table>
+<p class="dim small">Sources: full codebase audit (sci-anonymizer, sci-embeddings, packages/core, packages/proxy, @sci/mcp); maturity = credible alpha, beta candidate.</p>
+
+<h2>2 · The landscape, compressed</h2>
+<div class="pill-row">
+  <div class="pill"><b>Memory: crowded, VC-funded</b>
+    Mem0 (~8.5k★, Series A) owns cloud agent memory. Letta, Zep/Graphiti, Cognee fill the rest. Competing here head-on as "another memory layer" is a losing fight for a solo OSS project.</div>
+  <div class="pill"><b>PII redaction: crowded, but one-way</b>
+    Presidio (~12.5k★), LLM Guard, Private AI, gateway guardrails (Portkey, Kong, Cloudflare) all do <i>destructive</i> redaction. None restore identities in the response. The round-trip is unowned.</div>
+  <div class="pill"><b>Sovereignty/SSI: weak tailwind</b>
+    Solid/DIDs remain niche with zero LLM-provider integration. "Sovereign AI" as a *trend* is real (EU AI Act enforcement, GDPR pressure, on-device inference) — but the SSI *standards stack* is not where the energy is. Don't build on it yet.</div>
+</div>
+<p class="small dim">⚠️ Researcher market-size figures (€200–500M etc.) are soft estimates — treat the <i>direction</i> (reversible anonymization unowned, memory crowded, regulatory tailwind real) as the finding, not the numbers.</p>
+
+<h2>3 · The strategic insight</h2>
+<div class="panel">
+<p><b>Sci's three pillars aren't peers — they're a stack.</b> Anonymization is the wedge (rare, working, defensible). Memory is the retention layer (what makes the wedge sticky — your assistant still knows you even though the provider doesn't). Sovereignty is the brand (the why, not a feature list).</p>
+<p>The mistake to avoid: marketing Sci as a memory product. The moment you say "memory layer," you're compared to Mem0 and you lose on stars, integrations, and funding. The moment you say <b>"use any LLM without it ever seeing who you are — and keep your own memory on your own machine"</b> — nobody else is in that sentence.</p>
+</div>
+
+<h2>4 · Recommended direction</h2>
+
+<h3>Positioning</h3>
+<div class="panel verdict">
+  <b>"The privacy layer between you and every AI."</b><br>
+  Sci is the local-first proxy + memory that anonymizes everything outbound, de-anonymizes everything inbound, and keeps the only copy of who-you-are on hardware you control. Memory portability across providers falls out of the architecture: Claude, GPT, and local models all see the same pseudonymous you and share the same local memory.
+</div>
+
+<h3>Three moves, in order</h3>
+<ol class="road">
+  <li><b>Extract <code>sci-anonymizer</code> as a standalone, embeddable OSS component.</b>
+    Rust crate + WASM/npm binding + Python binding. "Reversible Presidio for LLM round-trips." This is the influence play: a thing other projects (LiteLLM, Open WebUI, MCP servers, agent frameworks) can embed earns stars, contributors, and standard-setting power in a way a monolithic app never will. License it permissively; the integrated Sci product stays the flagship.</li>
+  <li><b>Make the MCP server the primary distribution surface, not the macOS app.</b>
+    MCP is where the agent ecosystem is consolidating. <code>memory_recall/store/identity</code> + <code>message_anonymize/deanonymize</code> already exist and work. Ship it as a one-command install (npx / Homebrew / Docker), cross-platform. The macOS app becomes the consumer-friendly skin later, not the gate.</li>
+  <li><b>Finish the round-trip story across providers before deepening memory.</b>
+    OpenAI/Google proxy support is currently stubbed — that's the gap between the positioning ("every AI") and the product (Claude-only). Close it before investing in consolidation/decay/graph memory. A working tri-provider reversible proxy is a launchable, demoable, blog-postable artifact; smarter memory decay is not.</li>
+</ol>
+
+<h3>What to deliberately NOT do</h3>
+<div class="panel kill">
+  <ul>
+    <li><b>Don't chase Mem0.</b> No graph memory, no consolidation research, no "memory benchmark" arms race until the privacy wedge has adoption.</li>
+    <li><b>Don't build on DIDs/Solid now.</b> Watch it; integrate in 2027+ if providers ever adopt. Today it's effort with no users on the other end.</li>
+    <li><b>Don't go enterprise-compliance-first.</b> The GDPR/AI-Act tailwind is real, but a solo OSS project can't run an enterprise sales motion. Let the compliance story pull enterprises toward you (docs, audit-trail design, PRIVACY.md rigor) rather than building SOC2-shaped features speculatively.</li>
+    <li><b>Don't finish all the sync adapters.</b> Pick one (probably iCloud for the mac story or plain file-based) and delete the rest until someone asks.</li>
+  </ul>
+</div>
+
+<h3>What makes it influential (not just used)</h3>
+<div class="panel keep">
+  <ul>
+    <li><b>Own a term:</b> "reversible anonymization for LLMs" / the anonymize→infer→de-anonymize round-trip. Write the definitive technical post; publish the edge-case test corpus (SCI-195/196/197 work is genuinely interesting content).</li>
+    <li><b>Propose the pattern as an MCP convention</b> — a lightweight spec for anonymization-session tools. Reference implementations beat manifestos; you already have one.</li>
+    <li><b>Publish honest benchmarks:</b> entity-recall/precision of the Rust NER vs Presidio on a public PII corpus, plus round-trip fidelity. Honest numbers (including losses) build more credibility than claims.</li>
+  </ul>
+</div>
+
+<h2>5 · 6-month roadmap sketch</h2>
+<table>
+  <tr><th>When</th><th>Ship</th><th>Why</th></tr>
+  <tr><td>Month 1</td><td>Land current alpha; extract <code>sci-anonymizer</code> repo with WASM + npm packaging; benchmark vs Presidio</td><td>The embeddable wedge + credibility artifact</td></tr>
+  <tr><td>Month 2</td><td>Cross-platform MCP server, one-command install; "reversible anonymization" launch post (HN/lobste.rs)</td><td>Distribution + naming the category</td></tr>
+  <tr><td>Months 3–4</td><td>OpenAI + Google proxy round-trip support; Ollama/local-model path</td><td>Makes "every AI" true; unlocks the memory-portability demo</td></tr>
+  <tr><td>Month 5</td><td>The killer demo: same identity + memory across Claude, GPT, and a local model, with the provider-side transcript shown fully pseudonymous</td><td>This is the video/post that defines the project</td></tr>
+  <tr><td>Month 6</td><td>Only now: memory consolidation v1 (the stubbed decay/promotion), driven by real alpha-user recall complaints</td><td>Deepen retention once the wedge has users</td></tr>
+</table>
+
+<h2>6 · Risks worth naming</h2>
+<table>
+  <tr><th>Risk</th><th>Read</th></tr>
+  <tr><td>Providers ship native privacy modes (zero-retention, on-device)</td><td>Real but partial — provider promises are contractual; Sci's is architectural ("they never had the data"). That distinction is the moat; keep it sharp in messaging.</td></tr>
+  <tr><td>Lexicon NER quality ceiling</td><td>The honest weakness. A small on-device transformer NER (or hybrid) is likely needed within a year; the cascade-feedback design already mitigates. Benchmark publicly and own the limitation.</td></tr>
+  <tr><td>Solo-maintainer bandwidth</td><td>The extraction strategy is also the mitigation: a small embeddable crate attracts contributors far more easily than a monorepo app.</td></tr>
+  <tr><td>Proxy fragility (SCI-259/260 class bugs)</td><td>TLS-terminating proxies are an operational tax forever. The MCP-tool path (anonymize/deanonymize as explicit tools) is the lower-maintenance surface — lean distribution toward it.</td></tr>
+</table>
+
+<div class="panel verdict" style="margin-top:40px">
+  <b>Bottom line:</b> You set out to build Anonymity, Memory, and Sovereignty. The market just told you the order: <b>Anonymity is the product, Memory is the retention, Sovereignty is the brand.</b> Extract the anonymizer, ride MCP for distribution, make the round-trip work everywhere, and name the category before someone bigger notices it's empty.
+</div>
+
+</div>
+</body>
+</html>

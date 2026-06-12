@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sci — Documentation</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html" class="active">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html">Architecture</a>
+  <a href="roadmap.html">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+<header class="page">
+  <div class="kicker">Sovereign Cognitive Identity</div>
+  <h1>The privacy layer between you and <em>every AI</em></h1>
+  <p class="sub">Sci anonymizes everything you send to an LLM, de-anonymizes everything it sends back, and keeps the only copy of who-you-are on hardware you control. This site documents what exists today and where the project is headed.</p>
+</header>
+
+<div class="panel tip">
+  <b>Two tracks, one project.</b> The <b>Product</b> track explains what Sci is and why it matters. The <b>Architecture</b> track is for developers and contributors — how each subsystem works and how to extend it. The <b>Roadmap</b> shows the six-phase evolution from today's alpha to the full vision.
+</div>
+
+<h2>Product</h2>
+<div class="grid">
+  <a class="card" href="product-overview.html"><h3>Overview &amp; the three pillars</h3><p class="meta">Anonymity, Memory, Sovereignty — what they mean and how they stack.</p></a>
+  <a class="card" href="product-features.html"><h3>Features</h3><p class="meta">Reversible anonymization, local memory, multi-provider access — framed for users.</p></a>
+  <a class="card" href="product-positioning.html"><h3>Why Sci / positioning</h3><p class="meta">The competitive landscape and the gap Sci credibly owns.</p></a>
+</div>
+
+<h2>Architecture &amp; internals</h2>
+<div class="grid">
+  <a class="card" href="tech-architecture.html"><h3>System architecture</h3><p class="meta">Monorepo layout, components, data flow, how the Rust core and TS packages connect.</p></a>
+  <a class="card" href="tech-anonymization.html"><h3>Anonymization engine</h3><p class="meta"><code>sci-anonymizer</code>: NER, regex extraction, reversible session token maps, edge cases.</p></a>
+  <a class="card" href="tech-memory.html"><h3>Memory &amp; embeddings</h3><p class="meta">BGE/ONNX embeddings, pgvector + SQLite, hybrid RRF retrieval, consolidation.</p></a>
+  <a class="card" href="tech-sovereignty.html"><h3>Sovereignty &amp; local-first</h3><p class="meta">What sovereignty means in the code: local-first, data ownership, OAuth, portability.</p></a>
+  <a class="card" href="tech-distribution.html"><h3>Distribution surfaces</h3><p class="meta">The MCP server, the proxy, the CLI, and the macOS app — the integration points.</p></a>
+</div>
+
+<h2>Direction</h2>
+<div class="grid">
+  <a class="card" href="roadmap.html"><h3>Six-phase roadmap</h3><p class="meta">From landing the alpha to the cross-provider killer demo and memory consolidation. Done vs planned.</p></a>
+</div>
+
+<footer>
+  Sci — sovereign cognitive identity layer · TypeScript + Rust monorepo · Embeddings default to BGE-base-en-v1.5 (sovereignty by default, no per-query data exposure).
+</footer>
+</div>
+</body>
+</html>

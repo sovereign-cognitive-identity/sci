@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roadmap — Sci docs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<nav class="top"><div class="wrap">
+  <span class="brand"><em>Sci</em> docs</span>
+  <a href="index.html">Home</a>
+  <a href="product-overview.html">Product</a>
+  <a href="tech-architecture.html">Architecture</a>
+  <a href="roadmap.html" class="active">Roadmap</a>
+  <span class="spacer"></span>
+  <span class="badge">alpha · 2026-06</span>
+</div></nav>
+
+<div class="wrap">
+<header class="page">
+  <div class="kicker">Six Phases to Full Vision</div>
+  <h1>Sci <em>roadmap</em>: from alpha to sovereign memory</h1>
+  <p class="sub">The planned evolution of Sci from today's anonymization wedge through cross-provider memory consolidation, tracked across 103 strategy issues in Jira SCI.</p>
+</header>
+
+<div class="panel tip">
+  <p><b>The organizing thesis:</b> The three pillars are a stack. Anonymity is the product. Memory is the retention. Sovereignty is the brand. This roadmap leads with the anonymization wedge — proving that reversible anonymization works reliably — and lets memory deepen only after that foundation hardens. Each phase builds confidence in the layer below it.</p>
+</div>
+
+<h2>Phase 0: Land the Alpha <span class="tag t-warn">in progress</span></h2>
+
+<p><b>Epic:</b> <code>SCI-261</code></p>
+
+<p>Stabilize the core wedge. Merge PR #36 (proxy stability SCI-259/260 + embedder cold-start fixes), tag the alpha release, and run soak tests to verify the stability gates that make reversible anonymization trustworthy.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>DoD: Merge & tag</h3>
+    <p>Merge proxy stability PR (#36) with zero regressions. Cold-start latency under 1s. Tag v0.1.0-alpha release.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Soak gates</h3>
+    <p>72-hour zero-crash soak test on proxy (Claude + GPT). Verify de-anonymization correctness end-to-end. Anonymity map consistency.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: User triage</h3>
+    <p>Collect feedback from early testers. Triage bugs vs. expected rough edges. Seed the roadmap with real use-case requests.</p>
+  </div>
+</div>
+
+<h2>Phase 1: Extract the Wedge <span class="tag t-info">planned</span></h2>
+
+<p><b>Epics:</b> <code>SCI-271</code>, <code>SCI-272</code>, <code>SCI-273</code></p>
+
+<p>Decouple sci-anonymizer from the main monorepo. Ship it as a permissively-licensed (MIT/Apache 2.0) standalone library with native bindings for JavaScript/WASM and Python/PyPI. Achieve cross-language feature parity and publish an honest benchmark against Microsoft Presidio — including the categories where Sci loses.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>DoD: Repo extraction</h3>
+    <p>Spin sci-anonymizer to its own GitHub repo. MIT license, contributing guidelines, README with usage examples.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Bindings parity</h3>
+    <p>npm + WASM package (sci-anonymizer). Python package (sci-anonymizer-py). Both expose identical anonymization API. Full test suite cross-platform.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Benchmark</h3>
+    <p>Honest comparison with Presidio on NER categories (PII, credit cards, phone). Show gaps: where Sci is stronger (session continuity) and where it loses (rare entity types). Publish with methodology.</p>
+  </div>
+</div>
+
+<h2>Phase 2: MCP as Primary Distribution <span class="tag t-info">planned</span></h2>
+
+<p><b>Epics:</b> <code>SCI-297</code>, <code>SCI-298</code>, <code>SCI-299</code></p>
+
+<p>Make Sci's MCP server the canonical way to deploy anonymization. One-command cross-platform install (macOS + Linux, Docker, Homebrew). Promote SQLite backend to tested default. Document the six MCP tools and publish an MCP anonymization-session convention that other tools can adopt.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>DoD: Install story</h3>
+    <p><code>brew install sci-mcp</code> (macOS). <code>apt-get install sci-mcp</code> (Linux). Docker image with production hardening. Setup wizard for first run.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: SQLite default</h3>
+    <p>SQLite + pgvector as the tested, documented default storage. Upgrade migration from Postgres. Persistence verified across restarts.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: MCP convention</h3>
+    <p>Spec the six MCP tools (anonymize, de-anonymize, recall, store, status, export). Publish RFC for anonymization-session convention so other MCP tools can interop with Sci's identity map.</p>
+  </div>
+</div>
+
+<h2>Phase 3: Multi-Provider Round-Trip <span class="tag t-info">planned</span></h2>
+
+<p><b>Epics:</b> <code>SCI-318</code>, <code>SCI-319</code>, <code>SCI-320</code></p>
+
+<p>Extend the wedge to OpenAI, Google Gemini, and local models (Ollama). Implement streaming-safe de-anonymization (correct across SSE chunk boundaries). Harden the proxy and document an ADR on TLS-proxy vs. MCP-first distribution models.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>DoD: Provider adapters</h3>
+    <p>OpenAI, Gemini, and Ollama adapters with shared anonymization interface. Shared secret management. End-to-end tests with real LLM calls.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Streaming correctness</h3>
+    <p>De-anonymization works correctly when responses arrive chunked. Token boundaries respected. No partial entity corruption in streaming flows.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Architecture decision</h3>
+    <p>ADR on proxy vs. MCP distribution: when to use each, tradeoffs on auth/identity/observability. Harden proxy for production TLS load.</p>
+  </div>
+</div>
+
+<h2>Phase 4: The Killer Demo <span class="tag t-info">planned</span></h2>
+
+<p><b>Epics:</b> <code>SCI-339</code>, <code>SCI-340</code></p>
+
+<p>One identity, one local memory instance, seamlessly used with Claude, GPT, and a local model in a single session. All three providers see only pseudonymous tokens. Provider transcripts are verified pseudonymous (no identity leakage). Re-scope the macOS app as a UI over the MCP server. Consolidate sync to one adapter.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>DoD: Cross-provider session</h3>
+    <p>Single memory instance works with Claude, GPT, and Ollama in one workflow. Same pseudonym identity across all three. Provider logs show no real identity leakage.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Transcript verification</h3>
+    <p>Export provider API call logs. Audit that de-anonymization map was never shared with providers. Demonstrate cryptographically that transcripts are pseudonymous.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: macOS app refactor</h3>
+    <p>Sci app becomes a UI shell over the MCP server (not a separate backend). One sync adapter for multi-provider memory. App shipping with live demo baked in.</p>
+  </div>
+</div>
+
+<h2>Phase 5: Memory Consolidation v1 <span class="tag t-info">planned</span></h2>
+
+<p><b>Epics:</b> <code>SCI-353</code>, <code>SCI-354</code></p>
+
+<p>Finish the memory layer: decay scheduling, episodic→semantic→identity promotion (no stub records), a recall-quality eval loop to measure retrieval accuracy. Gated strictly on real alpha-user feedback, not speculative design.</p>
+
+<div class="grid">
+  <div class="card">
+    <h3>DoD: Decay + promotion</h3>
+    <p>Episodic memory decays on schedule. Semantic promotion finished (no stubs). Identity facts permanent. Eval loop on retrieval precision.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: User feedback loop</h3>
+    <p>Instrument recall quality metrics. Gated on user complaints about missing context, not speculative improvements. Ship only what users asked for.</p>
+  </div>
+  <div class="card">
+    <h3>DoD: Portability story</h3>
+    <p>Export memory across providers. Migrate from one Sci instance to another. Merge two memory graphs. Zero leakage of real identity in export.</p>
+  </div>
+</div>
+
+<h2>Non-goals</h2>
+
+<div class="panel warn">
+  <ul class="clean">
+    <li><b>Mem0 feature parity:</b> We're not chasing advanced multi-agent memory patterns. Single-agent, single-identity recall is the current scope.</li>
+    <li><b>DID/Solid integration:</b> Not committing to decentralized identity standards yet. Local-first and portable is enough for now.</li>
+    <li><b>Enterprise compliance:</b> Not building with SOC 2, HIPAA, or GDPR as primary drivers. Privacy-first, but not compliance-first.</li>
+    <li><b>All sync adapters:</b> We'll ship one high-quality adapter (likely Supabase or self-hosted sync). Not trying to support 10 backends.</li>
+  </ul>
+</div>
+
+<h2>Program success criteria (end of Month 6)</h2>
+
+<p>By end of Q2 2026, Sci roadmap is on track if:</p>
+
+<ul class="clean">
+  <li><b>External adoption:</b> sci-anonymizer embedded by at least one external project (published with credit and link back).</li>
+  <li><b>Cross-provider demo:</b> Tri-provider round-trip (Claude + GPT + local model) demo reproduced externally by an independent user.</li>
+  <li><b>Privacy audit:</b> Zero privacy-guarantee violations reported. All identity leakage bugs fixed before users report them in production.</li>
+</ul>
+
+<h2>What's next</h2>
+
+<p>For deeper context on how these phases connect to the product vision, read <a href="product-overview.html">Product Overview</a> and <a href="product-positioning.html">Why Sci</a>. For the technical details of anonymization, memory, and sovereignty, see <a href="tech-architecture.html">Architecture</a>.</p>
+
+<footer>
+  Sci — sovereign cognitive identity layer · anonymity is the wedge, memory is the stick, sovereignty is the why.
+</footer>
+</div>
+</body>
+</html>

@@ -168,9 +168,14 @@ pub async fn handle_anthropic_messages(
     let mut session_map = TokenMap::default();
     let entities        = anonymize_messages_body(&mut body, &mut session_map)?;
     let masked_count    = entities.len() as u32;
+    // SCI-260: the cascade breaker keys on *distinct* entities (token-map
+    // size), not total occurrences. Occurrence count scales with re-
+    // anonymized history length even for a fixed vocabulary; distinct count
+    // saturates, so its growth is the honest cascade signal.
+    let distinct_count  = session_map.reverse.len() as u32;
 
-    // Cross-turn cascade breaker: update the monitor and fire if 5 or more
-    // consecutive turns have all exceeded the elevated-entity threshold.
+    // Cross-turn cascade breaker: update the monitor and fire if distinct
+    // entities show sustained, still-climbing growth above the floor.
     // Uses the same rollback path as the per-request breaker.
     let profile_id = state.active_profile_name();
     if masked_count > 0 {
@@ -179,16 +184,18 @@ pub async fn handle_anthropic_messages(
         // turn rather than inflating the cascade signal.
         let cascade = state
             .cascade_monitor
-            .update_and_check(masked_count, &profile_id);
+            .update_and_check(distinct_count, &profile_id);
 
         if cascade {
             tracing::error!(
                 target: "sci_handlers::anonymizer",
                 masked_count,
+                distinct_count,
                 profile = %profile_id,
-                "ANONYMIZER CASCADE DETECTED: 5 consecutive turns above elevated \
-                 threshold. Rolling back substitutions and resetting monitor. \
-                 Check NER rules for a feedback loop in conversation history."
+                "ANONYMIZER CASCADE DETECTED: distinct entities show sustained, \
+                 still-climbing growth above the floor. Rolling back substitutions \
+                 and resetting monitor. Check NER rules for a feedback loop in \
+                 conversation history."
             );
             if let Some(msgs) = body.get_mut("messages") {
                 *msgs = messages_snapshot;
@@ -1747,10 +1754,20 @@ fn head_tail_truncate(text: &str) -> String {
         // Byte-length was over threshold but line count is small
         // (very long single lines). In that case just hard-truncate
         // at MAX_TOOL_RESULT_BYTES and append a byte-count note.
-        let mut out = text[..MAX_TOOL_RESULT_BYTES].to_string();
+        //
+        // SCI-259: floor the cut to the nearest UTF-8 char boundary at or
+        // below the limit. A raw `text[..MAX_TOOL_RESULT_BYTES]` panics when
+        // byte MAX_TOOL_RESULT_BYTES lands inside a multi-byte codepoint
+        // (e.g. a `→` in a minified-JSON MCP tool_result), crashing the
+        // worker and dropping the in-flight request.
+        let mut end = MAX_TOOL_RESULT_BYTES;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut out = text[..end].to_string();
         out.push_str(&format!(
             "\n... [{} bytes truncated] ...",
-            text.len() - MAX_TOOL_RESULT_BYTES,
+            text.len() - end,
         ));
         return out;
     }
@@ -2801,6 +2818,27 @@ mod tests {
         // System field must be unchanged — no token substitution.
         assert_eq!(s, "the user works on openclaw.dev");
         assert!(map.forward.is_empty(), "no tokens should be minted from system prompt");
+    }
+
+    #[test]
+    fn head_tail_truncate_single_long_line_respects_char_boundary() {
+        // SCI-259: a single line longer than MAX_TOOL_RESULT_BYTES with a
+        // multi-byte char straddling the cut point must truncate without
+        // panicking. '→' is 3 bytes; placing it at bytes 8190..8193 means
+        // byte MAX_TOOL_RESULT_BYTES (8192) lands inside it.
+        let mut s = "a".repeat(MAX_TOOL_RESULT_BYTES - 2); // 8190 ASCII bytes
+        s.push('→'); // occupies bytes 8190..8193
+        s.push_str(&"b".repeat(1000)); // push past the limit, still one line
+        assert!(s.len() > MAX_TOOL_RESULT_BYTES);
+        assert!(!s.contains('\n'), "test input must be a single line");
+
+        // Pre-fix this call panicked with "byte index 8192 is not a char
+        // boundary". It must now return cleanly, dropping the straddling
+        // char whole rather than splitting it.
+        let out = head_tail_truncate(&s);
+        assert_eq!(&out[..MAX_TOOL_RESULT_BYTES - 2], &"a".repeat(MAX_TOOL_RESULT_BYTES - 2));
+        assert!(out.contains("bytes truncated"));
+        assert!(!out.contains('→'), "partial multi-byte char must not leak through");
     }
 
     // ── Recall-merge tests: the SCI-150 fix that keeps the canonical

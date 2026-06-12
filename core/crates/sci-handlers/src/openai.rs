@@ -46,17 +46,21 @@ pub async fn handle_openai_chat(
     let mut session_map = TokenMap::default();
     let entities        = anonymize_messages_body(&mut body, &mut session_map)?;
     let masked_count    = entities.len() as u32;
+    // SCI-260: cascade breaker keys on distinct entities (token-map size),
+    // not total occurrences. See anthropic.rs for the rationale.
+    let distinct_count  = session_map.reverse.len() as u32;
 
     let profile_id = state.active_profile_name();
     if masked_count > 0 {
         let cascade = state
             .cascade_monitor
-            .update_and_check(masked_count, &profile_id);
+            .update_and_check(distinct_count, &profile_id);
 
         if cascade {
             tracing::error!(
                 target: "sci_handlers::anonymizer",
                 masked_count,
+                distinct_count,
                 profile = %profile_id,
                 "ANONYMIZER CASCADE DETECTED (OpenAI path): rolling back substitutions."
             );
