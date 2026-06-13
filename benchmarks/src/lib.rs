@@ -1,64 +1,63 @@
 // benchmarks/src/lib.rs
 // Rust harness for SCI-291 benchmark
 
-use sci_anonymizer::{anonymize, deanonymize, AnonymizeResult};
+use sci_anonymizer::{anonymize, deanonymize};
 use serde_json::{json, Value};
-use std::io::{self, BufRead};
 
 /// Anonymize a single line of text and output JSON.
 /// Input: plain text
 /// Output: {"anonymized": "...", "entities": [...]}
-pub fn anonymize_line(text: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    let result = anonymize(text)?;
+pub fn anonymize_line(text: &str) -> Value {
+    let result = anonymize(text, None);
 
     let entities = result
-        .entities
+        .detected
         .iter()
         .map(|e| {
             json!({
                 "text": e.text,
-                "entity_type": e.entity_type.to_string(),
+                "entity_type": e.entity_type.token_prefix(),
             })
         })
         .collect::<Vec<_>>();
 
-    Ok(json!({
-        "anonymized": result.anonymized_text,
+    json!({
+        "anonymized": result.text,
         "entities": entities,
-    }))
+    })
 }
 
 /// Deanonymize a line of anonymized text.
-/// Input: {"anonymized": "...", "token_map": {...}}
+/// Input: anonymized text + token_map
 /// Output: {"deanonymized": "..."}
 pub fn deanonymize_line(
     anonymized: &str,
     token_map: &sci_anonymizer::TokenMap,
-) -> Result<Value, Box<dyn std::error::Error>> {
+) -> Value {
     let deanonymized = deanonymize(anonymized, token_map);
-    Ok(json!({
+    json!({
         "deanonymized": deanonymized,
-    }))
+    })
 }
 
 /// Measure round-trip fidelity: anonymize → deanonymize → compare to original.
-pub fn measure_round_trip(text: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    let result = anonymize(text)?;
-    let deanonymized = deanonymize(&result.anonymized_text, &result.token_map);
+pub fn measure_round_trip(text: &str) -> Value {
+    let result = anonymize(text, None);
+    let deanonymized = deanonymize(&result.text, &result.token_map);
 
     let fidelity = if text == deanonymized { 1.0 } else { 0.0 };
 
-    Ok(json!({
+    json!({
         "original": text,
-        "anonymized": result.anonymized_text,
+        "anonymized": result.text,
         "deanonymized": deanonymized,
         "fidelity": fidelity,
-        "entities": result.entities
+        "entities": result.detected
             .iter()
             .map(|e| json!({
                 "text": e.text,
-                "entity_type": e.entity_type.to_string(),
+                "entity_type": e.entity_type.token_prefix(),
             }))
             .collect::<Vec<_>>(),
-    }))
+    })
 }

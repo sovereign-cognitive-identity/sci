@@ -1,7 +1,7 @@
 // benchmarks/src/bin/harness.rs
 // CLI for running benchmark via Rust
 
-use sci_benchmarks::{anonymize_line, measure_round_trip};
+use sci_benchmarks::measure_round_trip;
 use std::io::{self, BufRead};
 
 fn main() {
@@ -13,17 +13,12 @@ fn main() {
         let text = line.trim();
 
         if text.is_empty() {
+            line.clear();
             continue;
         }
 
-        match measure_round_trip(text) {
-            Ok(result) => {
-                println!("{}", serde_json::to_string(&result).unwrap());
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-            }
-        }
+        let result = measure_round_trip(text);
+        println!("{}", serde_json::to_string(&result).unwrap());
 
         line.clear();
     }

@@ -49,7 +49,7 @@ if [ ! -f "benchmarks/Cargo.toml" ]; then
 fi
 
 cargo build --manifest-path benchmarks/Cargo.toml --release 2>&1 | tail -3
-HARNESS_BIN="$REPO_ROOT/target/release/bench-harness"
+HARNESS_BIN="$SCRIPT_DIR/target/release/bench-harness"
 
 if [ ! -f "$HARNESS_BIN" ]; then
     echo -e "${RED}✗ Failed to build harness binary${NC}"
