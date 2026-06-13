@@ -1,0 +1,36 @@
+{
+  "name": "@sovereign-cognitive-identity/anonymizer",
+  "version": "0.1.0",
+  "description": "WASM + npm bindings for reversible entity anonymization and token mapping for LLM round-trips",
+  "license": "Apache-2.0 OR MIT",
+  "main": "pkg/sci_anonymizer_wasm.js",
+  "types": "pkg/sci_anonymizer_wasm.d.ts",
+  "files": [
+    "pkg/"
+  ],
+  "scripts": {
+    "build": "wasm-pack build --target bundler",
+    "build:web": "wasm-pack build --target web",
+    "build:nodejs": "wasm-pack build --target nodejs",
+    "test": "wasm-pack test --node",
+    "test:firefox": "wasm-pack test --headless --firefox",
+    "prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "wasm-pack": "^1.3.1"
+  },
+  "keywords": [
+    "anonymization",
+    "entity-extraction",
+    "wasm",
+    "llm",
+    "privacy",
+    "token-mapping"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cognitive-os/sci.git",
+    "directory": "core/crates/sci-anonymizer-wasm"
+  },
+  "author": "Casey Zandbergen <casey.zandbergen@gmail.com>"
+}
