@@ -1,0 +1,59 @@
+name: Parity Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  parity:
+    name: Cross-language Parity Suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: |
+          curl https://rustwasm.org/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Rust parity test dependencies
+        run: |
+          cd core && cargo test --test parity --no-run 2>&1 | grep -E "Finished|Compiling"
+
+      - name: Install Python dependencies
+        run: |
+          cd core/crates/sci-anonymizer-py && \
+          python3 -m venv .venv && \
+          . .venv/bin/activate && \
+          pip install -q maturin
+
+      - name: Run all parity tests
+        run: make test-parity-all
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-test-results
+          path: |
+            core/target/debug/deps/parity-*.profraw
+            core/crates/sci-anonymizer-wasm/pkg
+          if-no-files-found: ignore
