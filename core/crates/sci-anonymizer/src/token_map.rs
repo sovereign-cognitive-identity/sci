@@ -4,6 +4,7 @@
 //! through §"Public API".
 
 use crate::regex_extract::{extract_camelcase_entities, extract_regex_entities};
+use crate::user_allowlist::UserAllowlist;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -397,6 +398,76 @@ pub fn anonymize_with_custom(
     }
 }
 
+/// Anonymize with custom entities and user-controlled allowlist (SCI-149).
+/// Detected entities matching the allowlist are excluded from masking.
+/// Allowlist takes precedence over detection (user has explicit control).
+pub fn anonymize_with_custom_and_allowlist(
+    text:           &str,
+    existing:       Option<TokenMap>,
+    custom:         &[Entity],
+    user_allowlist: Option<&UserAllowlist>,
+) -> AnonymizeResult {
+    let regex_entities = extract_regex_entities(text);
+
+    let regex_text_keys: HashSet<String> = regex_entities
+        .iter()
+        .chain(custom.iter())
+        .map(|e| e.text.to_lowercase())
+        .collect();
+
+    let nlp_entities: Vec<Entity> = crate::ner::extract_nlp_entities(text)
+        .into_iter()
+        .filter(|e| !regex_text_keys.contains(&e.text.to_lowercase()))
+        .collect();
+
+    let lower_prompt = text.to_lowercase();
+    let custom_present: Vec<Entity> = custom
+        .iter()
+        .filter(|e| lower_prompt.contains(&e.text.to_lowercase()))
+        .cloned()
+        .collect();
+
+    let known: HashSet<String> = regex_entities
+        .iter()
+        .chain(nlp_entities.iter())
+        .chain(custom_present.iter())
+        .map(|e| e.text.to_lowercase())
+        .collect();
+    let camel_entities = extract_camelcase_entities(text, &known);
+
+    let mut all_entities = Vec::with_capacity(
+        regex_entities.len()
+            + nlp_entities.len()
+            + custom_present.len()
+            + camel_entities.len(),
+    );
+    all_entities.extend(regex_entities);
+    all_entities.extend(nlp_entities);
+    all_entities.extend(custom_present);
+    all_entities.extend(camel_entities);
+
+    // Filter out allowlisted entities. These will NOT be masked.
+    // Allowlist takes precedence over all detection passes.
+    let filtered_entities: Vec<Entity> = if let Some(allowlist) = user_allowlist {
+        all_entities
+            .into_iter()
+            .filter(|e| !allowlist.contains(&e.text))
+            .collect()
+    } else {
+        all_entities
+    };
+
+    let token_map = build_token_map(&filtered_entities, existing);
+    let text_out = apply_token_map(text, &token_map);
+
+    AnonymizeResult {
+        entity_count: filtered_entities.len(),
+        detected:     filtered_entities,
+        token_map,
+        text:         text_out,
+    }
+}
+
 pub fn anonymize(text: &str, existing: Option<TokenMap>) -> AnonymizeResult {
     // Pass 1: deterministic regex (URLs, emails, phones, handles).
     let regex_entities = extract_regex_entities(text);
@@ -729,5 +800,132 @@ mod tests {
             "code block must not be anonymized; got: {:?}",
             r.text,
         );
+    }
+
+    #[test]
+    fn allowlist_exempts_detected_person() {
+        // SCI-149: Entity detected as PERSON but allowlisted → left verbatim.
+        // NLP NER will detect "Casey Zandbergen" as a single PERSON entity.
+        // Put it in allowlist so it should NOT be masked.
+        let allowlist = UserAllowlist::new(vec!["Casey Zandbergen".to_string()]);
+        let r = anonymize_with_custom_and_allowlist(
+            "Meet Casey Zandbergen, our lead engineer.",
+            None,
+            &[],
+            Some(&allowlist),
+        );
+        // "Casey Zandbergen" should be in the output verbatim (allowlist exempts it)
+        assert!(r.text.contains("Casey Zandbergen"), "allowlisted name should appear verbatim; got: {:?}", r.text);
+        assert!(!r.text.contains("[PERSON_"), "allowlisted person should not be masked");
+    }
+
+    #[test]
+    fn allowlist_exempts_detected_org() {
+        // Entity detected as ORG but allowlisted → left verbatim.
+        let allowlist = UserAllowlist::new(vec!["Anthropic".to_string()]);
+        let r = anonymize_with_custom_and_allowlist(
+            "I work at Anthropic on AI research.",
+            None,
+            &[],
+            Some(&allowlist),
+        );
+        assert!(r.text.contains("Anthropic"), "allowlisted org should appear verbatim; got: {:?}", r.text);
+    }
+
+    #[test]
+    fn allowlist_case_insensitive() {
+        // Allowlist entry "Threadline" should match detected "threadline" or "THREADLINE".
+        let allowlist = UserAllowlist::new(vec!["Threadline".to_string()]);
+        let custom = vec![Entity {
+            text:        "Threadline".to_string(),
+            entity_type: EntityType::Project,
+        }];
+        let r = anonymize_with_custom_and_allowlist(
+            "We're building Threadline.",
+            None,
+            &custom,
+            Some(&allowlist),
+        );
+        // Threadline should be in the output verbatim (allowlist exempts it)
+        assert!(r.text.contains("Threadline"), "allowlisted entity should appear verbatim; got: {:?}", r.text);
+        assert!(!r.text.contains("[PROJECT_"), "allowlisted entity should not get a token");
+    }
+
+    #[test]
+    fn allowlist_with_multiple_entities() {
+        // Test mixed allowlisted + non-allowlisted entities.
+        let allowlist = UserAllowlist::new(vec!["Threadline".to_string(), "Casey".to_string()]);
+        let custom = vec![
+            Entity {
+                text:        "Threadline".to_string(),
+                entity_type: EntityType::Project,
+            },
+            Entity {
+                text:        "OpenClaw".to_string(),
+                entity_type: EntityType::Org,
+            },
+        ];
+        let r = anonymize_with_custom_and_allowlist(
+            "Casey at Threadline and OpenClaw launched a product.",
+            None,
+            &custom,
+            Some(&allowlist),
+        );
+        // Threadline and Casey should appear verbatim
+        assert!(r.text.contains("Threadline"), "allowlisted entity should be verbatim");
+        assert!(r.text.contains("Casey"), "allowlisted entity should be verbatim");
+        // OpenClaw should be masked
+        assert!(!r.text.contains("OpenClaw"), "non-allowlisted entity should be masked");
+        assert!(r.text.contains("[ORG_"), "non-allowlisted org should get a token");
+    }
+
+    #[test]
+    fn allowlist_round_trip() {
+        // Verify deanonymize works correctly with mixed allowlisted/masked entities.
+        let allowlist = UserAllowlist::new(vec!["Threadline".to_string()]);
+        let custom = vec![
+            Entity {
+                text:        "Threadline".to_string(),
+                entity_type: EntityType::Project,
+            },
+            Entity {
+                text:        "OpenClaw".to_string(),
+                entity_type: EntityType::Org,
+            },
+        ];
+        let original = "Work on Threadline and OpenClaw.";
+        let r = anonymize_with_custom_and_allowlist(
+            original,
+            None,
+            &custom,
+            Some(&allowlist),
+        );
+        // Threadline should NOT have a token (allowlisted)
+        assert!(!r.token_map.forward.contains_key("Threadline"));
+        // OpenClaw should have a token (not allowlisted)
+        assert!(r.token_map.forward.contains_key("OpenClaw"));
+
+        // Deanonymize should restore only the non-allowlisted entity
+        let restored = deanonymize(&r.text, &r.token_map);
+        assert!(restored.contains("Threadline"), "allowlisted entity preserved as-is");
+        assert!(restored.contains("OpenClaw"), "non-allowlisted entity restored");
+    }
+
+    #[test]
+    fn no_allowlist_passes_through() {
+        // When allowlist is None, behavior matches anonymize_with_custom.
+        let custom = vec![Entity {
+            text:        "Threadline".to_string(),
+            entity_type: EntityType::Project,
+        }];
+        let r = anonymize_with_custom_and_allowlist(
+            "We're shipping Threadline this week.",
+            None,
+            &custom,
+            None,  // no allowlist
+        );
+        // Without allowlist, Threadline should still be masked
+        assert!(!r.text.contains("Threadline"), "without allowlist, entity should be masked");
+        assert!(r.text.contains("[PROJECT_"), "entity should be masked with a token");
     }
 }

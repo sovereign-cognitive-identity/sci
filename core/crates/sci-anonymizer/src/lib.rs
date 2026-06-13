@@ -48,6 +48,7 @@ mod custom_entities;
 mod ner;
 mod regex_extract;
 mod token_map;
+mod user_allowlist;
 
 pub use allowlist::{TECH_ALLOWLIST, is_allowlisted};
 pub use code_regions::{extract_code_regions, is_in_code_region};
@@ -56,5 +57,6 @@ pub use ner::extract_nlp_entities;
 pub use regex_extract::{extract_camelcase_entities, extract_regex_entities};
 pub use token_map::{
     AnonymizeResult, Entity, EntityType, SerializedSession, SessionError, SESSION_FORMAT_VERSION,
-    TokenMap, anonymize, anonymize_with_custom, apply_token_map, build_token_map, deanonymize,
+    TokenMap, anonymize, anonymize_with_custom, anonymize_with_custom_and_allowlist, apply_token_map, build_token_map, deanonymize,
 };
+pub use user_allowlist::{UserAllowlist, is_user_allowlisted};
