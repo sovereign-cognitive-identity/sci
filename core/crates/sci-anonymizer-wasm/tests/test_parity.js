@@ -178,7 +178,7 @@ async function testParitySessionSerialization(wasm, fixtures) {
     // Deserialize
     let restoredMap;
     try {
-      restoredMap = wasm.TokenMap.from_session_json(jsonStr);
+      restoredMap = wasm.WasmTokenMap.from_session_json(jsonStr);
     } catch (e) {
       failures.push({
         name: fixture.name,
@@ -428,7 +428,7 @@ async function testParitySessionSerialization(wasm, fixtures) {
     // Deserialize
     let restoredMap;
     try {
-      restoredMap = wasm.TokenMap.from_session_json(jsonStr);
+      restoredMap = wasm.WasmTokenMap.from_session_json(jsonStr);
     } catch (e) {
       failures.push({
         name: fixture.name,

@@ -61,12 +61,17 @@ pub enum WasmEntityType {
     IpAddress = 9,
 }
 
-#[wasm_bindgen]
 impl WasmEntityType {
     /// Return the token prefix used for this entity type (e.g., "PERSON", "EMAIL").
     pub fn token_prefix(self) -> String {
         self.to_rust().token_prefix().to_string()
     }
+}
+
+/// Return the token prefix for an entity type (e.g., "PERSON", "EMAIL").
+#[wasm_bindgen]
+pub fn entity_type_token_prefix(entity_type: WasmEntityType) -> String {
+    entity_type.token_prefix()
 }
 
 impl WasmEntityType {

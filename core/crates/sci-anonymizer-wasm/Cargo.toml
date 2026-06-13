@@ -9,6 +9,9 @@ description  = "WASM + npm bindings for sci-anonymizer. Published as @sovereign-
 [lib]
 crate-type = ["cdylib"]
 
+[package.metadata.wasm]
+wasm-opt = false
+
 [dependencies]
 sci-anonymizer    = { path = "../sci-anonymizer" }
 serde             = { workspace = true }

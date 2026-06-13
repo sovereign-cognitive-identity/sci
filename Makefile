@@ -36,12 +36,11 @@ test-parity-wasm:
 	@echo "Running WASM parity tests..."
 	@if command -v wasm-pack >/dev/null 2>&1; then \
 		cd core/crates/sci-anonymizer-wasm && \
-		nice -n 19 wasm-pack build --target nodejs --release 2>/dev/null && { \
-			node tests/test_parity.js; \
-		} || { \
-			echo "⚠️  wasm-pack build failed (pre-existing wasm-bindgen issue)"; \
-			node tests/test_parity.js; \
-		} \
+		nice -n 19 wasm-pack build --target nodejs --release --no-opt 2>/dev/null || { \
+			echo "❌  wasm-pack build failed"; \
+			exit 1; \
+		}; \
+		node tests/test_parity.js \
 	else \
 		echo "⚠️  wasm-pack not found; skipping WASM parity test"; \
 		echo "    Install with: cargo install wasm-pack"; \
