@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "sci-anonymizer"
+version = "0.1.0"
+description = "PyO3 bindings for sci-anonymizer — reversible entity anonymization for LLM round-trips"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0 OR MIT" }
+authors = [{ name = "Casey Zandbergen", email = "casey.zandbergen@gmail.com" }]
+keywords = ["anonymization", "nlp", "entity-extraction", "privacy", "llm"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Text Processing :: Linguistic",
+    "Development Status :: 3 - Alpha",
+]
+
+[tool.maturin]
+# abi3 wheels: single wheel works for Python 3.10+
+features = ["pyo3/abi3-py310"]
+module-name = "sci_anonymizer"
