@@ -32,11 +32,16 @@ unsafe extern "C" {
 /// # Safety
 /// `conn` must be an open, valid connection. This calls into C code.
 pub unsafe fn load(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
-    let rc = sqlite3_vec_init(
-        conn.handle() as *mut c_void,
-        std::ptr::null_mut(),
-        std::ptr::null(),
-    );
+    // SAFETY: conn.handle() returns a valid SQLite database pointer, guaranteed by
+    // rusqlite's safety contract. The sqlite3_vec_init call requires an unsafe block
+    // because it's an FFI function that takes raw pointers.
+    let rc = unsafe {
+        sqlite3_vec_init(
+            conn.handle() as *mut c_void,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        )
+    };
     if rc == 0 {
         Ok(())
     } else {
