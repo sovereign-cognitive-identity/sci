@@ -103,6 +103,24 @@ impl RateLimiter {
         }
     }
 
+    /// Build from env with defaults sized for agent workloads.
+    ///
+    /// `SCI_RATE_LIMIT_WINDOW_SECS` (default 60) and `SCI_RATE_LIMIT_MAX`
+    /// (default 120) override the window and cap. The previous hardcoded
+    /// 20/min was sized for a single human session (~3/min) and self-429'd
+    /// autonomous Claude Code agents, which burst far past it (especially
+    /// when fanned out). 120/min keeps the retry-storm guard while leaving
+    /// headroom for parallel agents. Invalid values fall back to defaults.
+    pub fn from_env() -> Self {
+        fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+            std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        }
+        Self::new(
+            env_or("SCI_RATE_LIMIT_WINDOW_SECS", 60),
+            env_or("SCI_RATE_LIMIT_MAX", 120),
+        )
+    }
+
     /// Record a new request. Returns `true` if the request is within the
     /// rate limit, `false` if it should be blocked.
     pub fn check_and_record(&self) -> bool {
@@ -142,9 +160,11 @@ impl HandlerState {
             active_profile:  Arc::new(Mutex::new("work".to_string())),
             active_project:  Arc::new(Mutex::new(None)),
             cascade_monitor: Arc::new(CascadeMonitor::new()),
-            // 20 requests per minute — enough for active tool-heavy sessions
-            // (~3 per minute typical), hard stop on retry storms.
-            rate_limiter:    Arc::new(RateLimiter::new(60, 20)),
+            // Default 120 requests/60s, overridable via SCI_RATE_LIMIT_MAX /
+            // SCI_RATE_LIMIT_WINDOW_SECS. Sized for autonomous/parallel agents
+            // (the old 20/min assumed a single ~3/min human and self-429'd
+            // agents). Retry-storm protection preserved at the higher ceiling.
+            rate_limiter:    Arc::new(RateLimiter::from_env()),
         }
     }
 
