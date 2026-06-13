@@ -26,11 +26,18 @@ echo "Repository: $REPO_ROOT"
 echo "Corpus dir: $CORPUS_DIR"
 echo ""
 
+# Prefer the local venv (has `datasets` for CoNLL) if present; else system python.
+if [ -x "$SCRIPT_DIR/.venv/bin/python" ]; then
+    PY="$SCRIPT_DIR/.venv/bin/python"
+else
+    PY="python3"
+fi
+
 # Step 1: Build/ensure corpus
 if [ ! -f "$CORPUS_DIR/corpus-index.jsonl" ]; then
     echo -e "${BLUE}Step 1: Building corpus index...${NC}"
     cd "$SCRIPT_DIR"
-    python3 corpus-builder.py
+    "$PY" corpus-builder.py
     echo -e "${GREEN}✓ Corpus index created${NC}"
     echo ""
 else
@@ -62,7 +69,7 @@ echo ""
 # Step 3+4: Compute real metrics and generate RESULTS.md (SCI-291/292)
 echo -e "${BLUE}Step 3+4: Computing metrics + generating report...${NC}"
 cd "$SCRIPT_DIR"
-python3 eval.py
+"$PY" eval.py
 echo -e "${GREEN}✓ Results report written to $RESULTS_FILE${NC}"
 echo ""
 

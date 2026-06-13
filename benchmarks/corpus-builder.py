@@ -13,7 +13,6 @@ import json
 import sys
 from pathlib import Path
 from typing import List, Dict, Any
-import re
 
 # Try to import datasets; if unavailable, provide manual loading instructions
 try:
@@ -50,7 +49,10 @@ def load_conll2003_subset(max_samples: int = 1000) -> List[Dict[str, Any]]:
         return []
 
     try:
-        dataset = load_dataset("conll2003", trust_remote_code=True)
+        # The canonical `conll2003` dataset ships as a deprecated loading
+        # script and no longer works with datasets>=3. Use a Parquet mirror
+        # with the identical tag scheme (O, B-PER, I-PER, B-ORG, ...).
+        dataset = load_dataset("tomaarsen/conll2003")
         train_split = dataset["train"]
     except Exception as e:
         print(f"Error loading CoNLL-2003: {e}", file=sys.stderr)
@@ -78,6 +80,15 @@ def load_conll2003_subset(max_samples: int = 1000) -> List[Dict[str, Any]]:
         text = " ".join(tokens)
         entities = []
 
+        # Exact char offset of each token in the joined text. Using token
+        # positions (not re.search) avoids mis-locating entities whose text
+        # repeats elsewhere in the sentence.
+        token_starts = []
+        pos = 0
+        for tok in tokens:
+            token_starts.append(pos)
+            pos += len(tok) + 1  # +1 for the joining space
+
         i = 0
         while i < len(tokens):
             tag_idx = ner_tags[i]
@@ -86,7 +97,7 @@ def load_conll2003_subset(max_samples: int = 1000) -> List[Dict[str, Any]]:
             if tag_name != "O" and tag_name in tag2type:
                 entity_type = tag2type[tag_name]
                 entity_tokens = [tokens[i]]
-                token_idx = i
+                start_token = i
 
                 # Accumulate consecutive I- tags of the same entity
                 j = i + 1
@@ -101,20 +112,14 @@ def load_conll2003_subset(max_samples: int = 1000) -> List[Dict[str, Any]]:
                         break
 
                 entity_text = " ".join(entity_tokens)
-
-                # Find the span in the reconstructed text
-                # Simple approach: search for the entity as a word boundary
-                pattern = re.escape(entity_text)
-                match = re.search(pattern, text)
-                if match:
-                    start = match.start()
-                    end = match.end()
-                    entities.append({
-                        "start": start,
-                        "end": end,
-                        "type": entity_type,
-                        "text": entity_text,
-                    })
+                start = token_starts[start_token]
+                end = start + len(entity_text)
+                entities.append({
+                    "start": start,
+                    "end": end,
+                    "type": entity_type,
+                    "text": entity_text,
+                })
 
                 i = j
             else:
@@ -155,7 +160,7 @@ def load_edge_case_corpus() -> List[Dict[str, Any]]:
         "entities": [
             {
                 "start": 1,
-                "end": 18,
+                "end": 17,
                 "type": "PERSON",
                 "text": "Casey Zandbergen",
             }
@@ -196,7 +201,7 @@ def load_edge_case_corpus() -> List[Dict[str, Any]]:
         "entities": [
             {
                 "start": 6,
-                "end": 21,
+                "end": 23,
                 "type": "EMAIL",
                 "text": "alice@example.com",
             }
@@ -209,7 +214,7 @@ def load_edge_case_corpus() -> List[Dict[str, Any]]:
         "entities": [
             {
                 "start": 5,
-                "end": 19,
+                "end": 20,
                 "type": "PHONE",
                 "text": "+1-555-123-4567",
             }

@@ -1,1 +1,5 @@
 /target
+
+# Generated benchmark corpus (CoNLL-2003 is Reuters-derived — do not redistribute)
+corpus/corpus-index.jsonl
+.venv/
