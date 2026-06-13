@@ -261,6 +261,16 @@ pub fn apply_token_map(text: &str, token_map: &PyTokenMap) -> String {
     rust_anon::apply_token_map(text, &token_map.inner)
 }
 
+/// Get the tech allowlist as a list of allowlisted terms.
+/// These are case-sensitive proper nouns (frameworks, languages, SaaS names)
+/// that should not be masked during anonymization.
+///
+/// Returns a list[str] for case-insensitive matching in the parity tests.
+#[pyfunction]
+pub fn get_tech_allowlist() -> Vec<&'static str> {
+    rust_anon::TECH_ALLOWLIST.iter().copied().collect()
+}
+
 // ============================================================================
 // Module
 // ============================================================================
@@ -282,6 +292,7 @@ fn sci_anonymizer(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deanonymize, m)?)?;
     m.add_function(wrap_pyfunction!(build_token_map, m)?)?;
     m.add_function(wrap_pyfunction!(apply_token_map, m)?)?;
+    m.add_function(wrap_pyfunction!(get_tech_allowlist, m)?)?;
 
     Ok(())
 }

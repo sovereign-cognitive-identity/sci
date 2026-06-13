@@ -20,17 +20,11 @@ from sci_anonymizer import (
     deanonymize,
     Entity,
     EntityType,
+    get_tech_allowlist,
 )
 
-# Tech allowlist (mirrors TECH_ALLOWLIST from Rust core)
-TECH_ALLOWLIST = [
-    "slack", "github", "twitter", "google", "amazon", "microsoft",
-    "openai", "anthropic", "science", "platform", "framework",
-    "service", "api", "web", "email", "mail", "app", "server",
-    "database", "cache", "queue", "stream", "kafka", "redis",
-    "postgres", "mysql", "sqlite", "mongodb", "dynamodb",
-    "claude", "chatgpt", "copilot", "cursor", "gemini",
-]
+# Tech allowlist (imported from Rust core via PyO3 binding)
+TECH_ALLOWLIST = get_tech_allowlist()
 
 
 def load_fixtures():

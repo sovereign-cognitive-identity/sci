@@ -259,13 +259,9 @@ async function main() {
 
     const fixtures = loadFixtures();
 
-    // Extract allowlist from the TECH_ALLOWLIST if available
-    // For now, use a basic list; the actual list is in Rust
-    const allowlist = [
-      "slack", "github", "twitter", "google", "amazon", "microsoft",
-      "openai", "anthropic", "science", "platform", "platform",
-      "claude", "chatgpt", "copilot", "cursor", "gemini",
-    ];
+    // Get the real allowlist from the WASM binding (case-insensitive for parity testing)
+    const allowlistRaw = wasm.get_tech_allowlist();
+    const allowlist = allowlistRaw.map(s => s.toLowerCase());
 
     const results = [];
 

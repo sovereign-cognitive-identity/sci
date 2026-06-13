@@ -214,3 +214,19 @@ def apply_token_map(text: str, token_map: TokenMap) -> str:
         Text with entities replaced by tokens (case-insensitive, word-boundary safe).
     """
     ...
+
+def get_tech_allowlist() -> List[str]:
+    """Get the tech allowlist as a list of allowlisted terms.
+
+    These are case-sensitive proper nouns (frameworks, languages, SaaS names)
+    that should not be masked during anonymization.
+
+    Returns:
+        A list of strings representing the tech allowlist.
+
+    Example:
+        >>> allowlist = get_tech_allowlist()
+        >>> "Python" in allowlist
+        True
+    """
+    ...

@@ -26,7 +26,7 @@ use sci_anonymizer::{
     anonymize as rs_anonymize, anonymize_with_custom as rs_anonymize_with_custom,
     deanonymize as rs_deanonymize, apply_token_map as rs_apply_token_map,
     build_token_map as rs_build_token_map, Entity, EntityType, TokenMap, AnonymizeResult,
-    SessionError, SESSION_FORMAT_VERSION,
+    SessionError, SESSION_FORMAT_VERSION, TECH_ALLOWLIST,
 };
 use wasm_bindgen::prelude::*;
 use serde::{Serialize, Deserialize};
@@ -321,6 +321,19 @@ pub fn apply_token_map(text: &str, token_map: &WasmTokenMap) -> String {
 #[wasm_bindgen]
 pub fn get_session_format_version() -> u32 {
     SESSION_FORMAT_VERSION
+}
+
+/// Get the tech allowlist as an array of allowlisted terms.
+/// These are case-sensitive proper nouns (frameworks, languages, SaaS names)
+/// that should not be masked during anonymization.
+///
+/// Returns a Vec<String> that JavaScript can use for case-insensitive matching.
+#[wasm_bindgen]
+pub fn get_tech_allowlist() -> Vec<JsValue> {
+    TECH_ALLOWLIST
+        .iter()
+        .map(|s| JsValue::from_str(s))
+        .collect()
 }
 
 // ── Serialization helpers for TokenMap ─────────────────────────────────────
