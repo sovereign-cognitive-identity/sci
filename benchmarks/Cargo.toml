@@ -1,0 +1,12 @@
+[package]
+name = "sci-benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sci-anonymizer = { path = "../core/crates/sci-anonymizer" }
+serde_json = "1"
+
+[[bin]]
+name = "bench-harness"
+path = "src/bin/harness.rs"

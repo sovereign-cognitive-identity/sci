@@ -1,0 +1,6 @@
+{"doc_id": "edge-case:sci195:001", "text": "hello [PERSON_1] world", "entities": []}
+{"doc_id": "edge-case:sci195:002", "text": "\"Casey Zandbergen\" replied", "entities": [{"start": 1, "end": 18, "type": "PERSON", "text": "Casey Zandbergen"}]}
+{"doc_id": "edge-case:sci196:001", "text": "Casey Zandbergen pinged them", "entities": [{"start": 0, "end": 16, "type": "PERSON", "text": "Casey Zandbergen"}]}
+{"doc_id": "edge-case:sci196:002", "text": "Contact John Smith at work", "entities": [{"start": 8, "end": 18, "type": "PERSON", "text": "John Smith"}]}
+{"doc_id": "edge-case:sci197:001", "text": "Email alice@example.com for details", "entities": [{"start": 6, "end": 21, "type": "EMAIL", "text": "alice@example.com"}]}
+{"doc_id": "edge-case:sci197:002", "text": "Call +1-555-123-4567 to confirm", "entities": [{"start": 5, "end": 19, "type": "PHONE", "text": "+1-555-123-4567"}]}
