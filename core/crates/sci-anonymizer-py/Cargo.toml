@@ -1,0 +1,23 @@
+[package]
+name         = "sci-anonymizer-py"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+license      = "Apache-2.0 OR MIT"
+description  = "PyO3 bindings for sci-anonymizer. Published to PyPI."
+
+[lib]
+name         = "sci_anonymizer"
+crate-type  = ["cdylib"]
+
+[dependencies]
+sci-anonymizer = { path = "../sci-anonymizer" }
+pyo3           = { version = "0.23", features = ["abi3-py310"] }
+serde_json     = { workspace = true }
+
+[profile.release]
+opt-level     = "z"
+lto           = "fat"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"
