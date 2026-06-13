@@ -67,7 +67,7 @@ Detect entities in `text` and replace them with stable placeholder tokens.
 
 ```typescript
 const result = anonymize("Email casey@example.com about Acme deal", null);
-// result.text = "Email casey.zandbergen@gmail.com about ToolSearch deal"
+// result.text = "Email EMAIL_1 about ORG_1 deal"
 // result.entity_count = 2
 // result.detected = [Entity, Entity]
 ```
