@@ -1,6 +1,37 @@
 # Rate Limiting
 
-Sci provides a built-in token-bucket rate limiter to prevent API flooding. It's especially useful when running agents or background tasks that make frequent HTTP requests.
+Sci has **two independent rate limiters**. Don't confuse them — they have different env vars and live in different layers:
+
+| Limiter | Layer | Algorithm | Env vars | Limits |
+|---------|-------|-----------|----------|--------|
+| **Proxy request limiter** | Rust helper (`sci-handlers`) | Sliding window | `SCI_RATE_LIMIT_MAX`, `SCI_RATE_LIMIT_WINDOW_SECS` | requests per window |
+| **Client token bucket** | TypeScript (`@sci/core`) | Token bucket | `SCI_RATE_LIMIT_RPS`, `SCI_RATE_LIMIT_BURST`, `SCI_RATE_LIMIT_ENABLED` | requests per second |
+
+The **proxy limiter** guards the live `sci-helper` proxy — every Claude request routed through Sci passes through it. If it trips, the proxy returns its own `429` with body `rate limit: too many requests in 60s - possible retry storm, check sci-helper logs`. **This is not an Anthropic or subscription limit** — it's Sci's own guard. If agents fail with that exact message, this is the limiter to raise (see below).
+
+The rest of this document covers the **client token bucket** (`@sci/core`).
+
+## Proxy request limiter (Rust helper)
+
+Sliding-window limiter in `core/crates/sci-handlers/src/state.rs`. Defaults are sized for autonomous/parallel **agents**:
+
+- **`SCI_RATE_LIMIT_MAX`** (default: `120`)
+  Max requests allowed per window. The previous hardcoded value was `20`, sized for a single ~3/min human session — autonomous Claude Code agents burst far past it and fan-out multiplies it, causing self-inflicted `429`s. `120` keeps retry-storm protection while leaving headroom for parallel agents.
+
+- **`SCI_RATE_LIMIT_WINDOW_SECS`** (default: `60`)
+  Sliding window length in seconds.
+
+Set these in the helper's launchd plist (`~/Library/LaunchAgents/dev.sci.helper.plist`, `EnvironmentVariables`) and restart the service:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/dev.sci.helper
+```
+
+Invalid values fall back to the defaults.
+
+---
+
+The built-in token-bucket rate limiter below prevents API flooding from the TypeScript layer. It's especially useful when running agents or background tasks that make frequent HTTP requests.
 
 ## Quick Start
 
