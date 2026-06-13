@@ -36,13 +36,13 @@ use sci_core::handlers::is_intercepted_host;
 
 use crate::flow::{SharedState, dispatch_tls_request};
 
-/// Bind a TCP listener on `addr` and accept-loop forever. One task
+/// Accept-loop forever on an already-bound `listener`. One task
 /// per inbound connection. Errors on individual connections are
 /// logged and swallowed; only a fatal listener error propagates.
-pub async fn serve_proxy(addr: SocketAddr, state: SharedState) -> Result<()> {
-    let listener = TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("bind proxy listener on {addr}"))?;
+/// The caller binds the port so a bind failure is fatal at startup
+/// rather than leaving the helper alive but not proxying.
+pub async fn serve_proxy(listener: TcpListener, state: SharedState) -> Result<()> {
+    let addr: SocketAddr = listener.local_addr()?;
     tracing::info!(%addr, "dev-proxy listening (CONNECT-only HTTPS proxy)");
     loop {
         let (stream, peer) = match listener.accept().await {

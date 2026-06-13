@@ -302,10 +302,17 @@ async fn main() -> Result<()> {
     // testing without the macOS NE entitlement, and as the
     // cross-platform capture surface (Linux/Windows have no NE).
     if let Some(port) = parse_proxy_port() {
-        let addr = format!("127.0.0.1:{port}").parse().unwrap();
+        let addr = format!("127.0.0.1:{port}");
+        // Bind here (not inside the spawned task) so a bind failure is
+        // fatal at startup. Under launchd KeepAlive that triggers a clean
+        // respawn once the port frees, instead of the helper staying alive
+        // but not proxying.
+        let listener = tokio::net::TcpListener::bind(&addr)
+            .await
+            .with_context(|| format!("bind proxy listener on {addr}"))?;
         let s = shared.clone();
         tokio::spawn(async move {
-            if let Err(e) = proxy::serve_proxy(addr, s).await {
+            if let Err(e) = proxy::serve_proxy(listener, s).await {
                 tracing::error!(error = %e, "dev-proxy listener exited");
             }
         });
@@ -318,24 +325,22 @@ async fn main() -> Result<()> {
     {
         let admin_port = parse_admin_port();
         let admin_addr = format!("127.0.0.1:{admin_port}");
-        match tokio::net::TcpListener::bind(&admin_addr).await {
-            Ok(listener) => {
-                let admin_state = admin::AdminState {
-                    handler_state: shared.handler_state.clone(),
-                    events:        shared.events.clone(),
-                    version:       sci_core::VERSION,
-                    started_at:    std::time::Instant::now(),
-                };
-                tokio::spawn(async move {
-                    if let Err(e) = admin::serve_admin(listener, admin_state).await {
-                        tracing::error!(error = %e, "admin API listener exited");
-                    }
-                });
+        // Fatal on bind failure for the same reason as the proxy above:
+        // a degraded helper with no admin API is worse than a clean respawn.
+        let listener = tokio::net::TcpListener::bind(&admin_addr)
+            .await
+            .with_context(|| format!("admin API bind failed on {admin_addr}"))?;
+        let admin_state = admin::AdminState {
+            handler_state: shared.handler_state.clone(),
+            events:        shared.events.clone(),
+            version:       sci_core::VERSION,
+            started_at:    std::time::Instant::now(),
+        };
+        tokio::spawn(async move {
+            if let Err(e) = admin::serve_admin(listener, admin_state).await {
+                tracing::error!(error = %e, "admin API listener exited");
             }
-            Err(e) => {
-                tracing::error!(addr = %admin_addr, error = %e, "admin API bind failed");
-            }
-        }
+        });
     }
 
     // ── 5. Accept loop until SIGTERM/SIGINT ───────────────────────────────
