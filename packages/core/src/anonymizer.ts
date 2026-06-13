@@ -402,14 +402,21 @@ function applyTokenMap(text: string, tokenMap: TokenMap): string {
 /**
  * Synchronous anonymize — uses only regex + NLP (no DB).
  * Use anonymizeAsync for full coverage including custom entities.
+ * @param userAllowlist Optional per-user allowlist (SCI-149) — entities matching this set are excluded from masking
  */
-export function anonymize(text: string, existing?: TokenMap): AnonymizeResult {
+export function anonymize(text: string, existing?: TokenMap, userAllowlist?: Set<string>): AnonymizeResult {
   const regexEntities = extractRegexEntities(text)
   const nlpEntities = extractNlpEntities(text)
   const knownSet = new Set([...regexEntities, ...nlpEntities].map(e => e.text.toLowerCase()))
   const camelEntities = extractCamelCaseEntities(text, knownSet)
 
-  const allEntities = [...regexEntities, ...nlpEntities, ...camelEntities]
+  let allEntities = [...regexEntities, ...nlpEntities, ...camelEntities]
+
+  // Filter out allowlisted entities (SCI-149). Allowlist takes precedence over detection.
+  if (userAllowlist && userAllowlist.size > 0) {
+    allEntities = allEntities.filter(e => !userAllowlist.has(e.text.toLowerCase()))
+  }
+
   const tokenMap = buildTokenMap(allEntities, existing)
 
   return {
@@ -425,12 +432,15 @@ export function anonymize(text: string, existing?: TokenMap): AnonymizeResult {
  *
  * sessionEntities — entities seen in previous calls this session (item 1: feedback loop).
  * These are checked proactively even if NER/CamelCase wouldn't catch them this turn.
+ *
+ * @param userAllowlist Optional per-user allowlist (SCI-149) — entities matching this set are excluded from masking
  */
 export async function anonymizeAsync(
   text: string,
   readerOrAdapter: Pool | import('./storage/interface.js').StorageAdapter,
   existing?: TokenMap,
-  sessionEntities?: Entity[]
+  sessionEntities?: Entity[],
+  userAllowlist?: Set<string>
 ): Promise<AnonymizeResult> {
   const customEntities = 'backend' in readerOrAdapter
     ? await loadCustomEntitiesFromAdapter(readerOrAdapter as import('./storage/interface.js').StorageAdapter)
@@ -459,13 +469,18 @@ export async function anonymizeAsync(
 
   const camelEntities = extractCamelCaseEntities(text, knownSet)
 
-  const allEntities = [
+  let allEntities = [
     ...regexEntities,
     ...nlpEntities,
     ...customEntities,
     ...feedbackEntities,
     ...camelEntities,
   ]
+
+  // Filter out allowlisted entities (SCI-149). Allowlist takes precedence over detection.
+  if (userAllowlist && userAllowlist.size > 0) {
+    allEntities = allEntities.filter(e => !userAllowlist.has(e.text.toLowerCase()))
+  }
 
   // Progressive promotion: count entities that appear across multiple calls.
   // Track anything not already in identity_facts (DB custom) — including session
@@ -478,6 +493,7 @@ export async function anonymizeAsync(
     ...feedbackEntities,  // count repeated appearances from previous session calls
   ].filter(
     e => !dbCustomKeys.has(e.text.toLowerCase()) &&
+         !userAllowlist?.has(e.text.toLowerCase()) &&  // don't promote allowlisted entities
          ['PROJECT', 'ORG', 'PLACE'].includes(e.type)
   )
   _recordForPromotion(promotionCandidates)
