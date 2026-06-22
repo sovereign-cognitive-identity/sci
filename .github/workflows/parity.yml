@@ -22,7 +22,7 @@ jobs:
 
       - name: Install wasm-pack
         run: |
-          curl https://rustwasm.org/wasm-pack/installer/init.sh -sSf | sh
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Verify wasm-pack on PATH (fail fast — Makefile skips the WASM leg with exit 0 if absent, which would falsely green CI)
         run: wasm-pack --version
