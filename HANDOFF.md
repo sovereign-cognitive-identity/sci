@@ -1,103 +1,76 @@
 # Handoff
 
-_Last updated: 2026-05-24 — @caseyzandbergen/rate-limiter published to npm; Sci wired to use it pending npm auth token config._
+_Last updated: 2026-06-22 (session 2). Pushed the 5 staged commits to origin, fixed a CI infra bug, drove the parity Action green, closed SCI-289. Now driving toward a new release._
 
 ## Goal
 
-Sci is a sovereign cognitive identity layer. Current focus: get to v0.1.0-alpha — a one-command install that works on a fresh Mac and routes Claude Code through the Sci proxy with memory.
+Sci is a sovereign cognitive identity layer. Current focus: **cut a new release** bundling all unreleased work (Lanes A/B/C bindings, parity, CI, rate limiter) and reconcile the stale release-tail tickets. The cold soak has **passed** (helper ~9d continuous uptime) and no longer gates anything.
 
-## Current Progress
+## Current state (verified ground truth, not Jira)
 
-### This session
+- **`origin/main` == local `main`**, fully synced. Parity CI **green** on origin (run `27950420769`).
+- **Last release = `v0.1.1-alpha` (Jun 12). `main` is 33 commits AHEAD of it.** Everything since — multi-language bindings (SCI-272 epic: WASM + Python + parity), SCI-365 allowlist dedup, SCI-289 CI, rate limiter SCI-364 — is **UNRELEASED**.
+- **No open PRs.** So SCI-265 ("merge PR #36") and SCI-262 ("merge PR #37") are already done in fact; PR #37 was merged Jun 12 and v0.1.1-alpha tagged then. Board is stale.
+- **Soak PASSED:** helper PID 73247 ~8d22h continuous uptime, healthy, actively masking live traffic. Soak-gating in prior handoff is void.
 
-**Rate limiter extracted into standalone npm package:**
-- New repo: `~/src/rate-limiter` — `@caseyzandbergen/rate-limiter@1.0.0`
-- Published to npm (pending — see blocker below)
-- 23 unit tests (vitest, fake timers), zero runtime dependencies
-- Key feature: `envPrefix` option — each project uses its own env vars
-  - Default: `RATE_LIMIT_RPS`, `RATE_LIMIT_BURST`, etc.
-  - Sci: `new RateLimiter({ envPrefix: 'SCI_RATE_LIMIT' })` → `SCI_RATE_LIMIT_RPS`, etc.
-- `resetGlobalLimiter()` added for test isolation
+## What session 2 did
 
-**Sci's `@sci/core` updated to match the standalone API:**
-- `packages/core/src/rate-limiter.ts` aligned with the new `RateLimiterOptions` interface
-- Default `envPrefix` in Sci copy: `'SCI_RATE_LIMIT'` (env vars unchanged except `SCI_LOG_RATELIMIT` → `SCI_RATE_LIMIT_LOG`)
-- Committed: `16030a12`
+1. **Pushed** the 5 staged commits (`6b130488 → 1e80e4c7`) to origin after confirming with Casey.
+2. First parity Action **failed — a real catch:** pinned `rustwasm.org` wasm-pack installer host no longer resolves; `curl … | sh` silently installed nothing. The SCI-289 fail-fast `wasm-pack --version` guard correctly refused to false-green. **The guard earned its keep.**
+3. **Fixed** installer host → `rustwasm.github.io` (`9d196a00`), re-pushed, Action **green** (Rust/Python/WASM all ran).
+4. **SCI-289 → Done** in Jira with a comment documenting the gate.
 
-**Jira ticket sweep — all prior blockers are Done:**
-- SCI-253, SCI-249, SCI-223, SCI-252 — all Done
-- SCI-218 (Intel Mac CI hang) — mitigated: `continue-on-error` already in workflow, x86_64 excluded from release artifacts
+## Release plan (in progress)
 
-### Prior sessions
-- `0b2b0bc3` — HTTP rate limiter built and exported from `@sci/core`
-- `d30d93d2` — install.sh arch naming fix (SCI-253)
-- `7f3a2b1d` — `sci status` / `sci verify` (SCI-254)
-- `a8c54e05` — daily identity pipeline (dedup + stale-fact review + LaunchAgent)
-- `3e771a95`, `a2dde61f` — proxy cache_control fixes (SCI-239, SCI-228)
+Two independent tracks. **Track 1 is the immediate deliverable.**
 
-## What Worked
+### Track 1 — Helper alpha release ✅ DONE (2026-06-22)
+- **v0.2.0-alpha released:** tagged on `9d196a00`, pushed; GitHub prerelease with `sci-helper-{aarch64,x86_64}-apple-darwin` + `SHA256SUMS`. https://github.com/sovereign-cognitive-identity/sci/releases/tag/v0.2.0-alpha
+- Notes file: `/tmp/sci-v0.2.0-alpha-notes.md` (no committed CHANGELOG exists yet — optional follow-up).
+- Built via `make release-all` (needed `rustup target add x86_64-apple-darwin`). Crate version stays 0.5.0 — release tags are manual/decoupled, matching how v0.1.1-alpha was cut.
+- **Jira reconciled:** SCI-262/265/266 → Done. **SCI-267 (notify testers) left OPEN** — needs the alpha-tester list/channel (none wired into the repo); ready to announce once Casey provides it.
 
-- **Configurable envPrefix** — clean way to share the rate limiter across projects without env var collisions
-- **`--ignore-scripts` for npm publish** — avoids OTP timeout while build+test runs
-- **`npm config set //registry.npmjs.org/:_authToken=<token>`** — correct way to use a granular npm token (not `--otp`)
-- **CI workflow already handles x86_64** — `continue-on-error: true` + `fail_on_unmatched_files: false` already in place
+### Track 2 — Language-package publishes (PIPELINE BUILT — needs secrets + dispatch)
+Decision (Casey, 2026-06-22): **publish via GitHub Actions** (this repo is PUBLIC → Actions are free; the "out of GH credits" constraint does not apply here) at version **0.2.0**.
 
-## What Didn't Work
+**Done this session:**
+- `.github/workflows/publish.yml` (`89463926`) — publishes npm (WASM) + PyPI (maturin: manylinux x86_64/aarch64 + macOS x86_64/aarch64 + sdist) on **Release published** or **manual workflow_dispatch**.
+- Bumped WASM `package.json` + PyPI `pyproject.toml` to **0.2.0**.
+- Fixed npm nits: dead `prepublish` → `prepublishOnly` w/ `--no-opt`; broken repo URL `cognitive-os/sci` → `sovereign-cognitive-identity/sci`.
 
-- **`--otp` with npm granular token** — `--otp` only accepts 6-digit TOTP codes; granular tokens go in `npm config set`
-- **`npm publish` without `--ignore-scripts`** — build+test step causes OTP to expire mid-flight
+**REMAINING — needs Casey (workflow won't publish until these):**
+1. Add repo secrets: **`NPM_TOKEN`** (npm automation token, publish rights to `@sovereign-cognitive-identity`) + **`PYPI_TOKEN`** (PyPI API token for `sci-anonymizer`).
+2. Trigger: the v0.2.0-alpha release already exists so `release:published` won't re-fire — run **`gh workflow run publish.yml`** (workflow_dispatch) to publish 0.2.0 now. Future releases auto-publish.
+3. Note: published package version is plain **0.2.0** (installable by default), while the git/GitHub release is **v0.2.0-alpha**. Minor inconsistency — switch packages to `0.2.0a0`/`0.2.0-alpha.0` if prerelease-gating is wanted.
 
-## Next Steps
+**Local toolchain is broken (why we went CI, FYI):** node 26 default → npm 11.12.1 crashes (`minipass`/node26 incompat); node@22 keg → missing `libsimdjson.31.dylib`. `brew reinstall node@22` would fix local if ever needed.
 
-1. **Set npm auth token + publish** (BLOCKER for wiring Sci to external package):
-   ```bash
-   npm config set //registry.npmjs.org/:_authToken=<npm_... token from npmjs.com>
-   cd ~/src/rate-limiter && npm publish --access public --ignore-scripts
-   ```
-2. **Wire Sci to the published package** — once published:
-   - `npm install @caseyzandbergen/rate-limiter -w packages/core`
-   - Delete `packages/core/src/rate-limiter.ts`
-   - Update `packages/core/src/index.ts`: replace local import with `export * from '@caseyzandbergen/rate-limiter'`
-   - `npm run build -w packages/core` — verify clean
-   - Commit + push
-3. **Tag v0.1.0-alpha** — all pre-release gates are green (SCI-257):
-   ```bash
-   git tag v0.1.0-alpha && git push origin v0.1.0-alpha
-   ```
-   CI builds ARM64 + Linux tarballs; creates GitHub Release automatically
-4. **Tester onboarding** (SCI-250) — send install link + guide to first 5 testers
+- **SCI-280** crates.io — still **genuinely blocked:** monorepo uses `path = "../sci-anonymizer"`; needs **SCI-277** (standalone repo, preserved history) first. Not covered by publish.yml.
+
+## Still open / for human confirmation
+
+- **Lanes A/B subtasks** show "To Do" but code is merged — confirm & close: SCI-274/277/280/281 (A); SCI-273/290–296 (B). Note SCI-277 + SCI-280 are genuinely NOT done.
+- **SCI-276** (integrated-proxy regression sign-off) + **SCI-268** (embedder cold-start verify): now soak-unblocked but require running the live proxy/embedder — do on a quiet window.
+- **SCI-264 / SCI-270** alpha-feedback triage — PARKED, needs a feedback source/labeling scheme from a human.
+- Optional: bump shipped `SCI_RATE_LIMIT_MAX` default >120 in code (needs helper rebuild).
 
 ## Context & Gotchas
 
-### Rate Limiter Package
-- **npm package**: `@caseyzandbergen/rate-limiter@1.0.0`
-- **Standalone repo**: `~/src/rate-limiter`
-- **Sci's local copy**: `packages/core/src/rate-limiter.ts` — DELETE this once Sci uses the npm package
-- **Sci env vars** (unchanged): `SCI_RATE_LIMIT_RPS`, `SCI_RATE_LIMIT_BURST`, `SCI_RATE_LIMIT_ENABLED`, `SCI_RATE_LIMIT_LOG`
-  - Note: old `SCI_LOG_RATELIMIT` was renamed to `SCI_RATE_LIMIT_LOG` this session
+### Services (launchd-managed — use kickstart, never kill/nohup)
+```bash
+launchctl kickstart -k "gui/$(id -u)/dev.sci.helper"   # Rust helper :3001 proxy / :3002 admin (KeepAlive=true)
+launchctl kickstart -k "gui/$(id -u)/com.sci.agent"    # Node agent :8080 (KeepAlive=true)
+launchctl list | grep -i sci
+```
+- Helper logs: `~/Library/Logs/sci-helper.log`. Plists: `~/Library/LaunchAgents/{dev.sci.helper,com.sci.agent}.plist`.
 
-### npm Auth
-- User has 2FA enabled on npmjs.com — OTPs expire during prepublishOnly build+test
-- Correct flow: granular token → `npm config set //registry.npmjs.org/:_authToken=<token>` → publish with `--ignore-scripts`
-- Token needs: Read/write packages + Bypass 2FA
+### Rate limiter (SCI-364 Done)
+- `SCI_RATE_LIMIT_MAX` (default 120) + `SCI_RATE_LIMIT_WINDOW_SECS` (default 60) in `core/crates/sci-handlers/src/state.rs`. No ENABLED/RPS/BURST/LOG flag. Plist currently sets `SCI_RATE_LIMIT_MAX=5000` so dev fan-out + soak share `:3001` without self-429ing.
 
 ### Jira
-- Cloud ID: `e04b7caa-9314-439b-9772-d2bf75440183`
-- Done transition ID: `31`
-- **SCI-257** (tag v0.1.0-alpha): To Do — ready to execute, all deps done
-- **SCI-250** (tester onboarding epic): To Do — blocked on SCI-257
-
-### Services
-```bash
-launchctl kickstart -k "gui/$(id -u)/dev.sci.helper"   # Rust helper :3001/:3002
-launchctl kickstart -k "gui/$(id -u)/com.sci.agent"    # Node agent :8080
-```
-
-### Storage
-- **identity_facts**: ~409 rows; **episodic_memories**: ~43,532 rows
-- **SQLite**: `~/.sci/memory/sci.db`
+- Cloud ID `e04b7caa-9314-439b-9772-d2bf75440183`; Done transition ID `31` (Task + Subtask). PRD backlog labeled `strategy-2026`, `phase-0`…`phase-5`. Each epic ships independently.
 
 ### Codebase conventions
-- `packages/core/dist/` + `packages/proxy/dist/` + `packages/agent/dist/` — **tracked** (compiled output committed)
-- `*.js.map` in those dist dirs must be `git add -f` (root `.gitignore` ignores them globally)
-- Rust helper: `cargo build --release` from `apps/sci-mac/SciHelper/` (~30s)
+- Rust core: `core/` workspace (`crates/*` glob). Build helper: `cargo build --release -p sci-helper` from `apps/sci-mac/SciHelper/`.
+- Parity: shared fixtures `core/tests/fixtures/anonymizer.json` (43 cases) + `make test-parity-all`.
+- Release: `make release-all` (arm+x86 helper binaries → `dist/` + SHA256SUMS). No CHANGELOG yet.
