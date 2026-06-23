@@ -64,7 +64,10 @@ jobs:
         platform:
           - { runner: ubuntu-latest,  os: linux,  target: x86_64,  manylinux: auto }
           - { runner: ubuntu-latest,  os: linux,  target: aarch64, manylinux: auto }
-          - { runner: macos-13,       os: macos,  target: x86_64 }
+          # Both macOS wheels build on the arm64 runner; scarce macOS-Intel
+          # runners repeatedly queue-starved the publish. macos-14 cross-compiles
+          # the x86_64 wheel via the bundled SDK.
+          - { runner: macos-14,       os: macos,  target: x86_64 }
           - { runner: macos-14,       os: macos,  target: aarch64 }
     steps:
       - uses: actions/checkout@v4
