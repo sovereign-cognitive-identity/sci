@@ -30,21 +30,18 @@ Two independent tracks. **Track 1 is the immediate deliverable.**
 - Built via `make release-all` (needed `rustup target add x86_64-apple-darwin`). Crate version stays 0.5.0 — release tags are manual/decoupled, matching how v0.1.1-alpha was cut.
 - **Jira reconciled:** SCI-262/265/266 → Done. **SCI-267 (notify testers) left OPEN** — needs the alpha-tester list/channel (none wired into the repo); ready to announce once Casey provides it.
 
-### Track 2 — Language-package publishes (PIPELINE BUILT — needs secrets + dispatch)
-Decision (Casey, 2026-06-22): **publish via GitHub Actions** (this repo is PUBLIC → Actions are free; the "out of GH credits" constraint does not apply here) at version **0.2.0**.
+### Track 2 — Language-package publishes (PyPI SHIPPED ✅ / npm blocked on org)
+Decision (Casey, 2026-06-22): **publish via GitHub Actions** (this repo is PUBLIC → Actions are free) at version **0.2.0**. Both secrets (`NPM_TOKEN`, `PYPI_TOKEN`) are set as repo secrets.
 
-**Done this session:**
-- `.github/workflows/publish.yml` (`89463926`) — publishes npm (WASM) + PyPI (maturin: manylinux x86_64/aarch64 + macOS x86_64/aarch64 + sdist) on **Release published** or **manual workflow_dispatch**.
-- Bumped WASM `package.json` + PyPI `pyproject.toml` to **0.2.0**.
-- Fixed npm nits: dead `prepublish` → `prepublishOnly` w/ `--no-opt`; broken repo URL `cognitive-os/sci` → `sovereign-cognitive-identity/sci`.
+**✅ PyPI — DONE (SCI-287). `sci-anonymizer` 0.2.0 LIVE:** https://pypi.org/project/sci-anonymizer/0.2.0/ — abi3 wheels (macOS x86_64+arm64, Linux manylinux2014 x86_64+aarch64) + sdist. `pip install sci-anonymizer` works. Took two fixes after the first run:
+- `f8b580ec` — added `pyo3/extension-module` (optional feature, maturin-enabled); without it manylinux failed linking `-lpython3.10`.
+- `e0dffec1` — build both macOS wheels on `macos-14` (cross-compile x86_64); scarce `macos-13` Intel runners queue-starved the job >1h, twice.
 
-**REMAINING — needs Casey (workflow won't publish until these):**
-1. Add repo secrets: **`NPM_TOKEN`** (npm automation token, publish rights to `@sovereign-cognitive-identity`) + **`PYPI_TOKEN`** (PyPI API token for `sci-anonymizer`).
-2. Trigger: the v0.2.0-alpha release already exists so `release:published` won't re-fire — run **`gh workflow run publish.yml`** (workflow_dispatch) to publish 0.2.0 now. Future releases auto-publish.
-3. Note: published package version is plain **0.2.0** (installable by default), while the git/GitHub release is **v0.2.0-alpha**. Minor inconsistency — switch packages to `0.2.0a0`/`0.2.0-alpha.0` if prerelease-gating is wanted.
+**🟡 npm — BLOCKED on org creation (SCI-285).** Pipeline + token are ready; run fails `404 PUT @sovereign-cognitive-identity/anonymizer`. The **npm scope/org `sovereign-cognitive-identity` does not exist** (npm won't auto-create on publish). **Casey must:** create org at npmjs.com/org/create named exactly `sovereign-cognitive-identity`, ensure the `NPM_TOKEN` account is a member w/ publish rights. Then `gh workflow run publish.yml` — npm job will go through, no code change needed.
 
-**Local toolchain is broken (why we went CI, FYI):** node 26 default → npm 11.12.1 crashes (`minipass`/node26 incompat); node@22 keg → missing `libsimdjson.31.dylib`. `brew reinstall node@22` would fix local if ever needed.
+**publish.yml triggers:** Release published OR manual `workflow_dispatch`. Idempotent (npm `--access public`; PyPI `--skip-existing`), so re-running after the org exists only publishes the missing npm package.
 
+- Note: published versions are plain **0.2.0** (installable by default) while the git release is **v0.2.0-alpha**. Switch packages to `0.2.0a0`/`-alpha.0` if prerelease-gating wanted.
 - **SCI-280** crates.io — still **genuinely blocked:** monorepo uses `path = "../sci-anonymizer"`; needs **SCI-277** (standalone repo, preserved history) first. Not covered by publish.yml.
 
 ## Still open / for human confirmation
