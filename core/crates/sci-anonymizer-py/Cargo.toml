@@ -15,6 +15,12 @@ sci-anonymizer = { path = "../sci-anonymizer" }
 pyo3           = { version = "0.23", features = ["abi3-py310"] }
 serde_json     = { workspace = true }
 
+[features]
+# Enabled only by maturin when building wheels (see pyproject.toml). Keeps
+# libpython unlinked for the manylinux/extension-module build, while plain
+# `cargo test`/parity builds on the host still link against the active interpreter.
+extension-module = ["pyo3/extension-module"]
+
 [profile.release]
 opt-level     = "z"
 lto           = "fat"

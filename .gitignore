@@ -42,3 +42,6 @@ deploy/ansible/vars.yml
 # ── sci-chat local artifacts ─────────────────────────────────────────
 # Local proxy shim (has its own node_modules); generated per-machine.
 apps/sci-chat/.proxy-shim/
+
+# Claude Code local state (worktrees, settings.local.json, etc.)
+.claude/

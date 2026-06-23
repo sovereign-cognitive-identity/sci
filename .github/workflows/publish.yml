@@ -55,6 +55,9 @@ jobs:
   pypi-build:
     name: Build wheels (${{ matrix.platform.os }} ${{ matrix.platform.target }})
     runs-on: ${{ matrix.platform.runner }}
+    # Scarce public macOS-Intel runners have wedged this run for >1h before;
+    # fail fast so a stuck runner doesn't hold the whole publish hostage.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

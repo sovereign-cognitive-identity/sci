@@ -27,5 +27,6 @@ classifiers = [
 
 [tool.maturin]
 # abi3 wheels: single wheel works for Python 3.10+
-features = ["pyo3/abi3-py310"]
+# extension-module: don't link libpython into the wheel (required for manylinux).
+features = ["pyo3/abi3-py310", "extension-module"]
 module-name = "sci_anonymizer"
